@@ -1,0 +1,51 @@
+version: "3.9"
+services:
+
+  # ── PostgreSQL 16 + TimescaleDB ──
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: quant-postgres
+    environment:
+      POSTGRES_DB: quantdb
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: "QuantV31!Secure"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql
+    command: >
+      postgres
+        -c shared_preload_libraries='timescaledb'
+        -c timescaledb.telemetry_level=off
+        -c max_connections=100
+        -c shared_buffers=8GB
+        -c effective_cache_size=24GB
+        -c work_mem=256MB
+        -c maintenance_work_mem=2GB
+        -c wal_buffers=64MB
+    shm_size: '2g'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant -d quantdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis 7 (캐시 전용) ──
+  redis:
+    image: redis:7-alpine
+    container_name: quant-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+
+volumes:
+  pg_data:
+  redis_data:
