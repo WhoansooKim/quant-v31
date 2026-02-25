@@ -1,0 +1,23 @@
+[Unit]
+Description=Quant V3.1 APScheduler (standalone mode)
+After=quant-engine.service
+Requires=quant-engine.service
+# NOTE: The scheduler is embedded in quant-engine by default.
+# This service is for standalone scheduler mode only.
+# Do NOT enable both embedded + standalone simultaneously.
+
+[Service]
+Type=simple
+User=quant
+WorkingDirectory=/home/quant/quant-v31
+Environment="PATH=/home/quant/miniconda3/envs/quant-v31/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/quant/quant-v31"
+ExecStart=/home/quant/miniconda3/envs/quant-v31/bin/python \
+    -m engine.execution.scheduler_standalone
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

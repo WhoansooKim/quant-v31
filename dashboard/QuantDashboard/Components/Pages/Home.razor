@@ -1,7 +1,163 @@
-﻿@page "/"
+@page "/"
+@inject PostgresService Db
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+@implements IAsyncDisposable
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Quant V3.1 - Portfolio</PageTitle>
 
-<h1>Hello, world!</h1>
+<div class="page-header">
+    <h3>Portfolio Overview</h3>
+    <span class="badge-version">V3.1 Ubuntu</span>
+</div>
 
-Welcome to your new app.
+@if (regime != null)
+{
+    <div class="stat-grid">
+        <div class="stat-card">
+            <span class="stat-label">Total Value</span>
+            <span class="stat-value">
+                @if (snapshot != null)
+                {
+                    @($"${snapshot.TotalValue:N2}")
+                }
+                else
+                {
+                    <text>--</text>
+                }
+            </span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Regime</span>
+            <span class="stat-value regime-@regime.Regime">@regime.Regime.ToUpper()</span>
+            <span class="stat-sub">Confidence: @(regime.Confidence.ToString("P0"))</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">MDD</span>
+            <span class="stat-value @(snapshot?.MaxDrawdown < -0.10 ? "text-danger" : "")">
+                @(snapshot?.MaxDrawdown.ToString("P2") ?? "--")
+            </span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Kill Switch</span>
+            <span class="stat-value kill-@(snapshot?.KillLevel?.ToLower() ?? "normal")">
+                @(snapshot?.KillLevel ?? "NORMAL")
+            </span>
+        </div>
+    </div>
+
+    <!-- Regime Probabilities -->
+    <div class="section-card">
+        <h5>Regime Probabilities</h5>
+        <div class="prob-bars">
+            <div class="prob-row">
+                <span class="prob-label bull-text">Bull</span>
+                <div class="prob-track">
+                    <div class="prob-fill bull-bg" style="width:@(regime.BullProb * 100)%"></div>
+                </div>
+                <span class="prob-pct">@(regime.BullProb.ToString("P1"))</span>
+            </div>
+            <div class="prob-row">
+                <span class="prob-label sideways-text">Sideways</span>
+                <div class="prob-track">
+                    <div class="prob-fill sideways-bg" style="width:@(regime.SidewaysProb * 100)%"></div>
+                </div>
+                <span class="prob-pct">@(regime.SidewaysProb.ToString("P1"))</span>
+            </div>
+            <div class="prob-row">
+                <span class="prob-label bear-text">Bear</span>
+                <div class="prob-track">
+                    <div class="prob-fill bear-bg" style="width:@(regime.BearProb * 100)%"></div>
+                </div>
+                <span class="prob-pct">@(regime.BearProb.ToString("P1"))</span>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="section-card">
+        <p class="text-muted">Loading data...</p>
+    </div>
+}
+
+<!-- Recent Trades -->
+<div class="section-card">
+    <h5>Recent Trades</h5>
+    @if (trades.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Time</th><th>Symbol</th><th>Strategy</th>
+                        <th>Side</th><th>Qty</th><th>Price</th><th>Regime</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in trades)
+                    {
+                        <tr>
+                            <td>@t.ExecutedAt.ToString("MM-dd HH:mm")</td>
+                            <td class="fw-bold">@t.Symbol</td>
+                            <td>@t.Strategy</td>
+                            <td class="@(t.Side == "buy" ? "text-green" : "text-red")">
+                                @t.Side.ToUpper()
+                            </td>
+                            <td>@t.Qty</td>
+                            <td>$@t.Price.ToString("F2")</td>
+                            <td class="regime-@t.Regime">@t.Regime</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No trades yet.</p>
+    }
+</div>
+
+@code {
+    private RegimeState? regime;
+    private DailySnapshot? snapshot;
+    private List<TradeRecord> trades = new();
+    private HubConnection? hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        regime = await Db.GetCurrentRegimeAsync();
+        var perf = await Db.GetPerformanceAsync(1);
+        snapshot = perf.FirstOrDefault();
+        trades = await Db.GetRecentTradesAsync(20);
+
+        // SignalR 실시간 연결
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Nav.ToAbsoluteUri("/hubs/realtime"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        hubConnection.On<string, double>("RegimeChanged", async (r, c) =>
+        {
+            regime = await Db.GetCurrentRegimeAsync();
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<double, double, int>("PipelineCompleted", async (pv, mdd, tc) =>
+        {
+            var perf2 = await Db.GetPerformanceAsync(1);
+            snapshot = perf2.FirstOrDefault();
+            trades = await Db.GetRecentTradesAsync(20);
+            await InvokeAsync(StateHasChanged);
+        });
+
+        await hubConnection.StartAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+            await hubConnection.DisposeAsync();
+    }
+}

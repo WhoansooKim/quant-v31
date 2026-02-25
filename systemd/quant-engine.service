@@ -1,0 +1,24 @@
+[Unit]
+Description=Quant V3.1 Python Engine (FastAPI + gRPC + Scheduler)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=quant
+WorkingDirectory=/home/quant/quant-v31
+Environment="PATH=/home/quant/miniconda3/envs/quant-v31/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/quant/quant-v31"
+ExecStart=/home/quant/miniconda3/envs/quant-v31/bin/uvicorn \
+    engine.api.main:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryMax=8G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

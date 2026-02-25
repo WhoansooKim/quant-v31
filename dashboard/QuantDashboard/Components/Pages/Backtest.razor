@@ -1,0 +1,307 @@
+@page "/backtest"
+@inject PostgresService Db
+@rendermode InteractiveServer
+
+<PageTitle>Quant V3.1 - Backtest Verification</PageTitle>
+
+<div class="page-header">
+    <h3>Phase 4 — Backtest Verification</h3>
+</div>
+
+<!-- GO/STOP Decision Banner -->
+<div class="section-card" style="border-left: 4px solid @(goStop?.Decision == "GO" ? "#22c55e" : goStop?.Decision == "STOP" ? "#ef4444" : "#6b7280")">
+    <div style="display:flex; align-items:center; gap:1rem;">
+        <span style="font-size:2rem; font-weight:700; color:@(goStop?.Decision == "GO" ? "#22c55e" : goStop?.Decision == "STOP" ? "#ef4444" : "#6b7280")">
+            @(goStop?.Decision ?? "PENDING")
+        </span>
+        <div>
+            <span class="stat-label">GO/STOP Decision</span>
+            @if (goStop != null)
+            {
+                <span class="stat-sub">@goStop.DecidedAt.ToString("yyyy-MM-dd HH:mm")</span>
+            }
+            else
+            {
+                <span class="stat-sub">Run all backtests to get decision</span>
+            }
+        </div>
+    </div>
+</div>
+
+<!-- Summary Cards Row -->
+<div class="stat-grid" style="grid-template-columns: repeat(5, 1fr);">
+    <!-- WF Sharpe -->
+    <div class="stat-card">
+        <span class="stat-label">WF OOS Sharpe</span>
+        <span class="stat-value">@(goStop != null ? goStop.WfSharpe.ToString("F2") : "--")</span>
+        <span class="stat-sub">Target >= 1.10</span>
+    </div>
+    <!-- DSR -->
+    <div class="stat-card">
+        <span class="stat-label">DSR Score</span>
+        <span class="stat-value @(dsr?.Passed == true ? "text-green" : "")">
+            @(dsr != null ? dsr.DsrScore.ToString("P1") : "--")
+        </span>
+        <span class="stat-sub">Target >= 95%</span>
+    </div>
+    <!-- MC Prob Neg -->
+    <div class="stat-card">
+        <span class="stat-label">MC P(Loss)</span>
+        <span class="stat-value">@(mc != null ? mc.ProbNegative.ToString("P1") : "--")</span>
+        <span class="stat-sub">Lower is better</span>
+    </div>
+    <!-- MC Median CAGR -->
+    <div class="stat-card">
+        <span class="stat-label">MC Median CAGR</span>
+        <span class="stat-value">@(mc != null ? mc.MedianCagr.ToString("P1") : "--")</span>
+        <span class="stat-sub">p5=@(mc != null ? mc.P5Cagr.ToString("P1") : "--")</span>
+    </div>
+    <!-- Stress FPR -->
+    <div class="stat-card">
+        <span class="stat-label">Stress Passed</span>
+        <span class="stat-value">@stressPassedCount / @stressResults.Count</span>
+        <span class="stat-sub">FPR &lt; 15% target</span>
+    </div>
+</div>
+
+<!-- Walk-Forward Results -->
+<div class="section-card">
+    <h5>Walk-Forward Validation (36m train / 6m test)</h5>
+    @if (wfFolds.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Fold</th><th>Train Period</th><th>Test Period</th>
+                        <th>IS Sharpe</th><th>OOS Sharpe</th><th>OOS CAGR</th>
+                        <th>OOS MDD</th><th>Calmar</th><th>Degradation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var f in wfFolds)
+                    {
+                        var deg = f.IsSharpe != 0 ? f.OosSharpe / f.IsSharpe : 0;
+                        <tr>
+                            <td>@f.FoldNum</td>
+                            <td>@f.TrainStart.ToString("yy-MM") ~ @f.TrainEnd.ToString("yy-MM")</td>
+                            <td>@f.TestStart.ToString("yy-MM") ~ @f.TestEnd.ToString("yy-MM")</td>
+                            <td>@f.IsSharpe.ToString("F2")</td>
+                            <td class="@(f.OosSharpe >= 1.1 ? "text-green" : "text-red")">
+                                @f.OosSharpe.ToString("F2")
+                            </td>
+                            <td class="@(f.OosCagr >= 0 ? "text-green" : "text-red")">
+                                @f.OosCagr.ToString("P1")
+                            </td>
+                            <td class="text-red">@f.OosMdd.ToString("P1")</td>
+                            <td>@f.OosCalmar.ToString("F2")</td>
+                            <td class="@(deg >= 0.5 ? "text-green" : "text-red")">
+                                @deg.ToString("P0")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No walk-forward results yet.</p>
+    }
+</div>
+
+<!-- DSR Details -->
+<div class="section-card">
+    <h5>Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014)</h5>
+    @if (dsr != null)
+    {
+        <div class="stat-grid three-col">
+            <div class="stat-card">
+                <span class="stat-label">Raw Sharpe</span>
+                <span class="stat-value">@dsr.RawSharpe.ToString("F3")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">DSR Score</span>
+                <span class="stat-value @(dsr.Passed ? "text-green" : "text-red")">
+                    @dsr.DsrScore.ToString("P2")
+                </span>
+                <span class="stat-sub">@(dsr.Passed ? "PASS" : "FAIL") (threshold 95%)</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">p-value</span>
+                <span class="stat-value">@dsr.DsrPvalue.ToString("F4")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">N Trials</span>
+                <span class="stat-value">@dsr.NTrials</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Skewness</span>
+                <span class="stat-value">@dsr.Skewness.ToString("F3")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Kurtosis</span>
+                <span class="stat-value">@dsr.Kurtosis.ToString("F3")</span>
+            </div>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No DSR results yet.</p>
+    }
+</div>
+
+<!-- Monte Carlo -->
+<div class="section-card">
+    <h5>Monte Carlo Simulation (Block Bootstrap)</h5>
+    @if (mc != null)
+    {
+        <div class="stat-grid three-col">
+            <div class="stat-card">
+                <span class="stat-label">CAGR (p5 / median / p95)</span>
+                <span class="stat-value">@mc.P5Cagr.ToString("P1") / @mc.MedianCagr.ToString("P1") / @mc.P95Cagr.ToString("P1")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Sharpe (p5 / median / p95)</span>
+                <span class="stat-value">@mc.P5Sharpe.ToString("F2") / @mc.MedianSharpe.ToString("F2") / @mc.P95Sharpe.ToString("F2")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Median MDD</span>
+                <span class="stat-value text-red">@mc.MedianMdd.ToString("P1")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">P(Negative Return)</span>
+                <span class="stat-value @(mc.ProbNegative < 0.3 ? "text-green" : "text-red")">
+                    @mc.ProbNegative.ToString("P1")
+                </span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">P(MDD &gt; 20%)</span>
+                <span class="stat-value">@mc.ProbMddOver20.ToString("P1")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Simulations</span>
+                <span class="stat-value">@mc.NSims.ToString("N0")</span>
+            </div>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No Monte Carlo results yet.</p>
+    }
+</div>
+
+<!-- Regime Stress Test -->
+<div class="section-card">
+    <h5>Regime Transition Stress Test (4 Scenarios)</h5>
+    @if (stressResults.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Scenario</th><th>Period</th><th>Return</th><th>MDD</th>
+                        <th>Sharpe</th><th>Kill Switch</th><th>Accuracy</th>
+                        <th>FPR</th><th>Lag (days)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in stressResults)
+                    {
+                        <tr>
+                            <td class="fw-bold">@s.Scenario</td>
+                            <td>@s.PeriodStart.ToString("yy-MM") ~ @s.PeriodEnd.ToString("yy-MM")</td>
+                            <td class="@(s.TotalReturn >= 0 ? "text-green" : "text-red")">
+                                @s.TotalReturn.ToString("P1")
+                            </td>
+                            <td class="text-red">@s.MaxDrawdown.ToString("P1")</td>
+                            <td>@s.Sharpe.ToString("F2")</td>
+                            <td>
+                                <span style="color:@(s.KillTriggered ? "#f59e0b" : "#6b7280")">
+                                    @s.KillLevelReached
+                                </span>
+                            </td>
+                            <td class="@(s.RegimeAccuracy >= 0.5 ? "text-green" : "text-red")">
+                                @s.RegimeAccuracy.ToString("P0")
+                            </td>
+                            <td class="@(s.FalsePositiveRate < 0.15 ? "text-green" : "text-red")">
+                                @s.FalsePositiveRate.ToString("P0")
+                            </td>
+                            <td>@s.DetectionLagDays</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No stress test results yet.</p>
+    }
+</div>
+
+<!-- Recent Backtest Runs -->
+<div class="section-card">
+    <h5>Backtest Run History</h5>
+    @if (runs.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th><th>Name</th><th>Type</th><th>Status</th>
+                        <th>Started</th><th>Finished</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in runs)
+                    {
+                        <tr>
+                            <td>@r.RunId</td>
+                            <td>@r.Name</td>
+                            <td>@r.RunType</td>
+                            <td>
+                                <span style="color:@(r.Status == "completed" ? "#22c55e" : r.Status == "failed" ? "#ef4444" : "#f59e0b")">
+                                    @r.Status
+                                </span>
+                            </td>
+                            <td>@r.StartedAt.ToString("MM-dd HH:mm")</td>
+                            <td>@(r.FinishedAt?.ToString("MM-dd HH:mm") ?? "--")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No backtest runs yet. Trigger backtests via API.</p>
+    }
+</div>
+
+@code {
+    private List<BacktestRun> runs = new();
+    private List<WalkForwardFoldResult> wfFolds = new();
+    private MonteCarloResultRow? mc;
+    private List<StressTestResultRow> stressResults = new();
+    private DsrResultRow? dsr;
+    private GoStopDecision? goStop;
+    private int stressPassedCount => stressResults.Count(s => s.RegimeAccuracy >= 0.5);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            runs = await Db.GetBacktestRunsAsync(20);
+            wfFolds = await Db.GetLatestWalkForwardAsync();
+            mc = await Db.GetLatestMonteCarloAsync();
+            stressResults = await Db.GetLatestStressTestAsync();
+            dsr = await Db.GetLatestDsrAsync();
+            goStop = await Db.GetLatestGoStopAsync();
+        }
+        catch (Exception ex)
+        {
+            // Tables may not exist yet or no data
+        }
+    }
+}

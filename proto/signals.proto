@@ -1,0 +1,24 @@
+syntax = "proto3";
+package quant;
+
+service SignalService {
+  rpc GetLatestSignals (SignalRequest) returns (SignalList);
+}
+
+message SignalRequest {
+  string strategy = 1;
+  int32 limit = 2;
+}
+
+message Signal {
+  string symbol = 1;
+  string direction = 2;
+  double strength = 3;
+  string strategy = 4;
+  string regime = 5;
+  string generated_at = 6;
+}
+
+message SignalList {
+  repeated Signal signals = 1;
+}

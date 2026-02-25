@@ -1,0 +1,106 @@
+@page "/sentiment"
+@inject PostgresService Db
+@rendermode InteractiveServer
+
+<PageTitle>Quant V3.1 - Sentiment</PageTitle>
+
+<div class="page-header">
+    <h3>Sentiment Heatmap</h3>
+    <span class="text-muted">FinBERT + Claude Hybrid</span>
+</div>
+
+<!-- Sentiment Heatmap Grid -->
+<div class="section-card">
+    <h5>Daily Sentiment Scores (30d)</h5>
+    @if (heatmap.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Symbol</th>
+                        <th>Score</th>
+                        <th>Sentiment</th>
+                        <th>Headlines</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in heatmap.Take(100))
+                    {
+                        var scoreClass = s.AvgScore > 0.3 ? "text-green" :
+                                        s.AvgScore < -0.3 ? "text-red" : "text-muted";
+                        var barWidth = Math.Abs(s.AvgScore) * 100;
+                        var barColor = s.AvgScore > 0 ? "bull-bg" : "bear-bg";
+
+                        <tr>
+                            <td>@s.Day.ToString("yyyy-MM-dd")</td>
+                            <td class="fw-bold">@s.Symbol</td>
+                            <td class="@scoreClass">@(s.AvgScore.ToString("F3"))</td>
+                            <td>
+                                <div class="sentiment-bar">
+                                    @if (s.AvgScore > 0)
+                                    {
+                                        <div class="sentiment-center"></div>
+                                        <div class="sentiment-fill-right bull-bg"
+                                             style="width:@(barWidth)%"></div>
+                                    }
+                                    else
+                                    {
+                                        <div class="sentiment-fill-left bear-bg"
+                                             style="width:@(barWidth)%"></div>
+                                        <div class="sentiment-center"></div>
+                                    }
+                                </div>
+                            </td>
+                            <td>@s.HeadlineCount</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="empty-state">
+            <p>No sentiment data yet.</p>
+            <p class="text-muted">Run the pipeline with FinBERT enabled to generate sentiment scores.</p>
+        </div>
+    }
+</div>
+
+<!-- Top Positive / Negative -->
+@if (heatmap.Any())
+{
+    <div class="stat-grid">
+        <div class="section-card">
+            <h5 class="bull-text">Top Positive</h5>
+            @foreach (var s in heatmap.Where(x => x.AvgScore > 0).OrderByDescending(x => x.AvgScore).Take(10))
+            {
+                <div class="sentiment-row">
+                    <span class="fw-bold">@s.Symbol</span>
+                    <span class="text-green">+@(s.AvgScore.ToString("F3"))</span>
+                </div>
+            }
+        </div>
+        <div class="section-card">
+            <h5 class="bear-text">Top Negative</h5>
+            @foreach (var s in heatmap.Where(x => x.AvgScore < 0).OrderBy(x => x.AvgScore).Take(10))
+            {
+                <div class="sentiment-row">
+                    <span class="fw-bold">@s.Symbol</span>
+                    <span class="text-red">@(s.AvgScore.ToString("F3"))</span>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private List<SentimentPoint> heatmap = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        heatmap = await Db.GetSentimentHeatmapAsync(30);
+    }
+}

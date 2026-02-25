@@ -1,0 +1,24 @@
+syntax = "proto3";
+package quant;
+
+import "regime.proto";
+
+service PortfolioService {
+  rpc GetSnapshot (Empty) returns (SnapshotResponse);
+  rpc TriggerPipeline (Empty) returns (PipelineStatus);
+}
+
+message SnapshotResponse {
+  double total_value = 1;
+  double daily_return = 2;
+  double sharpe_ratio = 3;
+  double max_drawdown = 4;
+  string regime = 5;
+  string kill_level = 6;
+}
+
+message PipelineStatus {
+  bool success = 1;
+  string message = 2;
+  double elapsed_sec = 3;
+}

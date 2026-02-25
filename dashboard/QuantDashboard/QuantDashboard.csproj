@@ -7,14 +7,20 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DevExpress.Blazor" Version="24.1.6" />
     <PackageReference Include="Google.Protobuf" Version="3.28.3" />
     <PackageReference Include="Grpc.Net.Client" Version="2.67.0" />
     <PackageReference Include="Grpc.Tools" Version="2.67.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.11" />
     <PackageReference Include="Npgsql" Version="8.0.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="../../proto/regime.proto" GrpcServices="Client" ProtoRoot="../../proto" />
+    <Protobuf Include="../../proto/portfolio.proto" GrpcServices="Client" ProtoRoot="../../proto" />
+    <Protobuf Include="../../proto/signals.proto" GrpcServices="Client" ProtoRoot="../../proto" />
   </ItemGroup>
 
 </Project>

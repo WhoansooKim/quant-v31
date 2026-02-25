@@ -1,0 +1,18 @@
+syntax = "proto3";
+package quant;
+
+service RegimeService {
+  rpc GetCurrentRegime (Empty) returns (RegimeResponse);
+  rpc StreamRegime (Empty) returns (stream RegimeResponse);
+}
+
+message Empty {}
+
+message RegimeResponse {
+  string current = 1;
+  double bull_prob = 2;
+  double sideways_prob = 3;
+  double bear_prob = 4;
+  double confidence = 5;
+  string detected_at = 6;
+}

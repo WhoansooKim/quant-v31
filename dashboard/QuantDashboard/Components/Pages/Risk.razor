@@ -1,0 +1,141 @@
+@page "/risk"
+@inject PostgresService Db
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+
+<PageTitle>Quant V3.1 - Risk</PageTitle>
+
+<div class="page-header">
+    <h3>Kill Switch Monitor</h3>
+</div>
+
+<!-- Kill Switch Status -->
+@if (killSwitch != null)
+{
+    <div class="kill-hero kill-@killSwitch.ToLevel.ToLower()">
+        <div class="kill-hero-label">Kill Switch Level</div>
+        <div class="kill-hero-value">@killSwitch.ToLevel</div>
+        <div class="kill-hero-mdd">MDD: @(killSwitch.CurrentMdd.ToString("P2"))</div>
+        <div class="kill-hero-exp">Exposure Limit: @(killSwitch.ExposureLimit.ToString("P0"))</div>
+        @if (killSwitch.CooldownUntil.HasValue)
+        {
+            <div class="kill-cooldown">
+                Cooldown until: @killSwitch.CooldownUntil.Value.ToString("yyyy-MM-dd")
+            </div>
+        }
+    </div>
+}
+
+<!-- Defense Levels Reference -->
+<div class="section-card">
+    <h5>Defense Levels</h5>
+    <div class="defense-grid">
+        <div class="defense-card kill-normal">
+            <div class="defense-level">NORMAL</div>
+            <div class="defense-trigger">MDD > -10%</div>
+            <div class="defense-action">Full operation, all strategies active</div>
+            <div class="defense-exposure">Exposure: 100%</div>
+        </div>
+        <div class="defense-card kill-warning">
+            <div class="defense-level">WARNING</div>
+            <div class="defense-trigger">MDD -10%</div>
+            <div class="defense-action">Stop momentum + sentiment, reduce exposure</div>
+            <div class="defense-exposure">Exposure: 70%</div>
+        </div>
+        <div class="defense-card kill-defensive">
+            <div class="defense-level">DEFENSIVE</div>
+            <div class="defense-trigger">MDD -15%</div>
+            <div class="defense-action">Defense strategies only, high cash</div>
+            <div class="defense-exposure">Exposure: 40%</div>
+        </div>
+        <div class="defense-card kill-emergency">
+            <div class="defense-level">EMERGENCY</div>
+            <div class="defense-trigger">MDD -20%</div>
+            <div class="defense-action">Full liquidation + 30-day cooldown</div>
+            <div class="defense-exposure">Exposure: 0%</div>
+        </div>
+    </div>
+</div>
+
+<!-- Kill Switch History -->
+<div class="section-card">
+    <h5>Kill Switch Event History</h5>
+    @if (history.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr><th>Time</th><th>From</th><th>To</th><th>MDD</th><th>PV</th><th>Exposure</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var h in history)
+                    {
+                        <tr>
+                            <td>@h.EventTime.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td>@h.FromLevel</td>
+                            <td class="kill-@h.ToLevel.ToLower() fw-bold">@h.ToLevel</td>
+                            <td class="text-red">@(h.CurrentMdd.ToString("P2"))</td>
+                            <td>$@(h.PortfolioValue.ToString("N2"))</td>
+                            <td>@(h.ExposureLimit.ToString("P0"))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">No kill switch events (good!).</p>
+    }
+</div>
+
+<!-- MDD Progress Bar -->
+<div class="section-card">
+    <h5>MDD Gauge</h5>
+    @{
+        var mddPct = Math.Abs(killSwitch?.CurrentMdd ?? 0) * 100;
+        var mddColor = mddPct < 10 ? "bull-bg" : mddPct < 15 ? "sideways-bg" : "bear-bg";
+    }
+    <div class="mdd-gauge">
+        <div class="mdd-track">
+            <div class="mdd-fill @mddColor" style="width:@(Math.Min(mddPct / 25 * 100, 100))%"></div>
+            <div class="mdd-marker" style="left:40%"><span>-10%</span></div>
+            <div class="mdd-marker" style="left:60%"><span>-15%</span></div>
+            <div class="mdd-marker" style="left:80%"><span>-20%</span></div>
+        </div>
+        <div class="mdd-label">Current MDD: @((killSwitch?.CurrentMdd ?? 0).ToString("P2"))</div>
+    </div>
+</div>
+
+@code {
+    private KillSwitchState? killSwitch;
+    private List<KillSwitchState> history = new();
+    private HubConnection? hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        killSwitch = await Db.GetKillSwitchAsync();
+        history = await Db.GetKillSwitchHistoryAsync(90);
+
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Nav.ToAbsoluteUri("/hubs/realtime"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        hubConnection.On<string, double>("KillSwitchChanged", async (level, mdd) =>
+        {
+            killSwitch = await Db.GetKillSwitchAsync();
+            history = await Db.GetKillSwitchHistoryAsync(90);
+            await InvokeAsync(StateHasChanged);
+        });
+
+        await hubConnection.StartAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+            await hubConnection.DisposeAsync();
+    }
+}
