@@ -66,10 +66,24 @@ Dashboard:  http://localhost:5000
 - **Step 4.4**: 12 new Backtest API routes + Backtest.razor dashboard page + NavMenu update
 - Test: 23/23 pass
 
-### PHASE 5: Paper Trading — NOT YET STARTED
-- Paper Trading $100K+, 9-12 months continuous operation
-- GO/STOP Decision (Sharpe>1.1, MDD<-18%, DSR>95%, FPR<15%)
-- **This is the next phase to implement**
+### PHASE 4+ Backtest Execution — COMPLETE
+- **Slippage fix**: Applied only on rebalance days (was incorrectly applied daily)
+- **Walk-Forward**: 23 folds, OOS Sharpe avg = 0.590 (target: 1.1)
+- **Monte Carlo**: 10,000 sims, median CAGR = 5.1%, P(loss) = 26.3%
+- **Stress Test**: 2/4 passed (COVID + Rate Hike PASS, Recovery + VIX FAIL)
+- **DSR**: 99.7% (PASS, threshold 95%)
+- **Granger**: Skipped (no sentiment data yet)
+- **GO/STOP Decision**: STOP (2/4 criteria passed)
+  - GO: DSR=99.7% > 95%, MDD=-6.7% > -18%
+  - STOP: WF Sharpe=0.59 < 1.1, Stress FPR=50% >= 15%
+
+### PHASE 5: Paper Trading — INFRASTRUCTURE READY
+- AlpacaExecutor updated to alpaca-py SDK
+- PaperTradingTracker module created
+- API endpoints: POST /paper/snapshot, GET /paper/performance, GET /paper/go-stop
+- Scheduler: 5 cron jobs configured (daily pipeline 15:30 ET)
+- **Requires**: Alpaca Paper API keys in .env to activate real trading
+- **Duration**: 9-12 months before live trading decision
 
 ---
 
@@ -79,6 +93,7 @@ Dashboard:  http://localhost:5000
 |-----------|--------|---------|
 | E2E (Phase 3) | 39/39 PASS | `PYTHONPATH=/home/quant/quant-v31 /home/quant/miniconda3/envs/quant-v31/bin/python scripts/test_e2e.py --quick --no-systemd` |
 | Phase 4 | 23/23 PASS | `PYTHONPATH=/home/quant/quant-v31 /home/quant/miniconda3/envs/quant-v31/bin/python scripts/test_phase4.py` |
+| Backtest Suite | All executed | `PYTHONPATH=/home/quant/quant-v31 /home/quant/miniconda3/envs/quant-v31/bin/python scripts/run_backtest_all.py` |
 
 ---
 
@@ -332,7 +347,15 @@ go_paper_months = 9
 | GET | `/backtest/stress-test/results` | Stress test results |
 | GET | `/backtest/dsr/results` | DSR results |
 | GET | `/backtest/granger/results` | Granger results |
-| GET | `/backtest/go-stop` | GO/STOP decision |
+| GET | `/backtest/go-stop` | GO/STOP decision (latest) |
+| POST | `/backtest/go-stop` | Trigger GO/STOP auto-evaluation |
+
+### Phase 5 Routes (Paper Trading)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/paper/snapshot` | Record daily portfolio snapshot |
+| GET | `/paper/performance` | Paper trading cumulative performance |
+| GET | `/paper/go-stop` | Paper trading GO/STOP re-evaluation |
 
 ---
 
@@ -431,34 +454,29 @@ go_paper_months = 9
 
 ---
 
-## 13. What To Do Next — PHASE 5 Planning
+## 13. What To Do Next
 
-The project roadmap (DevPlan.jsx) defines 4 phases. Phase 4 code is complete. The remaining work:
+### To Start Paper Trading
+1. **Create Alpaca Paper Trading Account**: https://app.alpaca.markets
+2. **Set API keys in .env**:
+   ```
+   ALPACA_KEY=your_real_key
+   ALPACA_SECRET=your_real_secret
+   ```
+3. **Restart engine**: `sudo systemctl restart quant-engine`
+4. **Monitor via Dashboard**: http://localhost:5000
+5. **Daily snapshots**: Scheduler auto-records, or manual `POST /paper/snapshot`
 
-### Immediate Next Steps
-1. **Run actual backtests** using the Phase 4 modules:
-   - Trigger Walk-Forward: `POST http://localhost:8000/backtest/walk-forward`
-   - Trigger Monte Carlo: `POST http://localhost:8000/backtest/monte-carlo`
-   - Trigger Stress Test: `POST http://localhost:8000/backtest/stress-test`
-   - Trigger DSR: `POST http://localhost:8000/backtest/dsr`
-   - Trigger Granger: `POST http://localhost:8000/backtest/granger`
-   - Note: These need SPY data in daily_prices (5M+ rows already exist)
+### To Improve Backtest Results (STOP → GO)
+- **WF Sharpe (0.59 → 1.1)**: Strategy-specific backtesting needed (not just SPY proxy)
+- **Stress FPR (50% → <15%)**: HMM regime detection needs improvement for recovery/VIX scenarios
+- **Granger Test**: Need sentiment_scores data (run FinBERT scan on news data)
 
-2. **Implement GO/STOP auto-decision logic**:
-   - Write code that aggregates all backtest results
-   - Compare against GO thresholds
-   - Insert decision into `go_stop_log` table
-
-3. **Paper Trading Phase** (9-12 months):
-   - Configure Alpaca Paper API keys in `.env`
-   - Start daily pipeline via scheduler
-   - Monitor via Blazor Dashboard at http://localhost:5000
-
-### Possible Phase 5 Extensions (Not in docs, future consideration)
-- Live trading transition ($5K-10K)
-- Additional strategies
-- Performance monitoring dashboard enhancements
-- Alerting system improvements
+### Phase 5 Extensions (Future)
+- Live trading transition ($5K-10K) after 9+ months paper trading GO
+- Additional strategy variants
+- Dashboard enhancements for paper trading monitoring
+- Telegram alerting for GO/STOP status changes
 
 ---
 
