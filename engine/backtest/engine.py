@@ -195,6 +195,8 @@ class BacktestEngine:
         alloc_list = []
 
         kill_switch = DrawdownKillSwitch(initial_value=initial_capital)
+        prev_equity_pct = 0.0  # 이전 투자비중 (리밸런싱 감지용)
+        slippage_per_trade = self.slippage_bps / 10000
 
         for i in range(n_days):
             d = dates[i + 1] if i + 1 < len(dates) else dates[-1]
@@ -211,7 +213,6 @@ class BacktestEngine:
             exposure_limit = kill_switch.get_exposure_limit()
 
             # 배분
-            from engine.risk.regime_allocator import RegimeState as _RS
             mock_regime = type("R", (), {
                 "current": regime,
                 "confidence": 0.8,
@@ -227,11 +228,16 @@ class BacktestEngine:
             if kill_level == DefenseLevel.EMERGENCY:
                 daily_rets[i] = 0.0
             else:
-                # 포트폴리오 수익률 = 시장 수익 * 투자비중 - 슬리피지
+                # 포트폴리오 수익률 = 시장 수익 * 투자비중
                 market_ret = spy_returns[i]
-                slippage = self.slippage_bps / 10000
-                daily_rets[i] = market_ret * total_equity_pct - slippage
+                daily_rets[i] = market_ret * total_equity_pct
 
+                # 슬리피지: 리밸런싱(배분 변경) 시에만 적용
+                turnover = abs(total_equity_pct - prev_equity_pct)
+                if turnover > 0.01:  # 1% 이상 변경시 리밸런싱으로 간주
+                    daily_rets[i] -= slippage_per_trade * turnover
+
+            prev_equity_pct = total_equity_pct
             equity[i + 1] = equity[i] * (1 + daily_rets[i])
 
         # 4. 메트릭 계산

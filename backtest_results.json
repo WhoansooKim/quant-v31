@@ -1,0 +1,34 @@
+{
+  "base": {
+    "sharpe": 0.06739846329527703,
+    "cagr": 0.04292274876015911,
+    "mdd": -0.20106137539767863,
+    "calmar": 0.21348082731087634
+  },
+  "walk_forward": {
+    "oos_sharpe_avg": 0.5899119486653159,
+    "degradation_ratio": 2.938352815639019,
+    "passed": false
+  },
+  "monte_carlo": {
+    "median_sharpe": 0.6854482224202607,
+    "median_cagr": 0.05087541818955965,
+    "prob_negative": 0.263,
+    "prob_mdd_over_20": 0.0396
+  },
+  "stress_test": {
+    "scenarios_passed": 2,
+    "avg_fpr": 0.4995629232037622,
+    "all_passed": false,
+    "fpr_below_15pct": false
+  },
+  "dsr": {
+    "raw_sharpe": 0.06739846329527714,
+    "dsr_score": 0.9969889612020598,
+    "passed": true
+  },
+  "granger": {
+    "skipped": true,
+    "passed": false
+  }
+}

@@ -857,8 +857,84 @@ async def get_go_stop_status():
     with pg.get_conn() as conn:
         row = conn.execute("""
             SELECT * FROM go_stop_log
-            ORDER BY decided_at DESC LIMIT 1
+            ORDER BY time DESC LIMIT 1
         """).fetchone()
     if not row:
         return {"decision": "NOT_YET", "message": "No GO/STOP decision yet"}
     return dict(row)
+
+
+@app.post("/backtest/go-stop")
+async def evaluate_go_stop():
+    """GO/STOP 자동 판정 실행 — 최신 백테스트 결과를 종합하여 판정"""
+    from engine.backtest.go_stop import GoStopDecider
+    decider = GoStopDecider(config)
+    criteria = decider.evaluate_and_save()
+    return {
+        "decision": criteria.decision,
+        "notes": criteria.notes,
+        "criteria": {
+            "wf_oos_sharpe": criteria.wf_oos_sharpe,
+            "dsr_score": criteria.dsr_score,
+            "stress_avg_fpr": criteria.stress_avg_fpr,
+            "base_mdd": criteria.base_mdd,
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════
+#  Phase 5: Paper Trading Endpoints
+# ═══════════════════════════════════════════════════
+
+@app.get("/paper/performance")
+async def get_paper_performance():
+    """Paper Trading 누적 성과 조회"""
+    from engine.backtest.paper_tracker import PaperTradingTracker
+    tracker = PaperTradingTracker(config)
+    return tracker.get_performance()
+
+
+@app.get("/paper/go-stop")
+async def get_paper_go_stop():
+    """Paper Trading 기반 GO/STOP 재평가"""
+    from engine.backtest.paper_tracker import PaperTradingTracker
+    tracker = PaperTradingTracker(config)
+    return tracker.evaluate_paper_go_stop()
+
+
+@app.post("/paper/snapshot")
+async def record_paper_snapshot():
+    """Paper Trading 일일 스냅샷 기록 (수동 트리거)"""
+    from engine.backtest.paper_tracker import PaperTradingTracker
+    tracker = PaperTradingTracker(config)
+
+    # Alpaca 계좌 정보
+    orch = app.state.orchestrator
+    account = orch.executor.get_account()
+
+    # 레짐 정보
+    regime = "unknown"
+    try:
+        with pg.get_conn() as conn:
+            row = conn.execute("""
+                SELECT regime FROM regime_history
+                ORDER BY detected_at DESC LIMIT 1
+            """).fetchone()
+            if row:
+                regime = row["regime"]
+    except Exception:
+        pass
+
+    # Kill Switch
+    kill_level = "NORMAL"
+
+    pv = account.get("portfolio_value", 100_000)
+    cash_val = account.get("cash", 100_000)
+    tracker.record_snapshot(
+        portfolio_value=pv,
+        cash=cash_val,
+        positions_value=pv - cash_val,
+        regime=regime,
+        kill_level=kill_level,
+    )
+    return {"status": "snapshot_recorded", "account": account}
