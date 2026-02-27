@@ -1,4 +1,5 @@
 @page "/backtest"
+@attribute [Authorize]
 @inject PostgresService Db
 @rendermode InteractiveServer
 
@@ -6,6 +7,8 @@
 
 <div class="page-header">
     <h3>Phase 4 — Backtest Verification</h3>
+    <HelpTooltip Title="Backtest Verification"
+                 Description="시스템 검증 결과 — Walk-Forward, Monte Carlo, DSR, Stress Test" />
 </div>
 
 <!-- GO/STOP Decision Banner -->
@@ -33,7 +36,7 @@
     <!-- WF Sharpe -->
     <div class="stat-card">
         <span class="stat-label">WF OOS Sharpe</span>
-        <span class="stat-value">@(goStop != null ? goStop.WfSharpe.ToString("F2") : "--")</span>
+        <span class="stat-value">@(wfFolds.Any() ? wfFolds.Average(f => f.OosSharpe).ToString("F2") : "--")</span>
         <span class="stat-sub">Target >= 1.10</span>
     </div>
     <!-- DSR -->
@@ -66,7 +69,11 @@
 
 <!-- Walk-Forward Results -->
 <div class="section-card">
-    <h5>Walk-Forward Validation (36m train / 6m test)</h5>
+    <h5>Walk-Forward Validation (36m train / 6m test)
+        <HelpTooltip Title="Walk-Forward Validation"
+                     Description="36개월 훈련 / 6개월 테스트 슬라이딩 윈도우 교차검증"
+                     Links="@(new Dictionary<string,string>{["Investopedia: Walk-Forward"]="https://www.investopedia.com/terms/w/walk-forward-testing.asp"})" />
+    </h5>
     @if (wfFolds.Any())
     {
         <div class="table-responsive">
@@ -112,7 +119,11 @@
 
 <!-- DSR Details -->
 <div class="section-card">
-    <h5>Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014)</h5>
+    <h5>Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014)
+        <HelpTooltip Title="Deflated Sharpe Ratio"
+                     Description="Bailey & Lopez de Prado (2014) — 다중 비교 보정된 Sharpe Ratio"
+                     Links="@(new Dictionary<string,string>{["Original Paper"]="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551"})" />
+    </h5>
     @if (dsr != null)
     {
         <div class="stat-grid three-col">
@@ -153,7 +164,11 @@
 
 <!-- Monte Carlo -->
 <div class="section-card">
-    <h5>Monte Carlo Simulation (Block Bootstrap)</h5>
+    <h5>Monte Carlo Simulation (Block Bootstrap)
+        <HelpTooltip Title="Monte Carlo Simulation"
+                     Description="블록 부트스트랩 기반 수익률 분포 시뮬레이션"
+                     Links="@(new Dictionary<string,string>{["Investopedia: Monte Carlo"]="https://www.investopedia.com/terms/m/montecarlosimulation.asp"})" />
+    </h5>
     @if (mc != null)
     {
         <div class="stat-grid three-col">
@@ -193,7 +208,10 @@
 
 <!-- Regime Stress Test -->
 <div class="section-card">
-    <h5>Regime Transition Stress Test (4 Scenarios)</h5>
+    <h5>Regime Transition Stress Test (4 Scenarios)
+        <HelpTooltip Title="Regime Transition Stress Test"
+                     Description="실제 레짐 전환 구간(08금융위기, 코로나 등)에서의 성능 검증" />
+    </h5>
     @if (stressResults.Any())
     {
         <div class="table-responsive">

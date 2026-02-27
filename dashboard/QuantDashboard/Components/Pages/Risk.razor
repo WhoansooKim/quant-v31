@@ -1,4 +1,5 @@
 @page "/risk"
+@attribute [Authorize]
 @inject PostgresService Db
 @inject NavigationManager Nav
 @rendermode InteractiveServer
@@ -8,6 +9,9 @@
 
 <div class="page-header">
     <h3>Kill Switch Monitor</h3>
+    <HelpTooltip Title="Kill Switch Monitor"
+                 Description="4단계 방어 시스템 — MDD 기반 자동 리스크 차단"
+                 Links="@(new Dictionary<string,string>{["Investopedia: Risk Management"]="https://www.investopedia.com/terms/r/riskmanagement.asp"})" />
 </div>
 
 <!-- Kill Switch Status -->
@@ -29,7 +33,10 @@
 
 <!-- Defense Levels Reference -->
 <div class="section-card">
-    <h5>Defense Levels</h5>
+    <h5>Defense Levels
+        <HelpTooltip Title="Defense Levels"
+                     Description="NORMAL→WARNING→DEFENSIVE→EMERGENCY 단계별 방어 정책" />
+    </h5>
     <div class="defense-grid">
         <div class="defense-card kill-normal">
             <div class="defense-level">NORMAL</div>
@@ -60,7 +67,10 @@
 
 <!-- Kill Switch History -->
 <div class="section-card">
-    <h5>Kill Switch Event History</h5>
+    <h5>Kill Switch Event History
+        <HelpTooltip Title="Kill Switch Event History"
+                     Description="Kill Switch 레벨 변경 이력" />
+    </h5>
     @if (history.Any())
     {
         <div class="table-responsive">
@@ -92,7 +102,10 @@
 
 <!-- MDD Progress Bar -->
 <div class="section-card">
-    <h5>MDD Gauge</h5>
+    <h5>MDD Gauge
+        <HelpTooltip Title="MDD Gauge"
+                     Description="현재 MDD를 시각적 게이지로 표시. 각 Kill Switch 임계값 표시" />
+    </h5>
     @{
         var mddPct = Math.Abs(killSwitch?.CurrentMdd ?? 0) * 100;
         var mddColor = mddPct < 10 ? "bull-bg" : mddPct < 15 ? "sideways-bg" : "bear-bg";

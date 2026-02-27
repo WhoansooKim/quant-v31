@@ -1,4 +1,5 @@
 @page "/strategies"
+@attribute [Authorize]
 @inject PostgresService Db
 @rendermode InteractiveServer
 
@@ -6,6 +7,8 @@
 
 <div class="page-header">
     <h3>Strategy Performance</h3>
+    <HelpTooltip Title="Strategy Performance"
+                 Description="5개 전략의 성과 요약 및 시그널 현황" />
 </div>
 
 <!-- Strategy Overview Cards -->
@@ -22,7 +25,10 @@
 
 <!-- Recent Signals -->
 <div class="section-card">
-    <h5>Recent Signals</h5>
+    <h5>Recent Signals
+        <HelpTooltip Title="Recent Signals"
+                     Description="각 전략이 생성한 최근 매매 시그널 (LONG/SHORT)" />
+    </h5>
     @if (signals.Any())
     {
         <div class="table-responsive">
@@ -36,7 +42,7 @@
                     {
                         <tr>
                             <td>@sig.Time.ToString("MM-dd HH:mm")</td>
-                            <td class="fw-bold">@sig.Symbol</td>
+                            <td><SymbolLink Symbol="@sig.Symbol" Exchange="@(exchangeMap.GetValueOrDefault(sig.Symbol))" /></td>
                             <td>@sig.Strategy</td>
                             <td class="@(sig.Direction == "long" ? "text-green" : "text-red")">
                                 @sig.Direction.ToUpper()
@@ -63,7 +69,10 @@
 
 <!-- Strategy Performance History -->
 <div class="section-card">
-    <h5>Strategy Daily Performance (30d)</h5>
+    <h5>Strategy Daily Performance (30d)
+        <HelpTooltip Title="Strategy Daily Performance"
+                     Description="전략별 일간 수익률, 배분 비율, 시그널 수" />
+    </h5>
     @if (perf.Any())
     {
         <div class="table-responsive">
@@ -100,6 +109,7 @@
     private List<SignalRecord> signals = new();
     private List<StrategyPerf> perf = new();
     private Dictionary<string, int> signalCounts = new();
+    private Dictionary<string, string> exchangeMap = new();
 
     private static readonly List<(string Key, string Name, string Desc, string Color)> strategyInfo = new()
     {
@@ -112,6 +122,7 @@
     {
         signals = await Db.GetRecentSignalsAsync(100);
         perf = await Db.GetStrategyPerfAsync(30);
+        exchangeMap = await Db.GetSymbolExchangeMapAsync();
 
         signalCounts = signals
             .GroupBy(s => s.Strategy)

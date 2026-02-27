@@ -1,0 +1,436 @@
+@page "/status"
+@attribute [Authorize]
+@using QuantDashboard.Models
+@using QuantDashboard.Services
+@using System.Text.Json
+@inject PostgresService Db
+@inject ILogger<Status> Logger
+
+<PageTitle>System Status - Quant V3.1</PageTitle>
+
+<div class="status-page">
+
+    @* ═══ GO/STOP Banner ═══ *@
+    <div class="go-stop-banner @(_goStop?.Decision == "GO" ? "go" : _goStop?.Decision == "STOP" ? "stop" : "pending")" style="position:relative;">
+        <span style="position:absolute; top:12px; right:16px;">
+            <HelpTooltip Title="GO/STOP Banner"
+                         Description="실거래 진입 여부 최종 판단. 모든 검증 기준 충족 시 GO" />
+        </span>
+        <div class="go-stop-decision">@(_goStop?.Decision ?? "NO DECISION")</div>
+        <div class="go-stop-notes">@(_goStop?.Notes ?? "No backtest evaluation yet")</div>
+        <div class="go-stop-meta">
+            @if (_goStop != null)
+            {
+                <span>by @(_goStop.DecidedBy ?? "—") | @_goStop.DecidedAt.ToString("yyyy-MM-dd HH:mm")</span>
+            }
+        </div>
+    </div>
+
+    @* ═══ System Health Row ═══ *@
+    <div class="section-title">SYSTEM HEALTH
+        <HelpTooltip Title="System Health"
+                     Description="DB, 엔진, 레짐, Kill Switch 등 시스템 구성요소 상태" />
+    </div>
+    <div class="stat-grid cols-6">
+        <div class="stat-card">
+            <div class="stat-label">DATABASE</div>
+            <div class="stat-value @(_sys?.DbConnected == true ? "val-go" : "val-stop")">
+                @(_sys?.DbConnected == true ? "ONLINE" : "OFFLINE")
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">ENGINE API</div>
+            <div class="stat-value @(_engineOk ? "val-go" : "val-stop")">
+                @(_engineOk ? "ONLINE" : "OFFLINE")
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">REGIME</div>
+            <div class="stat-value regime-@(_sys?.LatestRegime ?? "unknown")">
+                @((_sys?.LatestRegime ?? "—").ToUpper())
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">KILL SWITCH</div>
+            <div class="stat-value kill-@((_sys?.LatestKillLevel ?? "NORMAL").ToLower())">
+                @(_sys?.LatestKillLevel ?? "NORMAL")
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">SNAPSHOTS</div>
+            <div class="stat-value">@(_sys?.SnapshotCount ?? 0)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">BACKTEST RUNS</div>
+            <div class="stat-value">@(_sys?.BacktestRunCount ?? 0)</div>
+        </div>
+    </div>
+
+    @* ═══ GO/STOP Criteria Detail ═══ *@
+    <div class="section-title">GO/STOP CRITERIA
+        <HelpTooltip Title="GO/STOP Criteria"
+                     Description="실거래 진입 기준별 통과/미달 현황" />
+    </div>
+    @if (_criteria != null)
+    {
+        <div class="stat-grid cols-4">
+            @foreach (var (key, item) in _criteria)
+            {
+                var passed = false;
+                var valueStr = "—";
+                var threshStr = "—";
+
+                @if (item.TryGetProperty("passed", out var p)) { passed = p.GetBoolean(); }
+                @if (item.TryGetProperty("oos_sharpe", out var v1)) { valueStr = v1.GetDouble().ToString("F3"); }
+                else if (item.TryGetProperty("score", out var v2)) { valueStr = v2.GetDouble().ToString("P1"); }
+                else if (item.TryGetProperty("avg_fpr", out var v3)) { valueStr = v3.GetDouble().ToString("P1"); }
+                else if (item.TryGetProperty("value", out var v4)) { valueStr = v4.GetDouble().ToString("P1"); }
+                @if (item.TryGetProperty("threshold", out var t))
+                {
+                    if (t.ValueKind == JsonValueKind.Number)
+                    {
+                        var tv = t.GetDouble();
+                        threshStr = tv >= 1 ? tv.ToString("F1") : tv.ToString("P0");
+                    }
+                }
+
+                <div class="criteria-card @(passed ? "pass" : "fail")">
+                    <div class="criteria-status">@(passed ? "GO" : "STOP")</div>
+                    <div class="criteria-name">@key.Replace("_", " ").ToUpper()</div>
+                    <div class="criteria-value">@valueStr</div>
+                    <div class="criteria-threshold">target: @threshStr</div>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="empty-state">No GO/STOP evaluation. Run backtests first.</div>
+    }
+
+    @* ═══ Backtest Results Summary ═══ *@
+    <div class="section-title">BACKTEST RESULTS
+        <HelpTooltip Title="Backtest Results"
+                     Description="백테스트 핵심 지표 요약 (MC Sharpe, CAGR, DSR 등)" />
+    </div>
+    <div class="stat-grid cols-5">
+        @if (_mc != null)
+        {
+            <div class="stat-card">
+                <div class="stat-label">MC MEDIAN SHARPE</div>
+                <div class="stat-value">@_mc.MedianSharpe.ToString("F3")</div>
+                <div class="stat-sub">p5: @_mc.P5Sharpe.ToString("F2") | p95: @_mc.P95Sharpe.ToString("F2")</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">MC MEDIAN CAGR</div>
+                <div class="stat-value">@_mc.MedianCagr.ToString("P1")</div>
+                <div class="stat-sub">p5: @_mc.P5Cagr.ToString("P1") | p95: @_mc.P95Cagr.ToString("P1")</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">MC P(LOSS)</div>
+                <div class="stat-value @(_mc.ProbNegative > 0.3 ? "val-stop" : "val-go")">@_mc.ProbNegative.ToString("P1")</div>
+                <div class="stat-sub">MDD>20%: @_mc.ProbMddOver20.ToString("P1")</div>
+            </div>
+        }
+        @if (_dsr != null)
+        {
+            <div class="stat-card">
+                <div class="stat-label">DSR SCORE</div>
+                <div class="stat-value @(_dsr.Passed ? "val-go" : "val-stop")">@_dsr.DsrScore.ToString("P1")</div>
+                <div class="stat-sub">raw sharpe: @_dsr.RawSharpe.ToString("F3")</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">DSR STATS</div>
+                <div class="stat-value">n=@_dsr.NTrials</div>
+                <div class="stat-sub">skew: @_dsr.Skewness.ToString("F2") | kurt: @_dsr.Kurtosis.ToString("F1")</div>
+            </div>
+        }
+    </div>
+
+    @* ═══ Walk-Forward Table ═══ *@
+    @if (_wfFolds.Count > 0)
+    {
+        <div class="section-title">WALK-FORWARD VALIDATION (@_wfFolds.Count FOLDS)</div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Train Period</th>
+                        <th>Test Period</th>
+                        <th>IS Sharpe</th>
+                        <th>OOS Sharpe</th>
+                        <th>OOS CAGR</th>
+                        <th>OOS MDD</th>
+                        <th>Calmar</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var f in _wfFolds)
+                    {
+                        <tr>
+                            <td>@f.FoldNum</td>
+                            <td>@f.TrainStart.ToString("yy/MM")~@f.TrainEnd.ToString("yy/MM")</td>
+                            <td>@f.TestStart.ToString("yy/MM")~@f.TestEnd.ToString("yy/MM")</td>
+                            <td>@f.IsSharpe.ToString("F2")</td>
+                            <td class="@(f.OosSharpe >= 1.1 ? "val-go" : f.OosSharpe > 0 ? "val-warn" : "val-stop")">
+                                @f.OosSharpe.ToString("F2")
+                            </td>
+                            <td>@f.OosCagr.ToString("P1")</td>
+                            <td class="@(f.OosMdd > -0.18 ? "" : "val-stop")">@f.OosMdd.ToString("P1")</td>
+                            <td>@f.OosCalmar.ToString("F2")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @* ═══ Stress Test Table ═══ *@
+    @if (_stress.Count > 0)
+    {
+        <div class="section-title">REGIME STRESS TEST</div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Period</th>
+                        <th>Return</th>
+                        <th>MDD</th>
+                        <th>Sharpe</th>
+                        <th>Accuracy</th>
+                        <th>FPR</th>
+                        <th>Kill Level</th>
+                        <th>Lag</th>
+                        <th>Result</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _stress)
+                    {
+                        var passed = s.RegimeAccuracy >= 0.5 && s.FalsePositiveRate < 0.25 && s.MaxDrawdown > -0.30;
+                        <tr>
+                            <td>@s.Scenario</td>
+                            <td>@s.PeriodStart.ToString("yy/MM")~@s.PeriodEnd.ToString("yy/MM")</td>
+                            <td class="@(s.TotalReturn >= 0 ? "val-go" : "val-stop")">@s.TotalReturn.ToString("P1")</td>
+                            <td>@s.MaxDrawdown.ToString("P1")</td>
+                            <td>@s.Sharpe.ToString("F2")</td>
+                            <td>@s.RegimeAccuracy.ToString("P0")</td>
+                            <td class="@(s.FalsePositiveRate < 0.15 ? "val-go" : "val-stop")">@s.FalsePositiveRate.ToString("P0")</td>
+                            <td class="kill-@s.KillLevelReached.ToLower()">@s.KillLevelReached</td>
+                            <td>@(s.DetectionLagDays)d</td>
+                            <td class="@(passed ? "val-go" : "val-stop")"><b>@(passed ? "PASS" : "FAIL")</b></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @* ═══ Portfolio Snapshots ═══ *@
+    <div class="section-title">PORTFOLIO SNAPSHOTS (RECENT)</div>
+    @if (_snapshots.Count > 0)
+    {
+        <div class="stat-grid cols-4">
+            <div class="stat-card">
+                <div class="stat-label">LATEST VALUE</div>
+                <div class="stat-value">$@_snapshots[0].TotalValue.ToString("N0")</div>
+                <div class="stat-sub">@_snapshots[0].Time.ToString("yyyy-MM-dd HH:mm")</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">DAILY RETURN</div>
+                <div class="stat-value @((_snapshots[0].DailyReturn ?? 0) >= 0 ? "val-go" : "val-stop")">
+                    @((_snapshots[0].DailyReturn ?? 0).ToString("P2"))
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">CUMULATIVE RETURN</div>
+                <div class="stat-value">@((_snapshots[0].CumulativeReturn ?? 0).ToString("P2"))</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">REGIME / KILL</div>
+                <div class="stat-value regime-@_snapshots[0].Regime">@_snapshots[0].Regime.ToUpper()</div>
+                <div class="stat-sub">Kill: @_snapshots[0].KillLevel</div>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Total Value</th>
+                        <th>Cash</th>
+                        <th>Daily Ret</th>
+                        <th>Cumul Ret</th>
+                        <th>Regime</th>
+                        <th>Kill Level</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _snapshots.Take(20))
+                    {
+                        <tr>
+                            <td>@s.Time.ToString("MM/dd HH:mm")</td>
+                            <td>$@s.TotalValue.ToString("N0")</td>
+                            <td>$@(s.CashValue?.ToString("N0") ?? "—")</td>
+                            <td class="@((s.DailyReturn ?? 0) >= 0 ? "val-go" : "val-stop")">
+                                @((s.DailyReturn ?? 0).ToString("P2"))
+                            </td>
+                            <td>@((s.CumulativeReturn ?? 0).ToString("P2"))</td>
+                            <td class="regime-@s.Regime">@s.Regime</td>
+                            <td class="kill-@s.KillLevel.ToLower()">@s.KillLevel</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="empty-state">No portfolio snapshots. Start Paper Trading or trigger POST /paper/snapshot.</div>
+    }
+
+    @* ═══ GO/STOP History ═══ *@
+    @if (_goStopHistory.Count > 0)
+    {
+        <div class="section-title">GO/STOP DECISION HISTORY</div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Decision</th>
+                        <th>Notes</th>
+                        <th>By</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var g in _goStopHistory)
+                    {
+                        <tr>
+                            <td>@g.DecidedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td class="@(g.Decision == "GO" ? "val-go" : g.Decision == "STOP" ? "val-stop" : "")">
+                                <b>@g.Decision</b>
+                            </td>
+                            <td>@(g.Notes ?? "—")</td>
+                            <td>@(g.DecidedBy ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @* ═══ Backtest Run History ═══ *@
+    @if (_runs.Count > 0)
+    {
+        <div class="section-title">BACKTEST RUN HISTORY</div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Started</th>
+                        <th>Finished</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _runs)
+                    {
+                        <tr>
+                            <td>@r.RunId</td>
+                            <td>@r.Name</td>
+                            <td>@r.RunType</td>
+                            <td class="@(r.Status == "completed" ? "val-go" : r.Status == "failed" ? "val-stop" : "")">
+                                @r.Status
+                            </td>
+                            <td>@r.StartedAt.ToString("MM/dd HH:mm")</td>
+                            <td>@(r.FinishedAt?.ToString("MM/dd HH:mm") ?? "running...")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <div class="refresh-note">
+        Auto-refresh every 30s | Last: @DateTime.Now.ToString("HH:mm:ss") |
+        <button class="btn-refresh" @onclick="LoadData">Refresh Now</button>
+    </div>
+</div>
+
+@code {
+    private SystemStatus? _sys;
+    private GoStopDecision? _goStop;
+    private List<GoStopDecision> _goStopHistory = new();
+    private MonteCarloResultRow? _mc;
+    private DsrResultRow? _dsr;
+    private List<WalkForwardFoldResult> _wfFolds = new();
+    private List<StressTestResultRow> _stress = new();
+    private List<DailySnapshot> _snapshots = new();
+    private List<BacktestRun> _runs = new();
+    private Dictionary<string, JsonElement>? _criteria;
+    private bool _engineOk;
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        _timer = new System.Threading.Timer(async _ =>
+        {
+            await LoadData();
+            await InvokeAsync(StateHasChanged);
+        }, null, 30000, 30000);
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            _sys = await Db.GetSystemStatusAsync();
+            _goStop = await Db.GetLatestGoStopAsync();
+            _goStopHistory = await Db.GetGoStopHistoryAsync(10);
+            _mc = await Db.GetLatestMonteCarloAsync();
+            _dsr = await Db.GetLatestDsrAsync();
+            _wfFolds = await Db.GetLatestWalkForwardAsync();
+            _stress = await Db.GetLatestStressTestAsync();
+            _snapshots = await Db.GetPerformanceAsync(30);
+            _runs = await Db.GetBacktestRunsAsync(15);
+
+            // Parse criteria JSON
+            if (_goStop?.Criteria != null)
+            {
+                try
+                {
+                    var doc = JsonDocument.Parse(_goStop.Criteria);
+                    _criteria = new Dictionary<string, JsonElement>();
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        _criteria[prop.Name] = prop.Value;
+                    }
+                }
+                catch { _criteria = null; }
+            }
+
+            // Check engine health
+            try
+            {
+                using var http = new HttpClient();
+                var resp = await http.GetAsync("http://localhost:8000/health");
+                _engineOk = resp.IsSuccessStatusCode;
+            }
+            catch { _engineOk = false; }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Status page data load failed");
+        }
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

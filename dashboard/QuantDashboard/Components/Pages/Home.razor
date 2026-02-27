@@ -1,4 +1,5 @@
 @page "/"
+@attribute [Authorize]
 @inject PostgresService Db
 @inject NavigationManager Nav
 @rendermode InteractiveServer
@@ -8,6 +9,9 @@
 
 <div class="page-header">
     <h3>Portfolio Overview</h3>
+    <HelpTooltip Title="Portfolio Overview"
+                 Description="포트폴리오 전체 현황 — 총 자산, 레짐, MDD, Kill Switch 상태 요약"
+                 Links="@(new Dictionary<string,string>{["Investopedia: Portfolio Management"]="https://www.investopedia.com/terms/p/portfoliomanagement.asp"})" />
     <span class="badge-version">V3.1 Ubuntu</span>
 </div>
 
@@ -15,7 +19,11 @@
 {
     <div class="stat-grid">
         <div class="stat-card">
-            <span class="stat-label">Total Value</span>
+            <span class="stat-label">Total Value
+                <HelpTooltip Title="Total Value"
+                             Description="현재 포트폴리오 총 가치 (현금 + 보유 종목 시가)"
+                             Links="@(new Dictionary<string,string>{["Investopedia: Portfolio Value"]="https://www.investopedia.com/terms/p/portfolio.asp"})" />
+            </span>
             <span class="stat-value">
                 @if (snapshot != null)
                 {
@@ -33,7 +41,11 @@
             <span class="stat-sub">Confidence: @(regime.Confidence.ToString("P0"))</span>
         </div>
         <div class="stat-card">
-            <span class="stat-label">MDD</span>
+            <span class="stat-label">MDD
+                <HelpTooltip Title="Maximum Drawdown"
+                             Description="고점 대비 최대 하락률. 리스크 측정의 핵심 지표"
+                             Links="@(new Dictionary<string,string>{["Investopedia: Maximum Drawdown"]="https://www.investopedia.com/terms/m/maximum-drawdown-mdd.asp"})" />
+            </span>
             <span class="stat-value @(snapshot?.MaxDrawdown < -0.10 ? "text-danger" : "")">
                 @(snapshot?.MaxDrawdown.ToString("P2") ?? "--")
             </span>
@@ -48,7 +60,11 @@
 
     <!-- Regime Probabilities -->
     <div class="section-card">
-        <h5>Regime Probabilities</h5>
+        <h5>Regime Probabilities
+            <HelpTooltip Title="Regime Probabilities"
+                         Description="HMM 모델이 예측한 현재 시장 레짐(Bull/Sideways/Bear) 확률"
+                         Links="@(new Dictionary<string,string>{["Wikipedia: Hidden Markov Model"]="https://en.wikipedia.org/wiki/Hidden_Markov_model"})" />
+        </h5>
         <div class="prob-bars">
             <div class="prob-row">
                 <span class="prob-label bull-text">Bull</span>
@@ -83,7 +99,10 @@ else
 
 <!-- Recent Trades -->
 <div class="section-card">
-    <h5>Recent Trades</h5>
+    <h5>Recent Trades
+        <HelpTooltip Title="Recent Trades"
+                     Description="최근 실행된 거래 내역 (페이퍼/실거래 포함)" />
+    </h5>
     @if (trades.Any())
     {
         <div class="table-responsive">
@@ -99,7 +118,7 @@ else
                     {
                         <tr>
                             <td>@t.ExecutedAt.ToString("MM-dd HH:mm")</td>
-                            <td class="fw-bold">@t.Symbol</td>
+                            <td><SymbolLink Symbol="@t.Symbol" Exchange="@(exchangeMap.GetValueOrDefault(t.Symbol))" /></td>
                             <td>@t.Strategy</td>
                             <td class="@(t.Side == "buy" ? "text-green" : "text-red")">
                                 @t.Side.ToUpper()
@@ -123,6 +142,7 @@ else
     private RegimeState? regime;
     private DailySnapshot? snapshot;
     private List<TradeRecord> trades = new();
+    private Dictionary<string, string> exchangeMap = new();
     private HubConnection? hubConnection;
 
     protected override async Task OnInitializedAsync()
@@ -131,6 +151,7 @@ else
         var perf = await Db.GetPerformanceAsync(1);
         snapshot = perf.FirstOrDefault();
         trades = await Db.GetRecentTradesAsync(20);
+        exchangeMap = await Db.GetSymbolExchangeMapAsync();
 
         // SignalR 실시간 연결
         hubConnection = new HubConnectionBuilder()

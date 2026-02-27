@@ -1,4 +1,5 @@
 @page "/regime"
+@attribute [Authorize]
 @inject PostgresService Db
 @inject NavigationManager Nav
 @rendermode InteractiveServer
@@ -8,13 +9,19 @@
 
 <div class="page-header">
     <h3>Market Regime Monitor</h3>
+    <HelpTooltip Title="Market Regime Monitor"
+                 Description="HMM 기반 레짐 감지 모니터. 시장을 Bull/Sideways/Bear로 분류"
+                 Links="@(new Dictionary<string,string>{["Wikipedia: Hidden Markov Model"]="https://en.wikipedia.org/wiki/Hidden_Markov_model"})" />
 </div>
 
 @if (regime != null)
 {
     <!-- Current Regime Card -->
     <div class="regime-hero regime-card-@regime.Regime">
-        <div class="regime-hero-label">Current Regime</div>
+        <div class="regime-hero-label">Current Regime
+            <HelpTooltip Title="Current Regime"
+                         Description="현재 감지된 레짐 상태와 신뢰도" />
+        </div>
         <div class="regime-hero-value">@regime.Regime.ToUpper()</div>
         <div class="regime-hero-conf">Confidence: @(regime.Confidence.ToString("P1"))</div>
         <div class="regime-hero-time">Detected: @regime.DetectedAt.ToString("yyyy-MM-dd HH:mm")</div>
@@ -53,7 +60,10 @@
 
     <!-- Allocation Matrix -->
     <div class="section-card">
-        <h5>Regime Allocation Matrix</h5>
+        <h5>Regime Allocation Matrix
+            <HelpTooltip Title="Regime Allocation Matrix"
+                         Description="각 레짐별 전략 배분 비율 — 레짐 전환 시 자동 리밸런싱" />
+        </h5>
         <div class="table-responsive">
             <table class="data-table">
                 <thead>
@@ -74,7 +84,10 @@
 
 <!-- Regime History -->
 <div class="section-card">
-    <h5>Regime History (90 days)</h5>
+    <h5>Regime History (90 days)
+        <HelpTooltip Title="Regime History"
+                     Description="과거 90일 레짐 변화 기록" />
+    </h5>
     @if (history.Any())
     {
         <div class="table-responsive">

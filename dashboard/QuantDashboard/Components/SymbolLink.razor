@@ -1,0 +1,26 @@
+<a class="symbol-link" href="https://www.google.com/finance/quote/@Symbol:@GoogleExchange" target="_blank">@Symbol</a>
+
+@code {
+    [Parameter] public string Symbol { get; set; } = "";
+    [Parameter] public string? Exchange { get; set; }
+
+    // yfinance exchange code → Google Finance suffix
+    private static readonly Dictionary<string, string> ExchangeMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["NYQ"] = "NYSE",
+        ["NMS"] = "NASDAQ",
+        ["NGM"] = "NASDAQ",
+        ["NCM"] = "NASDAQ",
+        ["ASE"] = "NYSEAMERICAN",
+        ["BTS"] = "NYSEARCA",
+        ["PCX"] = "NYSEARCA",
+        // passthrough for already-mapped values
+        ["NYSE"] = "NYSE",
+        ["NASDAQ"] = "NASDAQ",
+    };
+
+    private string GoogleExchange =>
+        Exchange != null && ExchangeMap.TryGetValue(Exchange, out var mapped)
+            ? mapped
+            : "NYSE";
+}

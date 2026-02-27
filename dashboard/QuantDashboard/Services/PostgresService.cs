@@ -472,22 +472,109 @@ public class PostgresService
         await conn.OpenAsync();
 
         await using var cmd = new NpgsqlCommand(@"
-            SELECT decision, wf_oos_sharpe, dsr_score, mc_prob_negative,
-                   stress_passed, decided_at
+            SELECT decision, criteria::text, notes, decided_by, time
             FROM go_stop_log
-            ORDER BY decided_at DESC LIMIT 1", conn);
+            ORDER BY time DESC LIMIT 1", conn);
 
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return null;
 
         return new GoStopDecision(
             Decision: r.GetString(0),
-            WfSharpe: r.GetDouble(1),
-            DsrScore: r.GetDouble(2),
-            McProbNeg: r.GetDouble(3),
-            StressPassed: r.GetBoolean(4),
-            DecidedAt: r.GetDateTime(5)
+            Criteria: r.IsDBNull(1) ? null : r.GetString(1),
+            Notes: r.IsDBNull(2) ? null : r.GetString(2),
+            DecidedBy: r.IsDBNull(3) ? null : r.GetString(3),
+            DecidedAt: r.GetDateTime(4)
         );
+    }
+
+    // ═══════════════════════════════════════
+    // 시스템 종합 상태
+    // ═══════════════════════════════════════
+
+    public async Task<SystemStatus> GetSystemStatusAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT
+                (SELECT COUNT(*) FROM backtest_runs)::int,
+                (SELECT COUNT(*) FROM portfolio_snapshots)::int,
+                (SELECT COUNT(*) FROM trades)::int,
+                (SELECT COUNT(*) FROM signal_log)::int,
+                (SELECT regime FROM regime_history ORDER BY detected_at DESC LIMIT 1),
+                (SELECT to_level FROM kill_switch_log ORDER BY event_time DESC LIMIT 1),
+                (SELECT decision FROM go_stop_log ORDER BY time DESC LIMIT 1),
+                (SELECT time FROM portfolio_snapshots ORDER BY time DESC LIMIT 1),
+                (SELECT detected_at FROM regime_history ORDER BY detected_at DESC LIMIT 1),
+                (SELECT time FROM go_stop_log ORDER BY time DESC LIMIT 1)
+        ", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync())
+            return new SystemStatus(true, true, 0, 0, 0, 0, null, null, null, null, null, null);
+
+        return new SystemStatus(
+            DbConnected: true,
+            EngineHealthy: true,
+            BacktestRunCount: r.GetInt32(0),
+            SnapshotCount: r.GetInt32(1),
+            TradeCount: r.GetInt32(2),
+            SignalCount: r.GetInt32(3),
+            LatestRegime: r.IsDBNull(4) ? null : r.GetString(4),
+            LatestKillLevel: r.IsDBNull(5) ? null : r.GetString(5),
+            LatestGoStop: r.IsDBNull(6) ? null : r.GetString(6),
+            LatestSnapshotTime: r.IsDBNull(7) ? null : r.GetDateTime(7),
+            LatestRegimeTime: r.IsDBNull(8) ? null : r.GetDateTime(8),
+            LatestGoStopTime: r.IsDBNull(9) ? null : r.GetDateTime(9)
+        );
+    }
+
+    public async Task<List<GoStopDecision>> GetGoStopHistoryAsync(int limit = 10)
+    {
+        var results = new List<GoStopDecision>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand($@"
+            SELECT decision, criteria::text, notes, decided_by, time
+            FROM go_stop_log
+            ORDER BY time DESC LIMIT {limit}", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new GoStopDecision(
+                r.GetString(0),
+                r.IsDBNull(1) ? null : r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.GetDateTime(4)
+            ));
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // 심볼 → 거래소 매핑
+    // ═══════════════════════════════════════
+
+    public async Task<Dictionary<string, string>> GetSymbolExchangeMapAsync()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(
+            "SELECT ticker, exchange FROM symbols WHERE is_active = true AND exchange IS NOT NULL", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            map[r.GetString(0)] = r.GetString(1);
+        }
+        return map;
     }
 
     // ═══════════════════════════════════════

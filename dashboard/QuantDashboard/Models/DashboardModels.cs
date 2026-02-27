@@ -146,9 +146,32 @@ public record DsrResultRow(
 
 public record GoStopDecision(
     string Decision,
-    double WfSharpe,
-    double DsrScore,
-    double McProbNeg,
-    bool StressPassed,
+    string? Criteria,
+    string? Notes,
+    string? DecidedBy,
     DateTime DecidedAt
+);
+
+// ─── 사용자 ───
+public record UserRecord(
+    int Id,
+    string Username,
+    string PasswordHash,
+    DateTime CreatedAt
+);
+
+// ─── 시스템 상태 ───
+public record SystemStatus(
+    bool DbConnected,
+    bool EngineHealthy,
+    int BacktestRunCount,
+    int SnapshotCount,
+    int TradeCount,
+    int SignalCount,
+    string? LatestRegime,
+    string? LatestKillLevel,
+    string? LatestGoStop,
+    DateTime? LatestSnapshotTime,
+    DateTime? LatestRegimeTime,
+    DateTime? LatestGoStopTime
 );

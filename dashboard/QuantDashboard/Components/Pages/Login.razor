@@ -1,0 +1,53 @@
+@page "/login"
+@layout QuantDashboard.Components.Layout.LoginLayout
+@using Microsoft.AspNetCore.Authorization
+@attribute [AllowAnonymous]
+
+<PageTitle>Quant V3.1 - Login</PageTitle>
+
+<div class="login-container">
+    <div class="login-card">
+        <div class="login-header">
+            <span class="brand-icon login-brand-icon">Q</span>
+            <h2>Quant V3.1</h2>
+            <p class="login-subtitle">Regime-Adaptive Trading System</p>
+        </div>
+
+        @if (_showError)
+        {
+            <div class="login-error">Invalid username or password</div>
+        }
+
+        <form method="post" action="/account/login">
+            <div class="login-field">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" autocomplete="username"
+                       required autofocus placeholder="Enter username" />
+            </div>
+            <div class="login-field">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" autocomplete="current-password"
+                       required placeholder="Enter password" />
+            </div>
+            <button type="submit" class="login-btn">Sign In</button>
+        </form>
+
+        <div class="login-footer">
+            <span>HMM Regime Detection</span>
+            <span>Kill Switch Defense</span>
+            <span>FinBERT Sentiment</span>
+        </div>
+    </div>
+</div>
+
+@code {
+    private bool _showError;
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    protected override void OnInitialized()
+    {
+        _showError = Error == "1";
+    }
+}

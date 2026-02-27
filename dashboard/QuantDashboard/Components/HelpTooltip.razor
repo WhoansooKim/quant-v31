@@ -1,0 +1,29 @@
+<span class="help-tooltip" @onclick="Toggle" @onclick:stopPropagation>
+    <span class="help-icon">?</span>
+    @if (_open)
+    {
+        <div class="help-bubble">
+            <div class="help-bubble-title">@Title</div>
+            <div class="help-bubble-desc">@Description</div>
+            @if (Links?.Any() == true)
+            {
+                <div class="help-bubble-links">
+                    @foreach (var link in Links)
+                    {
+                        <a href="@link.Value" target="_blank">@link.Key</a>
+                    }
+                </div>
+            }
+        </div>
+    }
+</span>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Description { get; set; } = "";
+    [Parameter] public Dictionary<string, string>? Links { get; set; }
+
+    private bool _open;
+
+    private void Toggle() => _open = !_open;
+}
