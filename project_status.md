@@ -828,7 +828,7 @@ curl http://localhost:8000/backtest/go-stop
 ## 18. Git History
 
 ```
-(pending) feat: dashboard UX — auth, HelpTooltip, SymbolLink, glass-morphism CSS, top-bar
+31ce0bf feat: dashboard UX — auth, HelpTooltip, SymbolLink, glass-morphism CSS, top-bar
 c12f3cc docs: update project_status.md with backtest results and Phase 5 status
 86e0642 feat: backtest execution, GO/STOP decision, Paper Trading setup
 77763d2 feat: Phase 1~4 complete — regime-adaptive quant trading system
