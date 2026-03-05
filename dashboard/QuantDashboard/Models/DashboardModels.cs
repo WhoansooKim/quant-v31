@@ -83,6 +83,13 @@ public record SentimentPoint(
     int HeadlineCount
 );
 
+public record SentimentScoreRow(
+    DateTime Time,
+    string Symbol,
+    double Score,
+    string? Headline
+);
+
 // ─── 백테스트 ───
 public record BacktestRun(
     int RunId,
@@ -152,6 +159,38 @@ public record GoStopDecision(
     DateTime DecidedAt
 );
 
+// ─── 파이프라인 로그 ───
+public record PipelineLogEntry(
+    DateTime Time,
+    string JobType,
+    string Status,
+    double? DurationSec,
+    string? Details,
+    string? ErrorMsg
+);
+
+// ─── 데이터 수집 현황 ───
+public record DataCollectionStatus(
+    DateTime? LatestDataDate,
+    int ActiveSymbols,
+    int RecentSymbols
+);
+
+// ─── 센티먼트 스캔 현황 ───
+public record SentimentScanStatus(
+    int Recent24hCount,
+    DateTime? LastScanTime
+);
+
+// ─── 포트폴리오 보유 포지션 ───
+public record PortfolioHolding(
+    string Symbol, string Strategy, decimal NetQty,
+    decimal AvgPrice, decimal TotalCost, DateTime LastTradeAt);
+
+// ─── 전략 배분 현황 ───
+public record StrategyAllocation(
+    string Strategy, double Allocation, string Regime, DateTime Time);
+
 // ─── 사용자 ───
 public record UserRecord(
     int Id,
@@ -159,6 +198,45 @@ public record UserRecord(
     string PasswordHash,
     DateTime CreatedAt
 );
+
+// ─── 레짐 전망 ───
+public record RegimeForecast(
+    [property: System.Text.Json.Serialization.JsonPropertyName("horizon_days")] int HorizonDays,
+    [property: System.Text.Json.Serialization.JsonPropertyName("bull")] double Bull,
+    [property: System.Text.Json.Serialization.JsonPropertyName("sideways")] double Sideways,
+    [property: System.Text.Json.Serialization.JsonPropertyName("bear")] double Bear,
+    [property: System.Text.Json.Serialization.JsonPropertyName("dominant")] string Dominant
+);
+
+// ─── 티커바 ───
+public record TickerBarItem(
+    string Symbol,
+    double Price,
+    double ChangePercent
+);
+
+// ─── 신호 분포 (5단계) ───
+public record SignalDistribution(string Category, int Count);
+
+// ─── Top/Bottom 종목 ───
+public record RankedStock(string Symbol, string Sector, double Score, double ExpectedReturn, string Direction);
+
+// ─── 섹터별 퀀트 스코어 ───
+public record SectorScore(string Sector, double AvgScore, int Count);
+
+// ─── 종목 상세 (16개 팩터) ───
+public record SymbolDetail(
+    string Symbol, string Sector, double? Price, double? Change1M, double? Change3M,
+    double? Change6M, double? Change12M, double? PE, double? PB, double? PS,
+    double? ROE, double? EpsGrowth, double? RevenueGrowth, double? DebtRatio,
+    double? FCF, double? RSI, double? MACD, double? SMA50, double? SMA200,
+    double? QuantScore, string? Signal);
+
+// ─── SPY 벤치마크 포인트 ───
+public record BenchmarkPoint(DateTime Time, double Value);
+
+// ─── 시장 감성 (전체 평균) ───
+public record MarketSentiment(double AvgScore, int PositiveCount, int NegativeCount, int NeutralCount, int Total);
 
 // ─── 시스템 상태 ───
 public record SystemStatus(

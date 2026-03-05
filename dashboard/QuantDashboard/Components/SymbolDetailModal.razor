@@ -1,0 +1,289 @@
+@inject SwingService Db
+
+@if (Visible && !string.IsNullOrEmpty(Symbol))
+{
+    <div class="sdm-overlay" @onclick="Close">
+        <div class="sdm-modal" @onclick:stopPropagation="true">
+            <button class="sdm-close" @onclick="Close">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+
+            @if (_d != null)
+            {
+                <!-- Header -->
+                <div class="sdm-header">
+                    <div class="sdm-title-row">
+                        <span class="sdm-symbol">@_d.Symbol</span>
+                        <span class="sdm-company">@(_d.CompanyName ?? _d.Symbol)</span>
+                    </div>
+                    <div class="sdm-meta-row">
+                        @if (_d.Sector != null)
+                        {
+                            <span class="sdm-tag">@_d.Sector</span>
+                        }
+                        @if (_d.Close.HasValue)
+                        {
+                            <span class="sdm-price">$@_d.Close.Value.ToString("N2")</span>
+                        }
+                        @if (_d.IndexMember != null)
+                        {
+                            <span class="sdm-tag sdm-tag-blue">@_d.IndexMember</span>
+                        }
+                    </div>
+                </div>
+
+                <!-- Factor Panels: 2x2 Grid -->
+                <div class="sdm-panels">
+                    <!-- Momentum -->
+                    <div class="sdm-panel sdm-panel-blue">
+                        <div class="sdm-panel-title">
+                            <span class="material-symbols-outlined">trending_up</span>
+                            Momentum
+                        </div>
+                        <div class="sdm-factor-grid">
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">1M Return</span>
+                                <span class="sdm-fi-value @RetCls(_d.Return1M)">@RetFmt(_d.Return1M)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">3M Return</span>
+                                <span class="sdm-fi-value @RetCls(_d.Return3M)">@RetFmt(_d.Return3M)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">20D Return</span>
+                                <span class="sdm-fi-value @RetCls(_d.Return20d)">@RetFmt(_d.Return20d)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Rank (20D)</span>
+                                <span class="sdm-fi-value">@(_d.Return20dRank.HasValue ? $"{_d.Return20dRank.Value:P1}" : "--")</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Technical -->
+                    <div class="sdm-panel sdm-panel-purple">
+                        <div class="sdm-panel-title">
+                            <span class="material-symbols-outlined">candlestick_chart</span>
+                            Technical
+                        </div>
+                        <div class="sdm-factor-grid">
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">SMA 50</span>
+                                <span class="sdm-fi-value">@(_d.Sma50.HasValue ? $"${_d.Sma50:N2}" : "--")</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">SMA 200</span>
+                                <span class="sdm-fi-value">@(_d.Sma200.HasValue ? $"${_d.Sma200:N2}" : "--")</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">vs SMA50</span>
+                                <span class="sdm-fi-value @RetCls(SmaGap(_d.Close, _d.Sma50))">@SmaGapFmt(_d.Close, _d.Sma50)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">vs SMA200</span>
+                                <span class="sdm-fi-value @RetCls(SmaGap(_d.Close, _d.Sma200))">@SmaGapFmt(_d.Close, _d.Sma200)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Volume -->
+                    <div class="sdm-panel sdm-panel-green">
+                        <div class="sdm-panel-title">
+                            <span class="material-symbols-outlined">bar_chart</span>
+                            Volume
+                        </div>
+                        <div class="sdm-factor-grid">
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Volume</span>
+                                <span class="sdm-fi-value">@VolFmt(_d.Volume)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">20D Avg</span>
+                                <span class="sdm-fi-value">@VolFmt(_d.VolumeAvg20d)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Ratio</span>
+                                <span class="sdm-fi-value">@(_d.VolumeRatio.HasValue ? $"{_d.VolumeRatio:F2}x" : "--")</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Surge</span>
+                                <span class="sdm-fi-value">@BoolIcon(_d.VolumeSurge)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Entry Conditions -->
+                    <div class="sdm-panel sdm-panel-yellow">
+                        <div class="sdm-panel-title">
+                            <span class="material-symbols-outlined">checklist</span>
+                            Entry Conditions
+                        </div>
+                        <div class="sdm-factor-grid">
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Top 40% Return</span>
+                                <span class="sdm-fi-value">@BoolIcon((_d.Return20dRank ?? 0) >= 0.6)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Trend Aligned</span>
+                                <span class="sdm-fi-value">@BoolIcon(_d.TrendAligned)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">5D Breakout</span>
+                                <span class="sdm-fi-value">@BoolIcon(_d.Breakout5d)</span>
+                            </div>
+                            <div class="sdm-fi">
+                                <span class="sdm-fi-label">Volume Surge</span>
+                                <span class="sdm-fi-value">@BoolIcon(_d.VolumeSurge)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Score Bar Section -->
+                <div class="sdm-score-section">
+                    <div class="sdm-score-title">Entry Score Analysis</div>
+                    <div class="sdm-score-row">
+                        <span class="sdm-score-label">Return (25%)</span>
+                        <div class="sdm-score-track"><div class="sdm-score-fill sdm-fill-blue" style="width:@(_d.ScoreReturn / 25 * 100)%"></div></div>
+                        <span class="sdm-score-num">@_d.ScoreReturn.ToString("F1")</span>
+                    </div>
+                    <div class="sdm-score-row">
+                        <span class="sdm-score-label">Trend (25%)</span>
+                        <div class="sdm-score-track"><div class="sdm-score-fill sdm-fill-purple" style="width:@(_d.ScoreTrend / 25 * 100)%"></div></div>
+                        <span class="sdm-score-num">@_d.ScoreTrend.ToString("F1")</span>
+                    </div>
+                    <div class="sdm-score-row">
+                        <span class="sdm-score-label">Breakout (25%)</span>
+                        <div class="sdm-score-track"><div class="sdm-score-fill sdm-fill-green" style="width:@(_d.ScoreBreakout / 25 * 100)%"></div></div>
+                        <span class="sdm-score-num">@_d.ScoreBreakout.ToString("F1")</span>
+                    </div>
+                    <div class="sdm-score-row">
+                        <span class="sdm-score-label">Volume (25%)</span>
+                        <div class="sdm-score-track"><div class="sdm-score-fill sdm-fill-yellow" style="width:@(_d.ScoreVolume / 25 * 100)%"></div></div>
+                        <span class="sdm-score-num">@_d.ScoreVolume.ToString("F1")</span>
+                    </div>
+                    <div class="sdm-score-divider"></div>
+                    <div class="sdm-score-row sdm-score-total">
+                        <span class="sdm-score-label">Total Score</span>
+                        <div class="sdm-score-track"><div class="sdm-score-fill sdm-fill-total" style="width:@(_d.ScoreTotal / 100 * 100)%"></div></div>
+                        <span class="sdm-score-num">@_d.ScoreTotal.ToString("F1")</span>
+                    </div>
+                </div>
+
+                <!-- Signal / Position Footer -->
+                @if (_d.LatestSignal != null || _d.OpenPosition != null)
+                {
+                    <div class="sdm-footer">
+                        @if (_d.LatestSignal is { } sig)
+                        {
+                            <div class="sdm-footer-row">
+                                <span class="sdm-signal-badge @(sig.SignalType == "ENTRY" ? "sdm-badge-entry" : "sdm-badge-exit")">
+                                    @sig.SignalType
+                                </span>
+                                @if (sig.StopLoss.HasValue)
+                                {
+                                    <span class="text-red">SL $@sig.StopLoss.Value.ToString("F2")</span>
+                                }
+                                @if (sig.TakeProfit.HasValue)
+                                {
+                                    <span class="text-green">TP $@sig.TakeProfit.Value.ToString("F2")</span>
+                                }
+                                <span class="sdm-signal-status">@sig.Status</span>
+                            </div>
+                        }
+                        @if (_d.OpenPosition is { } pos)
+                        {
+                            var pnlCls = (pos.UnrealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
+                            <div class="sdm-footer-row">
+                                <span class="sdm-pos-badge">OPEN @pos.Qty shares</span>
+                                <span>Entry $@pos.EntryPrice.ToString("F2")</span>
+                                @if (pos.UnrealizedPct.HasValue)
+                                {
+                                    <span class="@pnlCls">@($"{(pos.UnrealizedPct >= 0 ? "+" : "")}{pos.UnrealizedPct * 100:F2}%")</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+            else if (_loading)
+            {
+                <div class="sdm-loading">
+                    <span class="material-symbols-outlined sdm-spin">progress_activity</span>
+                    Loading...
+                </div>
+            }
+            else
+            {
+                <div class="sdm-loading">No data for @Symbol</div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public string Symbol { get; set; } = "";
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private SwingSymbolDetail? _d;
+    private bool _loading;
+    private string _lastSymbol = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && !string.IsNullOrEmpty(Symbol) && Symbol != _lastSymbol)
+        {
+            _lastSymbol = Symbol;
+            _loading = true;
+            _d = null;
+            try
+            {
+                _d = await Db.GetSymbolDetailAsync(Symbol);
+            }
+            catch { }
+            finally { _loading = false; }
+        }
+        else if (!Visible)
+        {
+            _lastSymbol = "";
+        }
+    }
+
+    private async Task Close() => await OnClose.InvokeAsync();
+
+    // ── Formatting Helpers ──
+
+    private static string RetCls(double? v) =>
+        v switch { > 0 => "text-green", < 0 => "text-red", _ => "" };
+
+    private static string RetFmt(double? v) =>
+        v.HasValue ? $"{(v >= 0 ? "+" : "")}{v.Value * 100:F2}%" : "--";
+
+    private static double? SmaGap(decimal? price, decimal? sma) =>
+        price.HasValue && sma.HasValue && sma > 0
+            ? (double)((price.Value - sma.Value) / sma.Value)
+            : null;
+
+    private static string SmaGapFmt(decimal? price, decimal? sma)
+    {
+        var gap = SmaGap(price, sma);
+        return gap.HasValue ? $"{(gap >= 0 ? "+" : "")}{gap.Value * 100:F1}%" : "--";
+    }
+
+    private static string VolFmt(long? v)
+    {
+        if (!v.HasValue) return "--";
+        return v.Value switch
+        {
+            >= 1_000_000 => $"{v.Value / 1_000_000.0:F1}M",
+            >= 1_000     => $"{v.Value / 1_000.0:F0}K",
+            _            => v.Value.ToString("N0")
+        };
+    }
+
+    private static MarkupString BoolIcon(bool v) =>
+        new(v
+            ? "<span class=\"material-symbols-outlined sdm-check\">check_circle</span>"
+            : "<span class=\"material-symbols-outlined sdm-cross\">cancel</span>");
+}

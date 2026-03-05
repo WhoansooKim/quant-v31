@@ -2,7 +2,7 @@
     <span class="help-icon">?</span>
     @if (_open)
     {
-        <div class="help-bubble">
+        <div class="help-bubble" @onclick:stopPropagation @onmouseleave="Close">
             <div class="help-bubble-title">@Title</div>
             <div class="help-bubble-desc">@Description</div>
             @if (Links?.Any() == true)
@@ -24,6 +24,6 @@
     [Parameter] public Dictionary<string, string>? Links { get; set; }
 
     private bool _open;
-
     private void Toggle() => _open = !_open;
+    private void Close() => _open = false;
 }

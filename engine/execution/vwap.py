@@ -6,6 +6,9 @@ import asyncio
 import logging
 from datetime import datetime
 
+import psycopg
+from engine.config.settings import get_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,7 +108,11 @@ class VWAPExecutor:
         }
 
     def _get_fill_price(self, symbol: str) -> float:
-        """체결가 조회 (현재가 대용)"""
+        """체결가 조회 (현재가 대용)
+
+        우선순위: Alpaca 포지션 → Alpaca 클라이언트 → DB daily_prices
+        """
+        # 1) Alpaca 포지션에서 current_price
         try:
             positions = self.executor.get_positions()
             for p in positions:
@@ -113,10 +120,25 @@ class VWAPExecutor:
                     return p.current_price
         except Exception:
             pass
-        # 포지션에 없으면 Alpaca에서 최신가 조회
+        # 2) Alpaca 클라이언트에서 최신가
         try:
-            api = self.executor._get_api()
-            bar = api.get_latest_bar(symbol)
-            return float(bar.c)
+            client = self.executor._get_client()
+            if not isinstance(client, type) and hasattr(client, 'get_latest_bar'):
+                bar = client.get_latest_bar(symbol)
+                return float(bar.c)
         except Exception:
-            return 0.0
+            pass
+        # 3) DB daily_prices fallback
+        try:
+            config = get_config()
+            with psycopg.connect(config.pg_dsn) as conn:
+                row = conn.execute(
+                    "SELECT close FROM daily_prices "
+                    "WHERE symbol = %s ORDER BY time DESC LIMIT 1",
+                    (symbol,)
+                ).fetchone()
+                if row and row[0]:
+                    return float(row[0])
+        except Exception as e:
+            logger.warning(f"DB 가격 조회 실패 {symbol}: {e}")
+        return 0.0

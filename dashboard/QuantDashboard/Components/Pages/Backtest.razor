@@ -1,290 +1,202 @@
 @page "/backtest"
 @attribute [Authorize]
-@inject PostgresService Db
-@rendermode InteractiveServer
+@inject SwingService Db
+@inject IHttpClientFactory HttpFactory
+@inject IJSRuntime JS
+@implements IDisposable
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 
-<PageTitle>Quant V3.1 - Backtest Verification</PageTitle>
+<PageTitle>Swing V4 - Backtest</PageTitle>
 
 <div class="page-header">
-    <h3>Phase 4 — Backtest Verification</h3>
-    <HelpTooltip Title="Backtest Verification"
-                 Description="시스템 검증 결과 — Walk-Forward, Monte Carlo, DSR, Stress Test" />
+    <h3>Backtest</h3>
 </div>
 
-<!-- GO/STOP Decision Banner -->
-<div class="section-card" style="border-left: 4px solid @(goStop?.Decision == "GO" ? "#22c55e" : goStop?.Decision == "STOP" ? "#ef4444" : "#6b7280")">
-    <div style="display:flex; align-items:center; gap:1rem;">
-        <span style="font-size:2rem; font-weight:700; color:@(goStop?.Decision == "GO" ? "#22c55e" : goStop?.Decision == "STOP" ? "#ef4444" : "#6b7280")">
-            @(goStop?.Decision ?? "PENDING")
-        </span>
-        <div>
-            <span class="stat-label">GO/STOP Decision</span>
-            @if (goStop != null)
-            {
-                <span class="stat-sub">@goStop.DecidedAt.ToString("yyyy-MM-dd HH:mm")</span>
-            }
-            else
-            {
-                <span class="stat-sub">Run all backtests to get decision</span>
-            }
+<!-- Input Form -->
+<div class="section-card">
+    <h4 class="section-title">Run Backtest</h4>
+    <div class="form-grid">
+        <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" @bind="startDate" class="form-input" />
+        </div>
+        <div class="form-group">
+            <label>End Date</label>
+            <input type="date" @bind="endDate" class="form-input" />
+        </div>
+        <div class="form-group">
+            <label>Initial Capital ($)</label>
+            <input type="number" @bind="initialCapital" class="form-input" step="100" />
+        </div>
+        <div class="form-group">
+            <label>Stop Loss (%)</label>
+            <input type="number" @bind="stopLoss" class="form-input" step="0.01" />
+        </div>
+        <div class="form-group">
+            <label>Take Profit (%)</label>
+            <input type="number" @bind="takeProfit" class="form-input" step="0.01" />
+        </div>
+        <div class="form-group">
+            <label>Max Positions</label>
+            <input type="number" @bind="maxPositions" class="form-input" min="1" max="10" />
         </div>
     </div>
-</div>
-
-<!-- Summary Cards Row -->
-<div class="stat-grid" style="grid-template-columns: repeat(5, 1fr);">
-    <!-- WF Sharpe -->
-    <div class="stat-card">
-        <span class="stat-label">WF OOS Sharpe</span>
-        <span class="stat-value">@(wfFolds.Any() ? wfFolds.Average(f => f.OosSharpe).ToString("F2") : "--")</span>
-        <span class="stat-sub">Target >= 1.10</span>
-    </div>
-    <!-- DSR -->
-    <div class="stat-card">
-        <span class="stat-label">DSR Score</span>
-        <span class="stat-value @(dsr?.Passed == true ? "text-green" : "")">
-            @(dsr != null ? dsr.DsrScore.ToString("P1") : "--")
-        </span>
-        <span class="stat-sub">Target >= 95%</span>
-    </div>
-    <!-- MC Prob Neg -->
-    <div class="stat-card">
-        <span class="stat-label">MC P(Loss)</span>
-        <span class="stat-value">@(mc != null ? mc.ProbNegative.ToString("P1") : "--")</span>
-        <span class="stat-sub">Lower is better</span>
-    </div>
-    <!-- MC Median CAGR -->
-    <div class="stat-card">
-        <span class="stat-label">MC Median CAGR</span>
-        <span class="stat-value">@(mc != null ? mc.MedianCagr.ToString("P1") : "--")</span>
-        <span class="stat-sub">p5=@(mc != null ? mc.P5Cagr.ToString("P1") : "--")</span>
-    </div>
-    <!-- Stress FPR -->
-    <div class="stat-card">
-        <span class="stat-label">Stress Passed</span>
-        <span class="stat-value">@stressPassedCount / @stressResults.Count</span>
-        <span class="stat-sub">FPR &lt; 15% target</span>
-    </div>
-</div>
-
-<!-- Walk-Forward Results -->
-<div class="section-card">
-    <h5>Walk-Forward Validation (36m train / 6m test)
-        <HelpTooltip Title="Walk-Forward Validation"
-                     Description="36개월 훈련 / 6개월 테스트 슬라이딩 윈도우 교차검증"
-                     Links="@(new Dictionary<string,string>{["Investopedia: Walk-Forward"]="https://www.investopedia.com/terms/w/walk-forward-testing.asp"})" />
-    </h5>
-    @if (wfFolds.Any())
+    <button class="btn-action" style="margin-top:0.5rem" @onclick="RunBacktest" disabled="@running">
+        @(running ? "Running..." : "Run Backtest")
+    </button>
+    @if (polling)
     {
-        <div class="table-responsive">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Fold</th><th>Train Period</th><th>Test Period</th>
-                        <th>IS Sharpe</th><th>OOS Sharpe</th><th>OOS CAGR</th>
-                        <th>OOS MDD</th><th>Calmar</th><th>Degradation</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var f in wfFolds)
-                    {
-                        var deg = f.IsSharpe != 0 ? f.OosSharpe / f.IsSharpe : 0;
+        <div class="poll-indicator" style="margin-top:0.5rem">
+            <span class="poll-dot"></span>
+            Running... checking every 3s (@pollCount)
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(statusMsg))
+    {
+        <div class="alert-info" style="margin-top:0.5rem">@statusMsg</div>
+    }
+</div>
+
+<!-- KPI Cards (shown when detail loaded) -->
+@if (detail != null)
+{
+    <div class="stat-grid cols-6" style="margin-top:1rem">
+        <div class="stat-card">
+            <span class="stat-label">Total Return</span>
+            <span class="stat-value @(detail.TotalReturn >= 0 ? "text-green" : "text-red")">
+                @($"{detail.TotalReturn * 100:F1}")%
+            </span>
+            <span class="stat-sub">$@($"{detail.InitialCapital:N0}") → $@($"{detail.FinalValue:N0}")</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">CAGR</span>
+            <span class="stat-value @(detail.Cagr >= 0 ? "text-green" : "text-red")">
+                @($"{detail.Cagr * 100:F1}")%
+            </span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Max Drawdown</span>
+            <span class="stat-value text-red">@($"{detail.MaxDrawdown * 100:F1}")%</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Sharpe</span>
+            <span class="stat-value">@($"{detail.SharpeRatio:F2}")</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Win Rate</span>
+            <span class="stat-value">@($"{detail.WinRate * 100:F0}")%</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Profit Factor</span>
+            <span class="stat-value">@($"{detail.ProfitFactor:F2}")</span>
+        </div>
+    </div>
+
+    <!-- Equity Curve Chart -->
+    <div class="section-card" style="margin-top:1rem">
+        <h4 class="section-title">Equity Curve
+            <span class="text-muted" style="font-size:0.7rem; font-weight:400; margin-left:auto">drag to zoom · right-drag to pan · double-click to reset</span>
+        </h4>
+        <div style="height:300px">
+            <canvas id="btEquityChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Drawdown Chart -->
+    <div class="section-card" style="margin-top:1rem">
+        <h4 class="section-title">Drawdown</h4>
+        <div style="height:200px">
+            <canvas id="btDDChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Trades Log Table -->
+    @if (detail.TradesLog.Any())
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <h4 class="section-title">Trade Log (@detail.TradesLog.Count trades)</h4>
+            <div class="table-responsive" style="max-height:400px; overflow-y:auto">
+                <table class="data-table">
+                    <thead>
                         <tr>
-                            <td>@f.FoldNum</td>
-                            <td>@f.TrainStart.ToString("yy-MM") ~ @f.TrainEnd.ToString("yy-MM")</td>
-                            <td>@f.TestStart.ToString("yy-MM") ~ @f.TestEnd.ToString("yy-MM")</td>
-                            <td>@f.IsSharpe.ToString("F2")</td>
-                            <td class="@(f.OosSharpe >= 1.1 ? "text-green" : "text-red")">
-                                @f.OosSharpe.ToString("F2")
-                            </td>
-                            <td class="@(f.OosCagr >= 0 ? "text-green" : "text-red")">
-                                @f.OosCagr.ToString("P1")
-                            </td>
-                            <td class="text-red">@f.OosMdd.ToString("P1")</td>
-                            <td>@f.OosCalmar.ToString("F2")</td>
-                            <td class="@(deg >= 0.5 ? "text-green" : "text-red")">
-                                @deg.ToString("P0")
-                            </td>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("date")'>Date@(tradeSort.Arrow("date"))</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("symbol")'>Symbol@(tradeSort.Arrow("symbol"))</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("side")'>Side@(tradeSort.Arrow("side"))</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("qty")'>Qty@(tradeSort.Arrow("qty"))</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("price")'>Price@(tradeSort.Arrow("price"))</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("pnl")'>P&L@(tradeSort.Arrow("pnl"))</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("pnlPct")'>P&L %@(tradeSort.Arrow("pnlPct"))</th>
+                            <th>Reason</th>
+                            <th class="sortable" @onclick='() => tradeSort.Toggle("holdDays")'>Hold Days@(tradeSort.Arrow("holdDays"))</th>
                         </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-    }
-    else
-    {
-        <p class="text-muted">No walk-forward results yet.</p>
-    }
-</div>
-
-<!-- DSR Details -->
-<div class="section-card">
-    <h5>Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014)
-        <HelpTooltip Title="Deflated Sharpe Ratio"
-                     Description="Bailey & Lopez de Prado (2014) — 다중 비교 보정된 Sharpe Ratio"
-                     Links="@(new Dictionary<string,string>{["Original Paper"]="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551"})" />
-    </h5>
-    @if (dsr != null)
-    {
-        <div class="stat-grid three-col">
-            <div class="stat-card">
-                <span class="stat-label">Raw Sharpe</span>
-                <span class="stat-value">@dsr.RawSharpe.ToString("F3")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">DSR Score</span>
-                <span class="stat-value @(dsr.Passed ? "text-green" : "text-red")">
-                    @dsr.DsrScore.ToString("P2")
-                </span>
-                <span class="stat-sub">@(dsr.Passed ? "PASS" : "FAIL") (threshold 95%)</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">p-value</span>
-                <span class="stat-value">@dsr.DsrPvalue.ToString("F4")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">N Trials</span>
-                <span class="stat-value">@dsr.NTrials</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Skewness</span>
-                <span class="stat-value">@dsr.Skewness.ToString("F3")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Kurtosis</span>
-                <span class="stat-value">@dsr.Kurtosis.ToString("F3")</span>
+                    </thead>
+                    <tbody>
+                        @foreach (var t in SortedTrades)
+                        {
+                            var pnlClass = t.Pnl >= 0 ? "text-green" : "text-red";
+                            <tr>
+                                <td>@t.Date</td>
+                                <td><SymbolLink Symbol="@t.Symbol" OnSymbolClick="OpenModal" /></td>
+                                <td>@t.Side</td>
+                                <td>@($"{t.Qty:F1}")</td>
+                                <td>$@($"{t.Price:F2}")</td>
+                                <td class="@pnlClass">@(t.Pnl >= 0 ? "+" : "")$@($"{t.Pnl:F2}")</td>
+                                <td class="@pnlClass">@(t.PnlPct >= 0 ? "+" : "")@($"{t.PnlPct * 100:F2}")%</td>
+                                <td>
+                                    <span class="exit-reason-chip @GetExitClass(t.Reason)">@(t.Reason ?? "--")</span>
+                                </td>
+                                <td>@t.HoldDays</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
             </div>
         </div>
     }
-    else
-    {
-        <p class="text-muted">No DSR results yet.</p>
-    }
-</div>
+}
 
-<!-- Monte Carlo -->
-<div class="section-card">
-    <h5>Monte Carlo Simulation (Block Bootstrap)
-        <HelpTooltip Title="Monte Carlo Simulation"
-                     Description="블록 부트스트랩 기반 수익률 분포 시뮬레이션"
-                     Links="@(new Dictionary<string,string>{["Investopedia: Monte Carlo"]="https://www.investopedia.com/terms/m/montecarlosimulation.asp"})" />
-    </h5>
-    @if (mc != null)
-    {
-        <div class="stat-grid three-col">
-            <div class="stat-card">
-                <span class="stat-label">CAGR (p5 / median / p95)</span>
-                <span class="stat-value">@mc.P5Cagr.ToString("P1") / @mc.MedianCagr.ToString("P1") / @mc.P95Cagr.ToString("P1")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Sharpe (p5 / median / p95)</span>
-                <span class="stat-value">@mc.P5Sharpe.ToString("F2") / @mc.MedianSharpe.ToString("F2") / @mc.P95Sharpe.ToString("F2")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Median MDD</span>
-                <span class="stat-value text-red">@mc.MedianMdd.ToString("P1")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">P(Negative Return)</span>
-                <span class="stat-value @(mc.ProbNegative < 0.3 ? "text-green" : "text-red")">
-                    @mc.ProbNegative.ToString("P1")
-                </span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">P(MDD &gt; 20%)</span>
-                <span class="stat-value">@mc.ProbMddOver20.ToString("P1")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Simulations</span>
-                <span class="stat-value">@mc.NSims.ToString("N0")</span>
-            </div>
-        </div>
-    }
-    else
-    {
-        <p class="text-muted">No Monte Carlo results yet.</p>
-    }
-</div>
-
-<!-- Regime Stress Test -->
-<div class="section-card">
-    <h5>Regime Transition Stress Test (4 Scenarios)
-        <HelpTooltip Title="Regime Transition Stress Test"
-                     Description="실제 레짐 전환 구간(08금융위기, 코로나 등)에서의 성능 검증" />
-    </h5>
-    @if (stressResults.Any())
-    {
-        <div class="table-responsive">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Scenario</th><th>Period</th><th>Return</th><th>MDD</th>
-                        <th>Sharpe</th><th>Kill Switch</th><th>Accuracy</th>
-                        <th>FPR</th><th>Lag (days)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var s in stressResults)
-                    {
-                        <tr>
-                            <td class="fw-bold">@s.Scenario</td>
-                            <td>@s.PeriodStart.ToString("yy-MM") ~ @s.PeriodEnd.ToString("yy-MM")</td>
-                            <td class="@(s.TotalReturn >= 0 ? "text-green" : "text-red")">
-                                @s.TotalReturn.ToString("P1")
-                            </td>
-                            <td class="text-red">@s.MaxDrawdown.ToString("P1")</td>
-                            <td>@s.Sharpe.ToString("F2")</td>
-                            <td>
-                                <span style="color:@(s.KillTriggered ? "#f59e0b" : "#6b7280")">
-                                    @s.KillLevelReached
-                                </span>
-                            </td>
-                            <td class="@(s.RegimeAccuracy >= 0.5 ? "text-green" : "text-red")">
-                                @s.RegimeAccuracy.ToString("P0")
-                            </td>
-                            <td class="@(s.FalsePositiveRate < 0.15 ? "text-green" : "text-red")">
-                                @s.FalsePositiveRate.ToString("P0")
-                            </td>
-                            <td>@s.DetectionLagDays</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-    }
-    else
-    {
-        <p class="text-muted">No stress test results yet.</p>
-    }
-</div>
-
-<!-- Recent Backtest Runs -->
-<div class="section-card">
-    <h5>Backtest Run History</h5>
+<!-- Past Runs -->
+<div class="section-card" style="margin-top:1rem">
+    <h4 class="section-title">Past Results</h4>
     @if (runs.Any())
     {
         <div class="table-responsive">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>ID</th><th>Name</th><th>Type</th><th>Status</th>
-                        <th>Started</th><th>Finished</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("runId")'>#@(runSort.Arrow("runId"))</th>
+                        <th>Period</th>
+                        <th>Capital</th>
+                        <th>Final</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("return")'>Return@(runSort.Arrow("return"))</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("cagr")'>CAGR@(runSort.Arrow("cagr"))</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("mdd")'>MDD@(runSort.Arrow("mdd"))</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("sharpe")'>Sharpe@(runSort.Arrow("sharpe"))</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("winRate")'>Win Rate@(runSort.Arrow("winRate"))</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("trades")'>Trades@(runSort.Arrow("trades"))</th>
+                        <th class="sortable" @onclick='() => runSort.Toggle("pf")'>PF@(runSort.Arrow("pf"))</th>
+                        <th>Date</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var r in runs)
+                    @foreach (var r in SortedRuns)
                     {
-                        <tr>
+                        var retClass = (r.TotalReturn ?? 0) >= 0 ? "text-green" : "text-red";
+                        var isActive = selectedRunId == r.RunId;
+                        <tr class="row-clickable @(isActive ? "row-active" : "")"
+                            @onclick="() => LoadRunDetail(r.RunId)">
                             <td>@r.RunId</td>
-                            <td>@r.Name</td>
-                            <td>@r.RunType</td>
-                            <td>
-                                <span style="color:@(r.Status == "completed" ? "#22c55e" : r.Status == "failed" ? "#ef4444" : "#f59e0b")">
-                                    @r.Status
-                                </span>
-                            </td>
-                            <td>@r.StartedAt.ToString("MM-dd HH:mm")</td>
-                            <td>@(r.FinishedAt?.ToString("MM-dd HH:mm") ?? "--")</td>
+                            <td>@r.StartDate.ToString("yy/MM") - @r.EndDate.ToString("yy/MM")</td>
+                            <td>$@($"{r.InitialCapital:N0}")</td>
+                            <td>$@($"{r.FinalValue:N0}")</td>
+                            <td class="@retClass">@($"{(r.TotalReturn ?? 0) * 100:F1}")%</td>
+                            <td class="@retClass">@($"{(r.Cagr ?? 0) * 100:F1}")%</td>
+                            <td class="text-red">@($"{(r.MaxDrawdown ?? 0) * 100:F1}")%</td>
+                            <td>@($"{r.SharpeRatio:F2}")</td>
+                            <td>@($"{(r.WinRate ?? 0) * 100:F0}")%</td>
+                            <td>@r.TotalTrades</td>
+                            <td>@($"{r.ProfitFactor:F2}")</td>
+                            <td>@r.CreatedAt.ToString("MM/dd HH:mm")</td>
                         </tr>
                     }
                 </tbody>
@@ -293,33 +205,514 @@
     }
     else
     {
-        <p class="text-muted">No backtest runs yet. Trigger backtests via API.</p>
+        <p class="text-muted" style="padding:1rem">No backtest results yet</p>
     }
 </div>
 
+<SymbolDetailModal Visible="@modalVisible" Symbol="@modalSymbol" OnClose="CloseModal" />
+
+<!-- Portfolio Snapshot Popup -->
+@if (popupVisible && popupDate != null)
+{
+    <div class="bt-popup-overlay" @onclick="ClosePopup">
+        <div class="bt-popup-modal" @onclick:stopPropagation="true">
+            <button class="bt-popup-close" @onclick="ClosePopup">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+            <div class="bt-popup-title">Portfolio — @popupDate</div>
+            <div class="bt-popup-stats">
+                <div>
+                    <div class="bt-popup-stat-label">Total Value</div>
+                    <div class="bt-popup-stat-value">$@($"{popupTotalValue:N0}")</div>
+                </div>
+                <div>
+                    <div class="bt-popup-stat-label">Cash</div>
+                    <div class="bt-popup-stat-value">$@($"{popupCash:N0}")</div>
+                </div>
+                <div>
+                    <div class="bt-popup-stat-label">Return</div>
+                    <div class="bt-popup-stat-value @(popupReturn >= 0 ? "text-green" : "text-red")">
+                        @(popupReturn >= 0 ? "+" : "")@($"{popupReturn * 100:F1}")%
+                    </div>
+                </div>
+                <div>
+                    <div class="bt-popup-stat-label">Drawdown</div>
+                    <div class="bt-popup-stat-value text-red">@($"{popupDrawdown * 100:F1}")%</div>
+                </div>
+            </div>
+            <div class="bt-popup-holdings-title">Holdings (@popupHoldings.Count)</div>
+            @if (popupHoldings.Any())
+            {
+                <table class="bt-popup-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Qty</th>
+                            <th>Entry</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var h in popupHoldings)
+                        {
+                            <tr>
+                                <td>@h.Symbol</td>
+                                <td>@($"{h.Qty:F1}")</td>
+                                <td>$@($"{h.EntryPrice:F2}")</td>
+                                <td>@h.EntryDate</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            else
+            {
+                <div class="bt-popup-empty">No open positions on this date</div>
+            }
+        </div>
+    </div>
+}
+
 @code {
-    private List<BacktestRun> runs = new();
-    private List<WalkForwardFoldResult> wfFolds = new();
-    private MonteCarloResultRow? mc;
-    private List<StressTestResultRow> stressResults = new();
-    private DsrResultRow? dsr;
-    private GoStopDecision? goStop;
-    private int stressPassedCount => stressResults.Count(s => s.RegimeAccuracy >= 0.5);
+    private List<SwingBacktestRun> runs = new();
+    private BacktestRunDetail? detail;
+    private long? selectedRunId;
+
+    // Sort state
+    private SortState tradeSort = new();
+    private SortState runSort = new();
+
+    private static readonly Dictionary<string, Func<BacktestTradeEntry, object>> TradeSelectors = new()
+    {
+        ["date"] = t => t.Date,
+        ["symbol"] = t => t.Symbol,
+        ["side"] = t => t.Side,
+        ["qty"] = t => t.Qty,
+        ["price"] = t => t.Price,
+        ["pnl"] = t => t.Pnl,
+        ["pnlPct"] = t => t.PnlPct,
+        ["holdDays"] = t => t.HoldDays,
+    };
+
+    private static readonly Dictionary<string, Func<SwingBacktestRun, object>> RunSelectors = new()
+    {
+        ["runId"] = r => r.RunId,
+        ["return"] = r => r.TotalReturn ?? 0,
+        ["cagr"] = r => r.Cagr ?? 0,
+        ["mdd"] = r => r.MaxDrawdown ?? 0,
+        ["sharpe"] = r => r.SharpeRatio ?? 0,
+        ["winRate"] = r => r.WinRate ?? 0,
+        ["trades"] = r => r.TotalTrades ?? 0,
+        ["pf"] = r => r.ProfitFactor ?? 0,
+    };
+
+    private IEnumerable<BacktestTradeEntry> SortedTrades =>
+        detail != null ? tradeSort.Apply(detail.TradesLog, TradeSelectors) : Enumerable.Empty<BacktestTradeEntry>();
+
+    private IEnumerable<SwingBacktestRun> SortedRuns =>
+        runSort.Apply(runs, RunSelectors);
+
+    // Modal state
+    private bool modalVisible;
+    private string modalSymbol = "";
+    private void OpenModal(string symbol) { modalSymbol = symbol; modalVisible = true; }
+    private void CloseModal() { modalVisible = false; }
+    private DateTime startDate = new(2020, 1, 1);
+    private DateTime endDate = new(2025, 12, 31);
+    private double initialCapital = 2200;
+    private double stopLoss = -0.05;
+    private double takeProfit = 0.10;
+    private int maxPositions = 4;
+    private bool running;
+    private bool polling;
+    private int pollCount;
+    private string? statusMsg;
+    private System.Threading.Timer? _pollTimer;
+    private int _prevRunCount;
+    private bool _chartRendered;
+
+    // DotNetObjectReference for JS callback
+    private DotNetObjectReference<Backtest>? _dotNetRef;
+
+    // Portfolio popup state
+    private bool popupVisible;
+    private string? popupDate;
+    private double popupTotalValue;
+    private double popupCash;
+    private double popupReturn;
+    private double popupDrawdown;
+    private List<BacktestPortfolioHolding> popupHoldings = new();
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             runs = await Db.GetBacktestRunsAsync(20);
-            wfFolds = await Db.GetLatestWalkForwardAsync();
-            mc = await Db.GetLatestMonteCarloAsync();
-            stressResults = await Db.GetLatestStressTestAsync();
-            dsr = await Db.GetLatestDsrAsync();
-            goStop = await Db.GetLatestGoStopAsync();
+            _prevRunCount = runs.Count;
+            // Auto-load latest run detail if exists
+            if (runs.Any())
+            {
+                await LoadRunDetail(runs.First().RunId);
+            }
+        }
+        catch { }
+    }
+
+    private async Task RunBacktest()
+    {
+        running = true;
+        polling = false;
+        statusMsg = null;
+        pollCount = 0;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var body = new
+            {
+                start_date = startDate.ToString("yyyy-MM-dd"),
+                end_date = endDate.ToString("yyyy-MM-dd"),
+                initial_capital = initialCapital,
+                stop_loss_pct = stopLoss,
+                take_profit_pct = takeProfit,
+                max_positions = maxPositions,
+                position_pct = 0.05,
+            };
+            var resp = await client.PostAsJsonAsync("/backtest/run", body);
+            if (resp.IsSuccessStatusCode)
+            {
+                polling = true;
+                StartPolling();
+            }
+            else
+            {
+                statusMsg = $"Failed: {resp.StatusCode}";
+            }
         }
         catch (Exception ex)
         {
-            // Tables may not exist yet or no data
+            statusMsg = $"Error: {ex.Message}";
         }
+        finally
+        {
+            running = false;
+        }
+    }
+
+    private void StartPolling()
+    {
+        _pollTimer?.Dispose();
+        _pollTimer = new System.Threading.Timer(async _ =>
+        {
+            try
+            {
+                pollCount++;
+                var newRuns = await Db.GetBacktestRunsAsync(20);
+                if (newRuns.Count > _prevRunCount)
+                {
+                    // New run appeared — backtest complete
+                    runs = newRuns;
+                    _prevRunCount = newRuns.Count;
+                    polling = false;
+                    _pollTimer?.Dispose();
+                    statusMsg = "Backtest completed!";
+                    // Load the newest run
+                    await LoadRunDetail(newRuns.First().RunId);
+                    await InvokeAsync(StateHasChanged);
+                    return;
+                }
+                if (pollCount > 120) // 6 min timeout
+                {
+                    polling = false;
+                    _pollTimer?.Dispose();
+                    statusMsg = "Timeout — check back later.";
+                }
+                await InvokeAsync(StateHasChanged);
+            }
+            catch { }
+        }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+    }
+
+    private async Task LoadRunDetail(long runId)
+    {
+        selectedRunId = runId;
+        _chartRendered = false;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetAsync($"/backtest/results/{runId}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                detail = ParseDetail(json);
+                RestoreFormFromDetail();
+            }
+        }
+        catch { }
+    }
+
+    private void RestoreFormFromDetail()
+    {
+        if (detail == null) return;
+
+        // Restore from detail fields
+        if (DateTime.TryParse(detail.StartDate, out var sd)) startDate = sd;
+        if (DateTime.TryParse(detail.EndDate, out var ed)) endDate = ed;
+        if (detail.InitialCapital > 0) initialCapital = detail.InitialCapital;
+
+        // Restore from params JSONB if available
+        if (detail.Params.TryGetValue("stop_loss_pct", out var slVal) && slVal != null)
+        {
+            if (double.TryParse(slVal.ToString(), out var sl)) stopLoss = sl;
+        }
+        if (detail.Params.TryGetValue("take_profit_pct", out var tpVal) && tpVal != null)
+        {
+            if (double.TryParse(tpVal.ToString(), out var tp)) takeProfit = tp;
+        }
+        if (detail.Params.TryGetValue("max_positions", out var mpVal) && mpVal != null)
+        {
+            if (int.TryParse(mpVal.ToString(), out var mp)) maxPositions = mp;
+        }
+    }
+
+    private static BacktestRunDetail ParseDetail(System.Text.Json.JsonElement json)
+    {
+        var d = new BacktestRunDetail
+        {
+            RunId = json.TryGetProperty("run_id", out var rid) ? rid.GetInt64() : 0,
+            StartDate = json.TryGetProperty("start_date", out var sd) ? sd.ToString() : null,
+            EndDate = json.TryGetProperty("end_date", out var ed) ? ed.ToString() : null,
+            InitialCapital = json.TryGetProperty("initial_capital", out var ic) ? ic.GetDouble() : 0,
+            FinalValue = json.TryGetProperty("final_value", out var fv) ? fv.GetDouble() : 0,
+            TotalReturn = json.TryGetProperty("total_return", out var tr) ? tr.GetDouble() : 0,
+            Cagr = json.TryGetProperty("cagr", out var cg) ? cg.GetDouble() : 0,
+            MaxDrawdown = json.TryGetProperty("max_drawdown", out var md) ? md.GetDouble() : 0,
+            SharpeRatio = json.TryGetProperty("sharpe_ratio", out var sr) ? sr.GetDouble() : 0,
+            WinRate = json.TryGetProperty("win_rate", out var wr) ? wr.GetDouble() : 0,
+            TotalTrades = json.TryGetProperty("total_trades", out var tt) ? tt.GetInt32() : 0,
+            ProfitFactor = json.TryGetProperty("profit_factor", out var pf) ? pf.GetDouble() : 0,
+            AvgHoldDays = json.TryGetProperty("avg_hold_days", out var ah) ? ah.GetDouble() : 0,
+        };
+
+        // Parse params JSONB
+        if (json.TryGetProperty("params", out var prms) && prms.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            foreach (var prop in prms.EnumerateObject())
+            {
+                d.Params[prop.Name] = prop.Value.ValueKind switch
+                {
+                    System.Text.Json.JsonValueKind.Number => prop.Value.GetDouble(),
+                    System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
+                    System.Text.Json.JsonValueKind.True => true,
+                    System.Text.Json.JsonValueKind.False => false,
+                    _ => prop.Value.ToString()
+                };
+            }
+        }
+
+        // equity_curve: array of objects
+        if (json.TryGetProperty("equity_curve", out var ec) && ec.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in ec.EnumerateArray())
+            {
+                d.EquityCurve.Add(new BacktestEquityPoint(
+                    Date: item.TryGetProperty("date", out var dt) ? dt.GetString() ?? "" : "",
+                    Value: item.TryGetProperty("value", out var v) ? v.GetDouble() : 0,
+                    Cash: item.TryGetProperty("cash", out var c) ? c.GetDouble() : 0,
+                    Drawdown: item.TryGetProperty("drawdown", out var dd) ? dd.GetDouble() : 0,
+                    Positions: item.TryGetProperty("positions", out var pos) ? pos.GetInt32() : 0
+                ));
+            }
+        }
+
+        // trades_log: array of objects
+        if (json.TryGetProperty("trades_log", out var tl) && tl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in tl.EnumerateArray())
+            {
+                d.TradesLog.Add(new BacktestTradeEntry(
+                    Date: item.TryGetProperty("date", out var dt) ? dt.GetString() ?? "" : "",
+                    Symbol: item.TryGetProperty("symbol", out var sym) ? sym.GetString() ?? "" : "",
+                    Side: item.TryGetProperty("side", out var side) ? side.GetString() ?? "" : "",
+                    Qty: item.TryGetProperty("qty", out var q) ? q.GetDouble() : 0,
+                    Price: item.TryGetProperty("price", out var pr) ? pr.GetDouble() : 0,
+                    Pnl: item.TryGetProperty("pnl", out var pnl) ? pnl.GetDouble() : 0,
+                    PnlPct: item.TryGetProperty("pnl_pct", out var pp) ? pp.GetDouble() : 0,
+                    Reason: item.TryGetProperty("reason", out var rs) ? rs.GetString() : null,
+                    HoldDays: item.TryGetProperty("hold_days", out var hd) ? hd.GetInt32() : 0
+                ));
+            }
+        }
+
+        return d;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (detail != null && !_chartRendered)
+        {
+            _chartRendered = true;
+            await RenderCharts();
+        }
+    }
+
+    private async Task RenderCharts()
+    {
+        if (detail == null || !detail.EquityCurve.Any()) return;
+        try
+        {
+            // Send full dates (yyyy-MM-dd) — charts.js adaptive ticks handle zoom-level formatting
+            var labels = detail.EquityCurve.Select(e => e.Date.Length >= 10 ? e.Date[..10] : e.Date).ToArray();
+            var fullDates = detail.EquityCurve.Select(e => e.Date).ToList();
+            var values = detail.EquityCurve.Select(e => e.Value).ToArray();
+            var count = labels.Length;
+
+            // Build date→index lookup
+            var dateToIndex = new Dictionary<string, int>();
+            for (int i = 0; i < fullDates.Count; i++)
+            {
+                var dateKey = fullDates[i].Length >= 10 ? fullDates[i][..10] : fullDates[i];
+                dateToIndex[dateKey] = i;
+            }
+
+            // Build sparse arrays for BUY/SELL (same length as labels, null where no trade)
+            var buyValues = new double?[count];
+            var sellValues = new double?[count];
+            var buyMeta = new object?[count];
+            var sellMeta = new object?[count];
+
+            foreach (var t in detail.TradesLog)
+            {
+                var tradeDate = t.Date.Length >= 10 ? t.Date[..10] : t.Date;
+                if (!dateToIndex.TryGetValue(tradeDate, out var idx)) continue;
+                var portfolioValue = values[idx];
+
+                var meta = new Dictionary<string, object?>
+                {
+                    ["date"] = tradeDate,
+                    ["symbol"] = t.Symbol,
+                    ["qty"] = t.Qty,
+                    ["price"] = t.Price,
+                    ["pnl"] = t.Pnl,
+                    ["pnlPct"] = t.PnlPct,
+                    ["reason"] = t.Reason,
+                    ["holdDays"] = t.HoldDays
+                };
+
+                if (t.Side == "BUY")
+                {
+                    buyValues[idx] = portfolioValue;
+                    buyMeta[idx] = meta;
+                }
+                else
+                {
+                    sellValues[idx] = portfolioValue;
+                    sellMeta[idx] = meta;
+                }
+            }
+
+            var eqDatasets = new object[]
+            {
+                new {
+                    label = "Portfolio Value ($)",
+                    data = values,
+                    borderColor = "#197fe6",
+                    backgroundColor = "rgba(25,127,230,0.08)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+
+            // Create DotNetObjectReference for JS callback
+            _dotNetRef?.Dispose();
+            _dotNetRef = DotNetObjectReference.Create(this);
+
+            var buyData = new { values = buyValues, meta = buyMeta };
+            var sellData = new { values = sellValues, meta = sellMeta };
+
+            await JS.InvokeVoidAsync("chartHelper.createLineWithTrades",
+                "btEquityChart", labels, eqDatasets, buyData, sellData, _dotNetRef);
+
+            // Drawdown (standard line chart, no markers)
+            var dd = detail.EquityCurve.Select(e => e.Drawdown * 100).ToArray();
+            var ddDatasets = new[]
+            {
+                new {
+                    label = "Drawdown (%)",
+                    data = dd,
+                    borderColor = "#ef4444",
+                    backgroundColor = "rgba(239,68,68,0.12)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+            await JS.InvokeVoidAsync("chartHelper.createLine", "btDDChart", labels, ddDatasets, (object?)null);
+        }
+        catch { }
+    }
+
+    [JSInvokable]
+    public async Task OnTradeMarkerClicked(string date)
+    {
+        if (detail == null) return;
+
+        var holdings = ReconstructPortfolio(date);
+        popupHoldings = holdings;
+        popupDate = date;
+
+        // Find equity point for this date
+        var eq = detail.EquityCurve.FirstOrDefault(e =>
+            e.Date.Length >= 10 ? e.Date[..10] == date : e.Date == date);
+        if (eq != null)
+        {
+            popupTotalValue = eq.Value;
+            popupCash = eq.Cash;
+            popupDrawdown = eq.Drawdown;
+            popupReturn = detail.InitialCapital > 0
+                ? (eq.Value - detail.InitialCapital) / detail.InitialCapital
+                : 0;
+        }
+
+        popupVisible = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private List<BacktestPortfolioHolding> ReconstructPortfolio(string targetDate)
+    {
+        if (detail == null) return new();
+
+        // Walk through trades_log up to targetDate, building open positions
+        var holdings = new Dictionary<string, BacktestPortfolioHolding>();
+
+        foreach (var t in detail.TradesLog)
+        {
+            var tradeDate = t.Date.Length >= 10 ? t.Date[..10] : t.Date;
+            if (string.Compare(tradeDate, targetDate, StringComparison.Ordinal) > 0) break;
+
+            if (t.Side == "BUY")
+            {
+                var key = t.Symbol;
+                holdings[key] = new BacktestPortfolioHolding(t.Symbol, t.Qty, t.Price, tradeDate);
+            }
+            else // SELL
+            {
+                holdings.Remove(t.Symbol);
+            }
+        }
+
+        return holdings.Values.OrderBy(h => h.Symbol).ToList();
+    }
+
+    private void ClosePopup() { popupVisible = false; }
+
+    private static string GetExitClass(string? reason) => reason switch
+    {
+        "stop_loss" => "exit-sl",
+        "take_profit" => "exit-tp",
+        "trend_break" => "exit-trend",
+        _ => ""
+    };
+
+    public void Dispose()
+    {
+        _pollTimer?.Dispose();
+        _dotNetRef?.Dispose();
     }
 }

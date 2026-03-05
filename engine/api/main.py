@@ -151,6 +151,7 @@ class PortfolioOrchestrator:
         logger.info(f"일일 파이프라인 시작: {start.isoformat()}")
 
         result = {"status": "ok", "steps": {}}
+        pg.insert_pipeline_log('daily_pipeline', 'started')
 
         try:
             # ══════════════════════════════
@@ -414,11 +415,17 @@ class PortfolioOrchestrator:
             result["pv"] = pv_after
             logger.info(f"파이프라인 완료 ({elapsed:.1f}s)")
 
+            pg.insert_pipeline_log(
+                'daily_pipeline', 'completed', elapsed, result["steps"])
+
         except Exception as e:
             logger.error(f"파이프라인 오류: {e}", exc_info=True)
             await self.telegram.send_error(str(e))
             result["status"] = "error"
             result["error"] = str(e)
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log(
+                'daily_pipeline', 'failed', elapsed, error_msg=str(e))
 
         return result
 
@@ -453,12 +460,12 @@ class PortfolioOrchestrator:
             import yfinance as yf
             with pg.get_conn() as conn:
                 symbols = conn.execute(
-                    "SELECT symbol FROM symbols WHERE is_active = true"
+                    "SELECT ticker FROM symbols WHERE is_active = true"
                 ).fetchall()
 
             count = 0
             for row in symbols:
-                sym = row["symbol"]
+                sym = row["ticker"]
                 try:
                     df = yf.download(sym, period="5d", progress=False)
                     if df.empty:
@@ -479,21 +486,129 @@ class PortfolioOrchestrator:
                 except Exception as e:
                     logger.warning(f"  {sym} 수집 실패: {e}")
             logger.info(f"데이터 수집 완료: {count}/{len(symbols)} 종목")
+
+            # 재무 데이터 수집 (daily_prices 수집 후)
+            await self.collect_fundamentals()
         except Exception as e:
             logger.error(f"데이터 수집 오류: {e}")
             raise
 
-    async def scan_sentiment(self):
-        """FinBERT 센티먼트 스캔 (장중 매시간)"""
-        logger.info("센티먼트 스캔 시작...")
+    async def collect_fundamentals(self):
+        """재무 데이터 수집 (yfinance .info → fundamentals 테이블)"""
+        logger.info("재무 데이터 수집 시작...")
         try:
+            import yfinance as yf
             with pg.get_conn() as conn:
                 symbols = conn.execute(
-                    "SELECT symbol FROM symbols WHERE is_active = true"
+                    "SELECT ticker FROM symbols WHERE is_active = true"
                 ).fetchall()
-            sym_list = [r["symbol"] for r in symbols[:20]]
-            scores = self.sentiment.get_sentiment_scores(sym_list)
-            logger.info(f"센티먼트 스캔 완료: {len(scores)} 종목")
+
+            count = 0
+            for row in symbols:
+                sym = row["ticker"]
+                try:
+                    info = yf.Ticker(sym).info
+                    if not info or info.get("regularMarketPrice") is None:
+                        continue
+
+                    market_cap = info.get("marketCap")
+                    roe = info.get("returnOnEquity")
+                    rev_growth = info.get("revenueGrowth")
+                    eps = info.get("trailingEps")
+                    dte = info.get("debtToEquity")
+                    if dte is not None:
+                        dte = dte / 100.0  # yfinance returns percentage
+                    fcf = info.get("freeCashflow")
+                    gm = info.get("grossMargins")
+                    beta = info.get("beta")
+
+                    extra = {}
+                    pe = info.get("trailingPE")
+                    if pe is not None:
+                        extra["pe"] = round(pe, 2)
+                    pb = info.get("priceToBook")
+                    if pb is not None:
+                        extra["pb"] = round(pb, 2)
+                    ps = info.get("priceToSalesTrailing12Months")
+                    if ps is not None:
+                        extra["ps"] = round(ps, 2)
+                    eg = info.get("earningsGrowth")
+                    if eg is not None:
+                        extra["eps_growth"] = round(eg * 100, 2)
+
+                    import json as _json
+                    with pg.get_conn() as conn:
+                        conn.execute("""
+                            INSERT INTO fundamentals
+                                (ticker, market_cap, roe, revenue_growth, eps,
+                                 debt_to_equity, free_cashflow, gross_margin,
+                                 beta, extra)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (ticker, report_date) DO UPDATE SET
+                                market_cap = EXCLUDED.market_cap,
+                                roe = EXCLUDED.roe,
+                                revenue_growth = EXCLUDED.revenue_growth,
+                                eps = EXCLUDED.eps,
+                                debt_to_equity = EXCLUDED.debt_to_equity,
+                                free_cashflow = EXCLUDED.free_cashflow,
+                                gross_margin = EXCLUDED.gross_margin,
+                                beta = EXCLUDED.beta,
+                                extra = EXCLUDED.extra
+                        """, (sym, market_cap, roe, rev_growth, eps,
+                              dte, fcf, gm, beta,
+                              _json.dumps(extra) if extra else '{}'))
+                        conn.commit()
+                    count += 1
+                except Exception as e:
+                    logger.warning(f"  {sym} 재무 수집 실패: {e}")
+            logger.info(f"재무 데이터 수집 완료: {count}/{len(symbols)} 종목")
+        except Exception as e:
+            logger.error(f"재무 데이터 수집 오류: {e}")
+
+    async def scan_sentiment(self):
+        """FinBERT 센티먼트 스캔 (장중 매시간)
+        1. symbols 테이블에서 활성 종목 조회
+        2. yfinance로 뉴스 헤드라인 수집
+        3. FinBERT 분석 → sentiment_scores 테이블에 기록
+        """
+        logger.info("센티먼트 스캔 시작...")
+        try:
+            import yfinance as yf
+
+            with pg.get_conn() as conn:
+                symbols = conn.execute(
+                    "SELECT ticker FROM symbols WHERE is_active = true"
+                ).fetchall()
+            sym_list = [r["ticker"] for r in symbols[:20]]
+
+            # yfinance에서 뉴스 헤드라인 수집
+            headlines = []
+            for sym in sym_list:
+                try:
+                    t = yf.Ticker(sym)
+                    news = t.news or []
+                    for n in news[:5]:
+                        c = n.get("content", {})
+                        title = c.get("title", "")
+                        if title:
+                            src = c.get("provider", {}).get("displayName", "yfinance")[:20]
+                            headlines.append({"symbol": sym, "text": title, "source": src})
+                except Exception:
+                    pass
+            logger.info(f"  뉴스 수집: {len(headlines)} 헤드라인 ({len(sym_list)} 종목)")
+
+            if not headlines:
+                logger.warning("센티먼트 스캔: 수집된 헤드라인 없음")
+                return
+
+            # FinBERT 분석
+            scored = self.sentiment.analyze_headlines(headlines)
+            logger.info(f"  FinBERT 분석: {len(scored)} 건")
+
+            # DB 기록
+            if scored:
+                self.sentiment.record_scores_to_db(scored)
+            logger.info(f"센티먼트 스캔 완료: {len(scored)} 건 저장")
         except Exception as e:
             logger.error(f"센티먼트 스캔 오류: {e}")
 
@@ -535,6 +650,86 @@ async def run_pipeline(bg: BackgroundTasks):
     return {"status": "pipeline_started", "time": datetime.now().isoformat()}
 
 
+@app.post("/collect")
+async def run_collect(bg: BackgroundTasks):
+    """데이터 수집 수동 실행 (비동기 백그라운드)"""
+
+    async def _run():
+        start = datetime.now()
+        pg.insert_pipeline_log('data_collection', 'started')
+        try:
+            await app.state.orchestrator.collect_daily_data()
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log('data_collection', 'completed', elapsed)
+        except Exception as e:
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log(
+                'data_collection', 'failed', elapsed, error_msg=str(e))
+
+    bg.add_task(_run)
+    return {"status": "collect_started", "time": datetime.now().isoformat()}
+
+
+@app.post("/sentiment-scan")
+async def run_sentiment_scan(bg: BackgroundTasks):
+    """센티먼트 스캔 수동 실행 (비동기 백그라운드)"""
+
+    async def _run():
+        start = datetime.now()
+        pg.insert_pipeline_log('sentiment_scan', 'started')
+        try:
+            await app.state.orchestrator.scan_sentiment()
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log('sentiment_scan', 'completed', elapsed)
+        except Exception as e:
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log(
+                'sentiment_scan', 'failed', elapsed, error_msg=str(e))
+
+    bg.add_task(_run)
+    return {"status": "sentiment_scan_started", "time": datetime.now().isoformat()}
+
+
+@app.post("/retrain-hmm")
+async def run_retrain_hmm(bg: BackgroundTasks):
+    """HMM 재학습 수동 실행 (비동기 백그라운드)"""
+
+    async def _run():
+        start = datetime.now()
+        pg.insert_pipeline_log('hmm_retrain', 'started')
+        try:
+            app.state.orchestrator.regime_detector.fit()
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log('hmm_retrain', 'completed', elapsed)
+        except Exception as e:
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log(
+                'hmm_retrain', 'failed', elapsed, error_msg=str(e))
+
+    bg.add_task(_run)
+    return {"status": "hmm_retrain_started", "time": datetime.now().isoformat()}
+
+
+@app.post("/refresh-views")
+async def run_refresh_views(bg: BackgroundTasks):
+    """물리뷰 갱신 수동 실행 (비동기 백그라운드)"""
+
+    async def _run():
+        start = datetime.now()
+        pg.insert_pipeline_log('mv_refresh', 'started')
+        try:
+            await app.state.orchestrator.refresh_materialized_views()
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log('mv_refresh', 'completed', elapsed)
+        except Exception as e:
+            elapsed = (datetime.now() - start).total_seconds()
+            pg.insert_pipeline_log(
+                'mv_refresh', 'failed', elapsed, error_msg=str(e))
+
+    bg.add_task(_run)
+    return {"status": "mv_refresh_started", "time": datetime.now().isoformat()}
+
+
 @app.get("/regime")
 async def get_regime():
     """현재 레짐 상태"""
@@ -543,6 +738,17 @@ async def get_regime():
         return cached
     db_regime = pg.get_latest_regime()
     return db_regime or {"regime": "unknown"}
+
+
+@app.get("/regime/forecast")
+async def regime_forecast():
+    """레짐 전이확률 기반 k-step 전망 (1주/1개월/3개월)"""
+    orch = app.state.orchestrator
+    try:
+        return orch.regime_detector.forecast_k_step([5, 21, 63])
+    except Exception as e:
+        logger.error(f"Regime forecast error: {e}")
+        return []
 
 
 @app.get("/kill-switch")

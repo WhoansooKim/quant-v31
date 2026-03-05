@@ -1,0 +1,282 @@
+@page "/signals"
+@attribute [Authorize]
+@inject SwingService Db
+@inject IHttpClientFactory HttpFactory
+@inject IJSRuntime JS
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Signals</PageTitle>
+
+<div class="page-header">
+    <h3>Trade Signals</h3>
+    <button class="btn-action" @onclick="ScanSignals" disabled="@scanning">
+        @(scanning ? "Scanning..." : "Scan Now")
+    </button>
+</div>
+
+<!-- Status Tabs -->
+<div class="tab-bar">
+    @foreach (var tab in new[] { "pending", "approved", "executed", "rejected", "expired", "all" })
+    {
+        <button class="tab-btn @(activeTab == tab ? "active" : "")"
+                @onclick="() => SetTab(tab)">
+            @tab.ToUpper()
+            @if (tab == "pending" && pendingCount > 0)
+            {
+                <span class="tab-badge">@pendingCount</span>
+            }
+        </button>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
+}
+
+<!-- Signals Table -->
+<div class="section-card" style="margin-top:0.5rem">
+    @if (signals.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" @onclick='() => sigSort.Toggle("time")'>Time@(sigSort.Arrow("time"))</th>
+                        <th class="sortable" @onclick='() => sigSort.Toggle("symbol")'>Symbol@(sigSort.Arrow("symbol"))</th>
+                        <th class="sortable" @onclick='() => sigSort.Toggle("type")'>Type@(sigSort.Arrow("type"))</th>
+                        <th class="sortable" @onclick='() => sigSort.Toggle("price")'>Price@(sigSort.Arrow("price"))</th>
+                        <th>SL</th>
+                        <th>TP</th>
+                        <th class="sortable" title="20d Return Rank" @onclick='() => sigSort.Toggle("rank")'>Rank@(sigSort.Arrow("rank"))</th>
+                        <th title="Trend Aligned">Trend</th>
+                        <th title="5d Breakout">Break</th>
+                        <th title="Volume Surge">Vol</th>
+                        <th class="sortable" @onclick='() => sigSort.Toggle("status")'>Status@(sigSort.Arrow("status"))</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in SortedSignals)
+                    {
+                        <tr class="@(s.Status == "pending" ? "row-highlight" : "")">
+                            <td>@s.Time.ToString("MM/dd HH:mm")</td>
+                            <td><SymbolLink Symbol="@s.Symbol" OnSymbolClick="OpenModal" /></td>
+                            <td>
+                                <span class="badge @(s.SignalType == "ENTRY" ? "badge-green" : "badge-red")">
+                                    @s.SignalType
+                                </span>
+                            </td>
+                            <td>@(s.EntryPrice != null ? $"${s.EntryPrice:F2}" : "--")</td>
+                            <td class="text-red">@(s.StopLoss != null ? $"${s.StopLoss:F2}" : "--")</td>
+                            <td class="text-green">@(s.TakeProfit != null ? $"${s.TakeProfit:F2}" : "--")</td>
+                            <td>@(s.Return20dRank != null ? $"{s.Return20dRank:P0}" : "--")</td>
+                            <td class="@(s.TrendAligned ? "text-green" : "text-red")">
+                                <span class="material-symbols-outlined" style="font-size:16px">@(s.TrendAligned ? "check_circle" : "cancel")</span>
+                            </td>
+                            <td class="@(s.Breakout5d ? "text-green" : "text-red")">
+                                <span class="material-symbols-outlined" style="font-size:16px">@(s.Breakout5d ? "check_circle" : "cancel")</span>
+                            </td>
+                            <td class="@(s.VolumeSurge ? "text-green" : "text-red")">
+                                <span class="material-symbols-outlined" style="font-size:16px">@(s.VolumeSurge ? "check_circle" : "cancel")</span>
+                            </td>
+                            <td>
+                                <span class="status-chip status-@s.Status">@s.Status</span>
+                            </td>
+                            <td>
+                                @if (s.Status == "pending")
+                                {
+                                    <button class="btn-sm btn-approve"
+                                            @onclick="() => ApproveSignal(s.SignalId)"
+                                            disabled="@processing">
+                                        Approve
+                                    </button>
+                                    <button class="btn-sm btn-reject"
+                                            @onclick="() => RejectSignal(s.SignalId)"
+                                            disabled="@processing">
+                                        Reject
+                                    </button>
+                                }
+                                else if (s.Status == "approved")
+                                {
+                                    <button class="btn-sm btn-revert"
+                                            @onclick="() => RevertToPending(s.SignalId)"
+                                            disabled="@processing">
+                                        Revert
+                                    </button>
+                                }
+                                else if (s.ExitReason != null)
+                                {
+                                    <span class="text-muted">@s.ExitReason</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted" style="padding:1rem">No signals found for this filter</p>
+    }
+</div>
+
+<SymbolDetailModal Visible="@modalVisible" Symbol="@modalSymbol" OnClose="CloseModal" />
+
+@code {
+    private List<SwingSignal> signals = new();
+    private string activeTab = "pending";
+    private int pendingCount;
+    private bool scanning;
+    private bool processing;
+    private string? statusMsg;
+
+    // Sort state
+    private SortState sigSort = new();
+
+    private static readonly Dictionary<string, Func<SwingSignal, object>> SigSelectors = new()
+    {
+        ["time"] = s => s.Time,
+        ["symbol"] = s => s.Symbol,
+        ["type"] = s => s.SignalType,
+        ["price"] = s => (double)(s.EntryPrice ?? 0),
+        ["rank"] = s => s.Return20dRank ?? 0,
+        ["status"] = s => s.Status,
+    };
+
+    private IEnumerable<SwingSignal> SortedSignals => sigSort.Apply(signals, SigSelectors);
+
+    // Modal state
+    private bool modalVisible;
+    private string modalSymbol = "";
+
+    private void OpenModal(string symbol) { modalSymbol = symbol; modalVisible = true; }
+    private void CloseModal() { modalVisible = false; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSignals();
+    }
+
+    private async Task LoadSignals()
+    {
+        try
+        {
+            var status = activeTab == "all" ? null : activeTab;
+            signals = await Db.GetSignalsAsync(status, 100);
+            pendingCount = await Db.GetPendingSignalCountAsync();
+        }
+        catch { }
+    }
+
+    private async Task SetTab(string tab)
+    {
+        activeTab = tab;
+        statusMsg = null;
+        await LoadSignals();
+    }
+
+    private async Task ScanSignals()
+    {
+        scanning = true;
+        statusMsg = null;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/scan", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Scan completed. {json}";
+                activeTab = "pending";
+                await LoadSignals();
+            }
+            else
+            {
+                statusMsg = $"Scan failed: {resp.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Scan error: {ex.Message}";
+        }
+        finally
+        {
+            scanning = false;
+        }
+    }
+
+    private async Task ApproveSignal(long signalId)
+    {
+        processing = true;
+        statusMsg = null;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync($"/signals/{signalId}/approve", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                statusMsg = $"Signal #{signalId} approved and executed!";
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Approve failed: {body}";
+            }
+            await LoadSignals();
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            processing = false;
+        }
+    }
+
+    private async Task RevertToPending(long signalId)
+    {
+        processing = true;
+        statusMsg = null;
+        try
+        {
+            var ok = await Db.RevertToPendingAsync(signalId);
+            statusMsg = ok
+                ? $"Signal #{signalId} reverted to pending"
+                : $"Signal #{signalId} could not be reverted (not in approved status)";
+            await LoadSignals();
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            processing = false;
+        }
+    }
+
+    private async Task RejectSignal(long signalId)
+    {
+        processing = true;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync($"/signals/{signalId}/reject", null);
+            statusMsg = resp.IsSuccessStatusCode
+                ? $"Signal #{signalId} rejected"
+                : $"Reject failed: {resp.StatusCode}";
+            await LoadSignals();
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            processing = false;
+        }
+    }
+}

@@ -126,6 +126,25 @@ public class PostgresService
         return results;
     }
 
+    public async Task InsertKillSwitchLogAsync(string fromLevel, string toLevel,
+        double currentMdd, double portfolioValue, double exposureLimit)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            INSERT INTO kill_switch_log
+                (from_level, to_level, current_mdd, portfolio_value, exposure_limit)
+            VALUES (@from, @to, @mdd, @pv, @exp)", conn);
+        cmd.Parameters.AddWithValue("from", fromLevel);
+        cmd.Parameters.AddWithValue("to", toLevel);
+        cmd.Parameters.AddWithValue("mdd", currentMdd);
+        cmd.Parameters.AddWithValue("pv", portfolioValue);
+        cmd.Parameters.AddWithValue("exp", exposureLimit);
+
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     // ═══════════════════════════════════════
     // 포트폴리오 스냅샷
     // ═══════════════════════════════════════
@@ -270,14 +289,23 @@ public class PostgresService
     // 센티먼트 히트맵 (TimescaleDB time_bucket)
     // ═══════════════════════════════════════
 
-    public async Task<List<SentimentPoint>> GetSentimentHeatmapAsync(int days = 30)
+    public async Task<List<SentimentPoint>> GetSentimentHeatmapAsync(int days = 30, string bucket = "1 day")
     {
         var results = new List<SentimentPoint>();
         await using var conn = new NpgsqlConnection(_connStr);
         await conn.OpenAsync();
 
+        // bucket은 고정 값 셋 중 하나이므로 SQL injection 방지
+        var safeBucket = bucket switch
+        {
+            "1 hour" => "1 hour",
+            "4 hours" => "4 hours",
+            "1 week" => "1 week",
+            _ => "1 day",
+        };
+
         await using var cmd = new NpgsqlCommand($@"
-            SELECT time_bucket('1 day', time) AS day,
+            SELECT time_bucket('{safeBucket}', time) AS day,
                    symbol,
                    AVG(hybrid_score) AS avg_score,
                    COUNT(*)::int AS headline_count
@@ -294,6 +322,32 @@ public class PostgresService
                 Symbol: r.GetString(1),
                 AvgScore: r.GetDouble(2),
                 HeadlineCount: r.GetInt32(3)
+            ));
+        }
+        return results;
+    }
+
+    public async Task<List<SentimentScoreRow>> GetSentimentScoresRawAsync(int days = 1, int limit = 200)
+    {
+        var results = new List<SentimentScoreRow>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand($@"
+            SELECT time, symbol, hybrid_score, source
+            FROM sentiment_scores
+            WHERE time > now() - interval '{days} days'
+            ORDER BY time DESC
+            LIMIT {limit}", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new SentimentScoreRow(
+                Time: r.GetDateTime(0),
+                Symbol: r.IsDBNull(1) ? "" : r.GetString(1),
+                Score: r.IsDBNull(2) ? 0 : r.GetDouble(2),
+                Headline: r.IsDBNull(3) ? null : r.GetString(3)
             ));
         }
         return results;
@@ -557,6 +611,99 @@ public class PostgresService
     }
 
     // ═══════════════════════════════════════
+    // Admin — 파이프라인 로그
+    // ═══════════════════════════════════════
+
+    public async Task<List<PipelineLogEntry>> GetPipelineLogsAsync(int limit = 50)
+    {
+        var results = new List<PipelineLogEntry>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand($@"
+            SELECT time, job_type, status, duration_sec,
+                   details::text, error_msg
+            FROM pipeline_log
+            ORDER BY time DESC
+            LIMIT {limit}", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new PipelineLogEntry(
+                Time: r.GetDateTime(0),
+                JobType: r.GetString(1),
+                Status: r.GetString(2),
+                DurationSec: r.IsDBNull(3) ? null : r.GetDouble(3),
+                Details: r.IsDBNull(4) ? null : r.GetString(4),
+                ErrorMsg: r.IsDBNull(5) ? null : r.GetString(5)
+            ));
+        }
+        return results;
+    }
+
+    public async Task<DataCollectionStatus> GetDataCollectionStatusAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT
+                (SELECT MAX(time) FROM daily_prices),
+                (SELECT COUNT(*)::int FROM symbols WHERE is_active = true),
+                (SELECT COUNT(DISTINCT symbol)::int FROM daily_prices
+                 WHERE time > now() - interval '3 days')
+        ", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync())
+            return new DataCollectionStatus(null, 0, 0);
+
+        return new DataCollectionStatus(
+            LatestDataDate: r.IsDBNull(0) ? null : r.GetDateTime(0),
+            ActiveSymbols: r.GetInt32(1),
+            RecentSymbols: r.GetInt32(2)
+        );
+    }
+
+    public async Task<SentimentScanStatus> GetSentimentScanStatusAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT
+                (SELECT COUNT(*)::int FROM sentiment_scores
+                 WHERE time > now() - interval '24 hours'),
+                (SELECT MAX(time) FROM sentiment_scores)
+        ", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync())
+            return new SentimentScanStatus(0, null);
+
+        return new SentimentScanStatus(
+            Recent24hCount: r.GetInt32(0),
+            LastScanTime: r.IsDBNull(1) ? null : r.GetDateTime(1)
+        );
+    }
+
+    public async Task<string?> GetLatestPipelineDetailAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT details::text FROM pipeline_log
+            WHERE job_type = 'daily_pipeline' AND status = 'completed'
+                  AND details IS NOT NULL
+            ORDER BY time DESC LIMIT 1", conn);
+
+        var result = await cmd.ExecuteScalarAsync();
+        return result as string;
+    }
+
+    // ═══════════════════════════════════════
     // 심볼 → 거래소 매핑
     // ═══════════════════════════════════════
 
@@ -575,6 +722,467 @@ public class PostgresService
             map[r.GetString(0)] = r.GetString(1);
         }
         return map;
+    }
+
+    // ═══════════════════════════════════════
+    // 티커바 (주요 지수)
+    // ═══════════════════════════════════════
+
+    public async Task<List<TickerBarItem>> GetTickerBarDataAsync()
+    {
+        var results = new List<TickerBarItem>();
+        var tickers = new[] { "SPY", "QQQ", "IWM", "DIA", "VIX" };
+
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        foreach (var sym in tickers)
+        {
+            try
+            {
+                await using var cmd = new NpgsqlCommand(@"
+                    SELECT close FROM daily_prices
+                    WHERE symbol = @sym
+                    ORDER BY time DESC LIMIT 2", conn);
+                cmd.Parameters.AddWithValue("sym", sym);
+
+                var rows = new List<double>();
+                await using var r = await cmd.ExecuteReaderAsync();
+                while (await r.ReadAsync())
+                    rows.Add(r.GetDouble(0));
+
+                if (rows.Count >= 2)
+                {
+                    var price = rows[0];
+                    var prev = rows[1];
+                    var chg = prev != 0 ? (price - prev) / prev * 100 : 0;
+                    results.Add(new TickerBarItem(sym, price, chg));
+                }
+                else if (rows.Count == 1)
+                {
+                    results.Add(new TickerBarItem(sym, rows[0], 0));
+                }
+            }
+            catch { }
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // 투자금 설정
+    // ═══════════════════════════════════════
+
+    public async Task<decimal> GetInitialCapitalAsync(int userId)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT initial_capital FROM user_settings WHERE user_id = @uid", conn);
+        cmd.Parameters.AddWithValue("uid", userId);
+
+        var result = await cmd.ExecuteScalarAsync();
+        return result is decimal d ? d : 100000m;
+    }
+
+    public async Task UpdateInitialCapitalAsync(int userId, decimal amount)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            INSERT INTO user_settings (user_id, initial_capital, updated_at)
+            VALUES (@uid, @amt, now())
+            ON CONFLICT (user_id) DO UPDATE
+            SET initial_capital = @amt, updated_at = now()", conn);
+        cmd.Parameters.AddWithValue("uid", userId);
+        cmd.Parameters.AddWithValue("amt", amount);
+
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    // ═══════════════════════════════════════
+    // 포트폴리오 보유 포지션
+    // ═══════════════════════════════════════
+
+    public async Task<List<PortfolioHolding>> GetPortfolioHoldingsAsync()
+    {
+        var results = new List<PortfolioHolding>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT symbol, strategy,
+                   SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) AS net_qty,
+                   CASE WHEN SUM(CASE WHEN side = 'buy' THEN qty ELSE 0 END) > 0
+                        THEN SUM(CASE WHEN side = 'buy' THEN qty * price ELSE 0 END)
+                             / SUM(CASE WHEN side = 'buy' THEN qty ELSE 0 END)
+                        ELSE 0 END AS avg_price,
+                   SUM(CASE WHEN side = 'buy' THEN qty * price ELSE -qty * price END) AS total_cost,
+                   MAX(executed_at) AS last_trade_at
+            FROM trades
+            GROUP BY symbol, strategy
+            HAVING SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) > 0
+            ORDER BY last_trade_at DESC", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new PortfolioHolding(
+                Symbol: r.GetString(0),
+                Strategy: r.GetString(1),
+                NetQty: r.GetDecimal(2),
+                AvgPrice: r.GetDecimal(3),
+                TotalCost: r.GetDecimal(4),
+                LastTradeAt: r.GetDateTime(5)
+            ));
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // 최신 전략 배분
+    // ═══════════════════════════════════════
+
+    public async Task<List<StrategyAllocation>> GetLatestStrategyAllocationsAsync()
+    {
+        var results = new List<StrategyAllocation>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT DISTINCT ON (strategy) strategy, allocation::float8, regime, time
+            FROM strategy_performance
+            ORDER BY strategy, time DESC", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new StrategyAllocation(
+                Strategy: r.GetString(0),
+                Allocation: r.GetDouble(1),
+                Regime: r.GetString(2),
+                Time: r.GetDateTime(3)
+            ));
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // 신호 분포 (5단계)
+    // ═══════════════════════════════════════
+
+    public async Task<List<SignalDistribution>> GetSignalDistributionAsync()
+    {
+        var results = new List<SignalDistribution>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT category, COUNT(*)::int AS cnt FROM (
+                SELECT CASE
+                    WHEN strength >  0.7 THEN 'Strong Buy'
+                    WHEN strength >  0.3 THEN 'Buy'
+                    WHEN strength > -0.3 THEN 'Hold'
+                    WHEN strength > -0.7 THEN 'Sell'
+                    ELSE 'Strong Sell'
+                END AS category
+                FROM signal_log
+                WHERE time > now() - interval '7 days'
+            ) sub
+            GROUP BY category
+            ORDER BY CASE category
+                WHEN 'Strong Buy'  THEN 1
+                WHEN 'Buy'         THEN 2
+                WHEN 'Hold'        THEN 3
+                WHEN 'Sell'        THEN 4
+                WHEN 'Strong Sell' THEN 5
+            END", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new SignalDistribution(r.GetString(0), r.GetInt32(1)));
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // Top / Bottom 종목
+    // ═══════════════════════════════════════
+
+    public async Task<(List<RankedStock> Top, List<RankedStock> Bottom)> GetTopBottomStocksAsync(int topN = 5)
+    {
+        var top = new List<RankedStock>();
+        var bottom = new List<RankedStock>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        // Top N by strength
+        await using var cmdTop = new NpgsqlCommand($@"
+            SELECT DISTINCT ON (s.symbol) s.symbol, COALESCE(sym.sector, 'N/A'),
+                   s.strength::float8, (s.strength * 100)::float8, s.direction
+            FROM signal_log s
+            LEFT JOIN symbols sym ON sym.ticker = s.symbol
+            WHERE s.time > now() - interval '7 days'
+            ORDER BY s.symbol, s.time DESC", conn);
+
+        var all = new List<RankedStock>();
+        await using var r = await cmdTop.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            all.Add(new RankedStock(
+                r.GetString(0), r.GetString(1), r.GetDouble(2),
+                r.GetDouble(3), r.GetString(4)));
+        }
+
+        top = all.OrderByDescending(x => x.Score).Take(topN).ToList();
+        bottom = all.OrderBy(x => x.Score).Take(topN).ToList();
+        return (top, bottom);
+    }
+
+    // ═══════════════════════════════════════
+    // 섹터별 스코어
+    // ═══════════════════════════════════════
+
+    public async Task<List<SectorScore>> GetSectorScoresAsync()
+    {
+        var results = new List<SectorScore>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            WITH latest AS (
+                SELECT DISTINCT ON (s.symbol) s.symbol, s.strength
+                FROM signal_log s
+                WHERE s.time > now() - interval '7 days'
+                ORDER BY s.symbol, s.time DESC
+            )
+            SELECT COALESCE(sym.sector, 'N/A') AS sector,
+                   AVG(l.strength)::float8 AS avg_score,
+                   COUNT(*)::int AS cnt
+            FROM latest l
+            LEFT JOIN symbols sym ON sym.ticker = l.symbol
+            GROUP BY sym.sector
+            ORDER BY avg_score DESC", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            results.Add(new SectorScore(r.GetString(0), r.GetDouble(1), r.GetInt32(2)));
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // 종목 상세 (16개 팩터)
+    // ═══════════════════════════════════════
+
+    public async Task<SymbolDetail?> GetSymbolDetailAsync(string symbol)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            WITH price_now AS (
+                SELECT close::float8 AS price FROM daily_prices
+                WHERE symbol = @sym ORDER BY time DESC LIMIT 1
+            ),
+            price_1m AS (
+                SELECT close::float8 AS close FROM daily_prices
+                WHERE symbol = @sym AND time <= now() - interval '1 month'
+                ORDER BY time DESC LIMIT 1
+            ),
+            price_3m AS (
+                SELECT close::float8 AS close FROM daily_prices
+                WHERE symbol = @sym AND time <= now() - interval '3 months'
+                ORDER BY time DESC LIMIT 1
+            ),
+            price_6m AS (
+                SELECT close::float8 AS close FROM daily_prices
+                WHERE symbol = @sym AND time <= now() - interval '6 months'
+                ORDER BY time DESC LIMIT 1
+            ),
+            price_12m AS (
+                SELECT close::float8 AS close FROM daily_prices
+                WHERE symbol = @sym AND time <= now() - interval '12 months'
+                ORDER BY time DESC LIMIT 1
+            ),
+            sig AS (
+                SELECT strength::float8, direction FROM signal_log
+                WHERE symbol = @sym ORDER BY time DESC LIMIT 1
+            ),
+            fund AS (
+                SELECT eps::float8, roe::float8, revenue_growth::float8,
+                       debt_to_equity::float8, free_cashflow::float8, extra
+                FROM fundamentals
+                WHERE ticker = @sym
+                ORDER BY report_date DESC LIMIT 1
+            ),
+            sma_data AS (
+                SELECT
+                    AVG(c) FILTER (WHERE rn <= 50)  AS sma50,
+                    AVG(c) FILTER (WHERE rn <= 200) AS sma200
+                FROM (
+                    SELECT close::float8 AS c,
+                           ROW_NUMBER() OVER (ORDER BY time DESC) AS rn
+                    FROM daily_prices WHERE symbol = @sym
+                ) sub WHERE rn <= 200
+            ),
+            rsi_data AS (
+                SELECT CASE
+                    WHEN SUM(CASE WHEN diff < 0 THEN ABS(diff) ELSE 0 END) > 0
+                    THEN 100.0 - 100.0 / (1.0 +
+                         SUM(CASE WHEN diff > 0 THEN diff ELSE 0 END) /
+                         SUM(CASE WHEN diff < 0 THEN ABS(diff) ELSE 0 END))
+                    ELSE 100.0 END AS rsi
+                FROM (
+                    SELECT (close - LAG(close) OVER (ORDER BY time))::float8 AS diff
+                    FROM daily_prices WHERE symbol = @sym
+                    ORDER BY time DESC LIMIT 15
+                ) sub WHERE diff IS NOT NULL
+            ),
+            macd_data AS (
+                SELECT
+                    (AVG(c) FILTER (WHERE rn <= 12) -
+                     AVG(c) FILTER (WHERE rn <= 26)) AS macd
+                FROM (
+                    SELECT close::float8 AS c,
+                           ROW_NUMBER() OVER (ORDER BY time DESC) AS rn
+                    FROM daily_prices WHERE symbol = @sym
+                ) sub WHERE rn <= 26
+            )
+            SELECT
+                @sym AS symbol,
+                COALESCE((SELECT sector FROM symbols WHERE ticker = @sym), 'N/A'),
+                (SELECT price FROM price_now),
+                CASE WHEN (SELECT close FROM price_1m) > 0
+                     THEN ((SELECT price FROM price_now) - (SELECT close FROM price_1m)) / (SELECT close FROM price_1m) * 100
+                END,
+                CASE WHEN (SELECT close FROM price_3m) > 0
+                     THEN ((SELECT price FROM price_now) - (SELECT close FROM price_3m)) / (SELECT close FROM price_3m) * 100
+                END,
+                CASE WHEN (SELECT close FROM price_6m) > 0
+                     THEN ((SELECT price FROM price_now) - (SELECT close FROM price_6m)) / (SELECT close FROM price_6m) * 100
+                END,
+                CASE WHEN (SELECT close FROM price_12m) > 0
+                     THEN ((SELECT price FROM price_now) - (SELECT close FROM price_12m)) / (SELECT close FROM price_12m) * 100
+                END,
+                /* PE = price / eps */
+                CASE WHEN (SELECT eps FROM fund) IS NOT NULL AND (SELECT eps FROM fund) != 0
+                     THEN (SELECT price FROM price_now) / (SELECT eps FROM fund) END,
+                /* PB (from extra JSONB) */
+                (SELECT (extra->>'pb')::float8 FROM fund),
+                /* PS (from extra JSONB) */
+                (SELECT (extra->>'ps')::float8 FROM fund),
+                /* ROE (percentage) */
+                (SELECT roe * 100 FROM fund),
+                /* EPS Growth (from extra JSONB, percentage) */
+                (SELECT (extra->>'eps_growth')::float8 FROM fund),
+                /* Revenue Growth (percentage) */
+                (SELECT revenue_growth * 100 FROM fund),
+                /* Debt Ratio */
+                (SELECT debt_to_equity FROM fund),
+                /* FCF */
+                (SELECT free_cashflow FROM fund),
+                /* RSI */
+                (SELECT rsi FROM rsi_data),
+                /* MACD */
+                (SELECT macd FROM macd_data),
+                /* SMA50 */
+                (SELECT sma50 FROM sma_data),
+                /* SMA200 */
+                (SELECT sma200 FROM sma_data),
+                (SELECT strength FROM sig),
+                (SELECT direction FROM sig)
+        ", conn);
+        cmd.Parameters.AddWithValue("sym", symbol);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return null;
+
+        return new SymbolDetail(
+            Symbol: r.GetString(0),
+            Sector: r.GetString(1),
+            Price: r.IsDBNull(2) ? null : r.GetDouble(2),
+            Change1M: r.IsDBNull(3) ? null : r.GetDouble(3),
+            Change3M: r.IsDBNull(4) ? null : r.GetDouble(4),
+            Change6M: r.IsDBNull(5) ? null : r.GetDouble(5),
+            Change12M: r.IsDBNull(6) ? null : r.GetDouble(6),
+            PE: r.IsDBNull(7) ? null : r.GetDouble(7),
+            PB: r.IsDBNull(8) ? null : r.GetDouble(8),
+            PS: r.IsDBNull(9) ? null : r.GetDouble(9),
+            ROE: r.IsDBNull(10) ? null : r.GetDouble(10),
+            EpsGrowth: r.IsDBNull(11) ? null : r.GetDouble(11),
+            RevenueGrowth: r.IsDBNull(12) ? null : r.GetDouble(12),
+            DebtRatio: r.IsDBNull(13) ? null : r.GetDouble(13),
+            FCF: r.IsDBNull(14) ? null : r.GetDouble(14),
+            RSI: r.IsDBNull(15) ? null : r.GetDouble(15),
+            MACD: r.IsDBNull(16) ? null : r.GetDouble(16),
+            SMA50: r.IsDBNull(17) ? null : r.GetDouble(17),
+            SMA200: r.IsDBNull(18) ? null : r.GetDouble(18),
+            QuantScore: r.IsDBNull(19) ? null : r.GetDouble(19),
+            Signal: r.IsDBNull(20) ? null : r.GetString(20)
+        );
+    }
+
+    // ═══════════════════════════════════════
+    // SPY 벤치마크
+    // ═══════════════════════════════════════
+
+    public async Task<List<BenchmarkPoint>> GetSpyBenchmarkAsync(int days)
+    {
+        var results = new List<BenchmarkPoint>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand($@"
+            SELECT time, close::float8 FROM daily_prices
+            WHERE symbol = 'SPY' AND time > now() - interval '{days} days'
+            ORDER BY time ASC", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        double? firstClose = null;
+        while (await r.ReadAsync())
+        {
+            var close = r.GetDouble(1);
+            firstClose ??= close;
+            var cumReturn = firstClose.Value > 0 ? (close / firstClose.Value - 1.0) * 100 : 0;
+            results.Add(new BenchmarkPoint(r.GetDateTime(0), cumReturn));
+        }
+        return results;
+    }
+
+    // ═══════════════════════════════════════
+    // 시장 감성 지수
+    // ═══════════════════════════════════════
+
+    public async Task<MarketSentiment> GetMarketSentimentAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT
+                COALESCE(AVG(hybrid_score)::float8, 0),
+                COALESCE(SUM(CASE WHEN hybrid_score >  0.3 THEN 1 ELSE 0 END)::int, 0),
+                COALESCE(SUM(CASE WHEN hybrid_score < -0.3 THEN 1 ELSE 0 END)::int, 0),
+                COALESCE(SUM(CASE WHEN hybrid_score BETWEEN -0.3 AND 0.3 THEN 1 ELSE 0 END)::int, 0),
+                COALESCE(COUNT(*)::int, 0)
+            FROM sentiment_scores
+            WHERE time > now() - interval '24 hours'", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync())
+            return new MarketSentiment(0, 0, 0, 0, 0);
+
+        return new MarketSentiment(
+            AvgScore: r.GetDouble(0),
+            PositiveCount: r.GetInt32(1),
+            NegativeCount: r.GetInt32(2),
+            NeutralCount: r.GetInt32(3),
+            Total: r.GetInt32(4)
+        );
     }
 
     // ═══════════════════════════════════════

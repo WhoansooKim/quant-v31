@@ -1,0 +1,221 @@
+@page "/risk"
+@attribute [Authorize]
+@inject PostgresService Db
+@inject NavigationManager Nav
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+
+<PageTitle>Quant V3.1 - 리스크</PageTitle>
+
+<PageLoadingOverlay Visible="@_pageLoading" />
+
+@if (!_pageLoading)
+{
+<div class="page-header">
+    <h3>Kill Switch 모니터</h3>
+    <HelpTooltip Title="Kill Switch Monitor"
+                 Description="4단계 방어 시스템 — MDD 기반 자동 리스크 차단"
+                 Links="@(new Dictionary<string,string>{["Investopedia: Risk Management"]="https://www.investopedia.com/terms/r/riskmanagement.asp"})" />
+</div>
+
+<!-- Kill Switch Status -->
+<div class="kill-hero kill-@currentLevel.ToLower()">
+    <div class="kill-hero-label">Kill Switch 단계</div>
+    <div class="kill-hero-value">@currentLevel</div>
+    <div class="kill-hero-mdd">MDD: @currentMdd.ToString("P2")</div>
+    <div class="kill-hero-exp">노출 한도: @currentExposure.ToString("P0")</div>
+    @if (killSwitch?.CooldownUntil.HasValue == true)
+    {
+        <div class="kill-cooldown">
+            쿨다운 종료: @killSwitch.CooldownUntil!.Value.ToString("yyyy-MM-dd")
+        </div>
+    }
+</div>
+
+<!-- Defense Levels Reference -->
+<div class="section-card">
+    <h5>방어 단계
+        <HelpTooltip Title="Defense Levels"
+                     Description="NORMAL→WARNING→DEFENSIVE→EMERGENCY 단계별 방어 정책" />
+    </h5>
+    <div class="defense-grid">
+
+        <div class="defense-card kill-normal @(currentLevel == "NORMAL" ? "defense-active" : "defense-dimmed")">
+            <div class="defense-level">NORMAL
+                @if (currentLevel == "NORMAL") { <span class="defense-badge defense-badge-active">CURRENT</span> }
+            </div>
+            <div class="defense-trigger">MDD > -10%</div>
+            <div class="defense-action">전체 운용, 모든 전략 활성</div>
+            <div class="defense-exposure">노출: 100%</div>
+        </div>
+        <div class="defense-card kill-warning @(currentLevel == "WARNING" ? "defense-active" : "defense-dimmed")">
+            <div class="defense-level">WARNING
+                @if (currentLevel == "WARNING") { <span class="defense-badge defense-badge-active">CURRENT</span> }
+            </div>
+            <div class="defense-trigger">MDD -10%</div>
+            <div class="defense-action">모멘텀+감성 중단, 노출 축소</div>
+            <div class="defense-exposure">노출: 70%</div>
+        </div>
+        <div class="defense-card kill-defensive @(currentLevel == "DEFENSIVE" ? "defense-active" : "defense-dimmed")">
+            <div class="defense-level">DEFENSIVE
+                @if (currentLevel == "DEFENSIVE") { <span class="defense-badge defense-badge-active">CURRENT</span> }
+            </div>
+            <div class="defense-trigger">MDD -15%</div>
+            <div class="defense-action">방어 전략만, 높은 현금 비중</div>
+            <div class="defense-exposure">노출: 40%</div>
+        </div>
+        <div class="defense-card kill-emergency @(currentLevel == "EMERGENCY" ? "defense-active" : "defense-dimmed")">
+            <div class="defense-level">EMERGENCY
+                @if (currentLevel == "EMERGENCY") { <span class="defense-badge defense-badge-active">CURRENT</span> }
+            </div>
+            <div class="defense-trigger">MDD -20%</div>
+            <div class="defense-action">전량 청산 + 30일 쿨다운</div>
+            <div class="defense-exposure">노출: 0%</div>
+        </div>
+    </div>
+</div>
+
+<!-- Kill Switch History -->
+<div class="section-card">
+    <h5>Kill Switch 이벤트 이력
+        <HelpTooltip Title="Kill Switch Event History"
+                     Description="Kill Switch 레벨 변경 이력" />
+    </h5>
+    @if (history.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("Time"))">시간<span class="sort-arrow">@_histSort.Arrow("Time")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("From"))">이전<span class="sort-arrow">@_histSort.Arrow("From")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("To"))">이후<span class="sort-arrow">@_histSort.Arrow("To")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("MDD"))">MDD<span class="sort-arrow">@_histSort.Arrow("MDD")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("PV"))">PV<span class="sort-arrow">@_histSort.Arrow("PV")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("Exposure"))">노출한도<span class="sort-arrow">@_histSort.Arrow("Exposure")</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var h in _histSort.Apply(history, _histCols))
+                    {
+                        <tr>
+                            <td>@h.EventTime.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td>@h.FromLevel</td>
+                            <td class="kill-@h.ToLevel.ToLower() fw-bold">@h.ToLevel</td>
+                            <td class="text-red">@(h.CurrentMdd.ToString("P2"))</td>
+                            <td>$@(h.PortfolioValue.ToString("N2"))</td>
+                            <td>@(h.ExposureLimit.ToString("P0"))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">Kill Switch 이벤트가 없습니다 (정상!)</p>
+    }
+</div>
+
+<!-- MDD Gauge with Pointer -->
+<div class="section-card">
+    <h5>MDD 게이지
+        <HelpTooltip Title="MDD Gauge"
+                     Description="현재 MDD를 시각적 게이지로 표시. 각 Kill Switch 임계값 표시" />
+    </h5>
+    @{
+        var mddPct = Math.Abs(currentMdd) * 100;
+        var mddColor = mddPct < 10 ? "bull-bg" : mddPct < 15 ? "sideways-bg" : "bear-bg";
+        var pointerPos = Math.Min(mddPct / 25 * 100, 100);
+    }
+    <div class="mdd-gauge">
+        <div class="mdd-track">
+            <div class="mdd-fill @mddColor" style="width:@(pointerPos)%"></div>
+            <div class="mdd-pointer" style="left:@(pointerPos)%"></div>
+            <div class="mdd-marker" style="left:40%"><span>-10%</span></div>
+            <div class="mdd-marker" style="left:60%"><span>-15%</span></div>
+            <div class="mdd-marker" style="left:80%"><span>-20%</span></div>
+        </div>
+        <div class="mdd-label">현재 MDD: @currentMdd.ToString("P2")</div>
+    </div>
+</div>
+} @* end !_pageLoading *@
+
+@code {
+    private bool _pageLoading = true;
+    private KillSwitchState? killSwitch;
+    private DailySnapshot? latestSnapshot;
+    private List<KillSwitchState> history = new();
+
+    private readonly SortState _histSort = new();
+    private static readonly Dictionary<string, Func<KillSwitchState, object>> _histCols = new()
+    {
+        ["Time"] = x => x.EventTime,
+        ["From"] = x => x.FromLevel,
+        ["To"] = x => x.ToLevel,
+        ["MDD"] = x => x.CurrentMdd,
+        ["PV"] = x => x.PortfolioValue,
+        ["Exposure"] = x => x.ExposureLimit,
+    };
+    private HubConnection? hubConnection;
+
+    // kill_switch_log가 없으면 portfolio_snapshots에서 폴백
+    private string currentLevel => killSwitch?.ToLevel?.ToUpper()
+        ?? latestSnapshot?.KillLevel?.ToUpper()
+        ?? "NORMAL";
+
+    private double currentMdd => killSwitch?.CurrentMdd
+        ?? latestSnapshot?.MaxDrawdown
+        ?? 0;
+
+    private double currentExposure => killSwitch?.ExposureLimit
+        ?? (currentLevel switch { "NORMAL" => 1.0, "WARNING" => 0.7, "DEFENSIVE" => 0.4, _ => 0 });
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var ksTask = Db.GetKillSwitchAsync();
+            var histTask = Db.GetKillSwitchHistoryAsync(90);
+            var perfTask = Db.GetPerformanceAsync(1);
+
+            await Task.WhenAll(ksTask, histTask, perfTask);
+
+            killSwitch = ksTask.Result;
+            history = histTask.Result;
+            latestSnapshot = perfTask.Result.FirstOrDefault();
+        }
+        catch { }
+        finally { _pageLoading = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                hubConnection = new HubConnectionBuilder()
+                    .WithUrl(Nav.ToAbsoluteUri("/hubs/realtime"))
+                    .WithAutomaticReconnect()
+                    .Build();
+
+                hubConnection.On<string, double>("KillSwitchChanged", async (level, mdd) =>
+                {
+                    killSwitch = await Db.GetKillSwitchAsync();
+                    history = await Db.GetKillSwitchHistoryAsync(90);
+                    await InvokeAsync(StateHasChanged);
+                });
+
+                await hubConnection.StartAsync();
+            }
+            catch { }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+            await hubConnection.DisposeAsync();
+    }
+}

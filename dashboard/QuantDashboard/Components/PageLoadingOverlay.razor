@@ -1,0 +1,13 @@
+@if (Visible)
+{
+    <div class="page-loading-backdrop">
+        <div class="page-loading-popup">
+            <div class="loading-spinner"></div>
+            <div class="page-loading-text">로딩 중입니다...</div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+}

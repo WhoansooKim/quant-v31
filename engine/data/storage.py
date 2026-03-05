@@ -172,6 +172,22 @@ class PostgresStore:
                 ORDER BY time DESC LIMIT 1
             """).fetchone()
 
+    # ─── 파이프라인 로그 ───
+
+    def insert_pipeline_log(self, job_type: str, status: str,
+                             duration_sec: float | None = None,
+                             details: dict | None = None,
+                             error_msg: str | None = None) -> None:
+        """파이프라인/스케줄러 실행 로그 기록"""
+        with self.get_conn() as conn:
+            conn.execute("""
+                INSERT INTO pipeline_log
+                    (job_type, status, duration_sec, details, error_msg)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (job_type, status, duration_sec,
+                  json.dumps(details) if details else None, error_msg))
+            conn.commit()
+
     # ─── 전략 성과 ───
 
     def insert_strategy_perf(self, strategy: str, daily_return: float,

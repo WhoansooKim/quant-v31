@@ -1,0 +1,795 @@
+@page "/pipeline"
+@attribute [Authorize]
+@inject SwingService Db
+@inject IHttpClientFactory HttpFactory
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Pipeline</PageTitle>
+
+<!-- Page Header -->
+<div class="page-header">
+    <div>
+        <h3>Pipeline</h3>
+        <span class="page-subtitle">Universe → Collect → Scan → Approve → Monitor</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+        <span class="badge @(engineOnline ? "badge-green" : "badge-red")">
+            <span class="material-symbols-outlined" style="font-size:14px">
+                @(engineOnline ? "cloud_done" : "cloud_off")
+            </span>
+            Engine @(engineOnline ? "Online" : "Offline")
+        </span>
+        <button class="btn-action" @onclick="RunFullPipeline" disabled="@(runningStep != null)">
+            @if (runningStep == "full")
+            {
+                <span class="material-symbols-outlined step-spin" style="font-size:18px">progress_activity</span>
+            }
+            else
+            {
+                <span class="material-symbols-outlined" style="font-size:18px">play_arrow</span>
+            }
+            Run Full Pipeline
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin-bottom:1rem">@statusMsg</div>
+}
+
+<!-- 5 Step Cards -->
+<div class="pipeline-flow">
+    <!-- Step 1: Universe -->
+    <div class="pipeline-step">
+        <div class="step-icon step-icon-blue step-icon-clickable" @onclick="() => OpenPopup(1)" title="Universe 종목 목록 보기">
+            <span class="material-symbols-outlined">public</span>
+        </div>
+        <div class="step-label">1. Universe</div>
+        <div class="step-metric">@universeCount</div>
+        <div class="step-metric-sub">종목</div>
+        <button class="btn-sm" style="width:100%"
+                @onclick="RefreshUniverse"
+                disabled="@(runningStep != null)">
+            @if (runningStep == "universe")
+            {
+                <span class="material-symbols-outlined step-spin" style="font-size:14px">progress_activity</span>
+            }
+            Refresh Universe
+        </button>
+    </div>
+
+    <div class="pipeline-arrow">
+        <span class="material-symbols-outlined">arrow_forward</span>
+    </div>
+
+    <!-- Step 2: Collect -->
+    <div class="pipeline-step">
+        <div class="step-icon step-icon-cyan step-icon-clickable" @onclick="() => OpenPopup(2)" title="Indicator 지표 보기">
+            <span class="material-symbols-outlined">cloud_download</span>
+        </div>
+        <div class="step-label">2. Collect</div>
+        <div class="step-metric">@indicatorCount</div>
+        <div class="step-metric-sub">
+            @if (indicatorLastUpdated != null)
+            {
+                <span>@indicatorLastUpdated.Value.ToString("MM/dd HH:mm")</span>
+            }
+            else
+            {
+                <span>지표 종목</span>
+            }
+        </div>
+        <button class="btn-sm" style="width:100%"
+                @onclick="CollectData"
+                disabled="@(runningStep != null)">
+            @if (runningStep == "collect")
+            {
+                <span class="material-symbols-outlined step-spin" style="font-size:14px">progress_activity</span>
+            }
+            Collect Data
+        </button>
+    </div>
+
+    <div class="pipeline-arrow">
+        <span class="material-symbols-outlined">arrow_forward</span>
+    </div>
+
+    <!-- Step 3: Scan -->
+    <div class="pipeline-step">
+        <div class="step-icon step-icon-purple step-icon-clickable" @onclick="() => OpenPopup(3)" title="Pending 시그널 보기">
+            <span class="material-symbols-outlined">radar</span>
+        </div>
+        <div class="step-label">3. Scan</div>
+        <div class="step-metric">@signalCounts.GetValueOrDefault("pending", 0)</div>
+        <div class="step-metric-sub">pending 시그널</div>
+        <button class="btn-sm" style="width:100%"
+                @onclick="ScanSignals"
+                disabled="@(runningStep != null)">
+            @if (runningStep == "scan")
+            {
+                <span class="material-symbols-outlined step-spin" style="font-size:14px">progress_activity</span>
+            }
+            Scan Signals
+        </button>
+    </div>
+
+    <div class="pipeline-arrow">
+        <span class="material-symbols-outlined">arrow_forward</span>
+    </div>
+
+    <!-- Step 4: Approve -->
+    <div class="pipeline-step">
+        <div class="step-icon step-icon-green step-icon-clickable" @onclick="() => OpenPopup(4)" title="Approved/Executed 시그널 보기">
+            <span class="material-symbols-outlined">task_alt</span>
+        </div>
+        <div class="step-label">4. Approve</div>
+        <div class="step-metric">@(signalCounts.GetValueOrDefault("approved", 0) + signalCounts.GetValueOrDefault("executed", 0))</div>
+        <div class="step-metric-sub">approved / executed</div>
+        <a class="btn-sm" style="width:100%;text-align:center;display:block;text-decoration:none" href="signals">
+            <span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle">open_in_new</span>
+            Signals 페이지
+        </a>
+    </div>
+
+    <div class="pipeline-arrow">
+        <span class="material-symbols-outlined">arrow_forward</span>
+    </div>
+
+    <!-- Step 5: Monitor -->
+    <div class="pipeline-step">
+        <div class="step-icon step-icon-gold step-icon-clickable" @onclick="() => OpenPopup(5)" title="Open 포지션 보기">
+            <span class="material-symbols-outlined">monitoring</span>
+        </div>
+        <div class="step-label">5. Monitor</div>
+        <div class="step-metric">@openPositions</div>
+        <div class="step-metric-sub">
+            open positions
+            @if (cumulativeReturn != null)
+            {
+                <span class="@(cumulativeReturn >= 0 ? "text-green" : "text-red")" style="margin-left:4px">
+                    @(cumulativeReturn >= 0 ? "+" : "")@(cumulativeReturn?.ToString("P1"))
+                </span>
+            }
+        </div>
+        <a class="btn-sm" style="width:100%;text-align:center;display:block;text-decoration:none" href="performance">
+            <span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle">open_in_new</span>
+            Performance
+        </a>
+    </div>
+</div>
+
+<!-- ═══ Step Detail Popup ═══ -->
+@if (popupStep > 0)
+{
+    <div class="pp-overlay" @onclick="ClosePopup">
+        <div class="pp-modal" @onclick:stopPropagation="true">
+            <button class="pp-close" @onclick="ClosePopup">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+
+            @switch (popupStep)
+            {
+                case 1: // Universe
+                    <h4 class="pp-title">
+                        <span class="material-symbols-outlined" style="color:#3b82f6">public</span>
+                        Universe — @popupUniverse.Count 종목
+                    </h4>
+                    <div class="table-responsive" style="max-height:60vh;overflow-y:auto">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Symbol</th>
+                                    <th>Company</th>
+                                    <th>Sector</th>
+                                    <th class="text-right">Market Cap</th>
+                                    <th>Index</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @{ int uIdx = 0; }
+                                @foreach (var u in popupUniverse)
+                                {
+                                    uIdx++;
+                                    <tr>
+                                        <td class="text-muted">@uIdx</td>
+                                        <td><SymbolLink Symbol="@u.Symbol" OnSymbolClick="OpenSymbolModal" /></td>
+                                        <td>@(u.CompanyName ?? "--")</td>
+                                        <td class="text-muted">@(u.Sector ?? "--")</td>
+                                        <td class="text-right font-mono">@FormatMarketCap(u.MarketCap)</td>
+                                        <td>
+                                            @if (u.IndexMember != null)
+                                            {
+                                                <span class="status-chip status-approved" style="font-size:0.62rem">@u.IndexMember</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    break;
+
+                case 2: // Indicators
+                    <h4 class="pp-title">
+                        <span class="material-symbols-outlined" style="color:#22d3ee">cloud_download</span>
+                        Indicators — @popupIndicators.Count 종목
+                    </h4>
+                    <div class="table-responsive" style="max-height:60vh;overflow-y:auto">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Symbol</th>
+                                    <th class="text-right">Close</th>
+                                    <th class="text-right">SMA50</th>
+                                    <th class="text-right">SMA200</th>
+                                    <th class="text-right">Rank</th>
+                                    <th class="text-right">Vol Ratio</th>
+                                    <th>Trend</th>
+                                    <th>Surge</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @{ int iIdx = 0; }
+                                @foreach (var ind in popupIndicators)
+                                {
+                                    iIdx++;
+                                    <tr>
+                                        <td class="text-muted">@iIdx</td>
+                                        <td><SymbolLink Symbol="@ind.Symbol" OnSymbolClick="OpenSymbolModal" /></td>
+                                        <td class="text-right font-mono">@(ind.Close?.ToString("F2") ?? "--")</td>
+                                        <td class="text-right font-mono">@(ind.Sma50?.ToString("F2") ?? "--")</td>
+                                        <td class="text-right font-mono">@(ind.Sma200?.ToString("F2") ?? "--")</td>
+                                        <td class="text-right font-mono @(ind.Return20dRank >= 0.6 ? "text-green" : "")">
+                                            @(ind.Return20dRank?.ToString("P0") ?? "--")
+                                        </td>
+                                        <td class="text-right font-mono @(ind.VolumeRatio >= 1.2 ? "text-green" : "")">
+                                            @(ind.VolumeRatio?.ToString("F2") ?? "--")
+                                        </td>
+                                        <td>
+                                            <span class="material-symbols-outlined @(ind.TrendAligned ? "sdm-check" : "sdm-cross")" style="font-size:16px">
+                                                @(ind.TrendAligned ? "check_circle" : "cancel")
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <span class="material-symbols-outlined @(ind.VolumeSurge ? "sdm-check" : "sdm-cross")" style="font-size:16px">
+                                                @(ind.VolumeSurge ? "check_circle" : "cancel")
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    break;
+
+                case 3: // Pending Signals
+                    <h4 class="pp-title">
+                        <span class="material-symbols-outlined" style="color:#a78bfa">radar</span>
+                        Pending Signals — @popupSignals.Count 건
+                    </h4>
+                    @if (popupSignals.Any())
+                    {
+                        <div class="table-responsive" style="max-height:60vh;overflow-y:auto">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Symbol</th>
+                                        <th>Type</th>
+                                        <th class="text-right">Entry</th>
+                                        <th class="text-right">SL</th>
+                                        <th class="text-right">TP</th>
+                                        <th class="text-right">Rank</th>
+                                        <th>Trend</th>
+                                        <th>Surge</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var s in popupSignals)
+                                    {
+                                        <tr>
+                                            <td class="font-mono">@s.Time.ToString("MM/dd HH:mm")</td>
+                                            <td><SymbolLink Symbol="@s.Symbol" OnSymbolClick="OpenSymbolModal" /></td>
+                                            <td>
+                                                <span class="status-chip @(s.SignalType == "ENTRY" ? "status-executed" : "status-rejected")">
+                                                    @s.SignalType
+                                                </span>
+                                            </td>
+                                            <td class="text-right font-mono">@(s.EntryPrice?.ToString("F2") ?? "--")</td>
+                                            <td class="text-right font-mono text-red">@(s.StopLoss?.ToString("F2") ?? "--")</td>
+                                            <td class="text-right font-mono text-green">@(s.TakeProfit?.ToString("F2") ?? "--")</td>
+                                            <td class="text-right font-mono">@(s.Return20dRank?.ToString("P0") ?? "--")</td>
+                                            <td>
+                                                <span class="material-symbols-outlined @(s.TrendAligned ? "sdm-check" : "sdm-cross")" style="font-size:16px">
+                                                    @(s.TrendAligned ? "check_circle" : "cancel")
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <span class="material-symbols-outlined @(s.VolumeSurge ? "sdm-check" : "sdm-cross")" style="font-size:16px">
+                                                    @(s.VolumeSurge ? "check_circle" : "cancel")
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-muted" style="padding:2rem;text-align:center">Pending 시그널이 없습니다</div>
+                    }
+                    break;
+
+                case 4: // Approved/Executed
+                    <h4 class="pp-title">
+                        <span class="material-symbols-outlined" style="color:#4ade80">task_alt</span>
+                        Approved / Executed Signals — @popupSignals.Count 건
+                    </h4>
+                    @if (popupSignals.Any())
+                    {
+                        <div class="table-responsive" style="max-height:60vh;overflow-y:auto">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Symbol</th>
+                                        <th>Type</th>
+                                        <th>Status</th>
+                                        <th class="text-right">Entry</th>
+                                        <th>Approved</th>
+                                        <th>Executed</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var s in popupSignals)
+                                    {
+                                        <tr>
+                                            <td class="font-mono">@s.Time.ToString("MM/dd HH:mm")</td>
+                                            <td><SymbolLink Symbol="@s.Symbol" OnSymbolClick="OpenSymbolModal" /></td>
+                                            <td>
+                                                <span class="status-chip @(s.SignalType == "ENTRY" ? "status-executed" : "status-rejected")">
+                                                    @s.SignalType
+                                                </span>
+                                            </td>
+                                            <td><span class="status-chip status-@s.Status">@s.Status</span></td>
+                                            <td class="text-right font-mono">@(s.EntryPrice?.ToString("F2") ?? "--")</td>
+                                            <td class="font-mono">@(s.ApprovedAt?.ToString("MM/dd HH:mm") ?? "--")</td>
+                                            <td class="font-mono">@(s.ExecutedAt?.ToString("MM/dd HH:mm") ?? "--")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-muted" style="padding:2rem;text-align:center">Approved/Executed 시그널이 없습니다</div>
+                    }
+                    break;
+
+                case 5: // Open Positions
+                    <h4 class="pp-title">
+                        <span class="material-symbols-outlined" style="color:#fbbf24">monitoring</span>
+                        Open Positions — @popupPositions.Count 건
+                    </h4>
+                    @if (popupPositions.Any())
+                    {
+                        <div class="table-responsive" style="max-height:60vh;overflow-y:auto">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Side</th>
+                                        <th class="text-right">Qty</th>
+                                        <th class="text-right">Entry</th>
+                                        <th class="text-right">Current</th>
+                                        <th class="text-right">P&L</th>
+                                        <th class="text-right">P&L %</th>
+                                        <th>Days</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var p in popupPositions)
+                                    {
+                                        <tr>
+                                            <td><SymbolLink Symbol="@p.Symbol" OnSymbolClick="OpenSymbolModal" /></td>
+                                            <td>@p.Side</td>
+                                            <td class="text-right font-mono">@p.Qty</td>
+                                            <td class="text-right font-mono">@p.EntryPrice.ToString("F2")</td>
+                                            <td class="text-right font-mono">@(p.CurrentPrice?.ToString("F2") ?? "--")</td>
+                                            <td class="text-right font-mono @(p.UnrealizedPnl >= 0 ? "text-green" : "text-red")">
+                                                @(p.UnrealizedPnl?.ToString("F2") ?? "--")
+                                            </td>
+                                            <td class="text-right font-mono @(p.UnrealizedPct >= 0 ? "text-green" : "text-red")">
+                                                @(p.UnrealizedPct != null ? $"{p.UnrealizedPct:F1}%" : "--")
+                                            </td>
+                                            <td class="font-mono">@(p.HoldDays?.ToString() ?? "--")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-muted" style="padding:2rem;text-align:center">열린 포지션이 없습니다</div>
+                    }
+                    break;
+            }
+        </div>
+    </div>
+}
+
+<SymbolDetailModal Visible="@sdmVisible" Symbol="@sdmSymbol" OnClose="CloseSymbolModal" />
+
+<!-- Process Description (Collapsible) -->
+<div class="section-card pipeline-desc">
+    <h4 class="section-title" style="cursor:pointer;user-select:none" @onclick="() => showDesc = !showDesc">
+        <span class="material-symbols-outlined" style="font-size:18px;transition:transform 0.2s;transform:rotate(@(showDesc ? "180" : "0")deg)">expand_more</span>
+        프로세스 설명
+    </h4>
+    @if (showDesc)
+    {
+        <div class="pipeline-desc-grid">
+            <div class="pipeline-desc-item">
+                <span class="pipeline-desc-num">1</span>
+                <div>
+                    <strong>Universe</strong>
+                    <p>S&P500 / NASDAQ100에서 가격·유동성 필터를 적용하여 투자 대상 종목을 선정합니다.</p>
+                </div>
+            </div>
+            <div class="pipeline-desc-item">
+                <span class="pipeline-desc-num">2</span>
+                <div>
+                    <strong>Collect</strong>
+                    <p>yfinance로 300일 가격 데이터를 수집하고, SMA50/200, 모멘텀 순위, 거래량 지표를 계산합니다.</p>
+                </div>
+            </div>
+            <div class="pipeline-desc-item">
+                <span class="pipeline-desc-num">3</span>
+                <div>
+                    <strong>Scan</strong>
+                    <p>진입 조건(모멘텀 상위 40% + 트렌드 정렬 + 거래량 서지)을 충족하는 종목에 pending 시그널을 생성합니다.</p>
+                </div>
+            </div>
+            <div class="pipeline-desc-item">
+                <span class="pipeline-desc-num">4</span>
+                <div>
+                    <strong>Approve</strong>
+                    <p>Signals 페이지에서 시그널을 검토한 후 수동 승인하면, 자동으로 Paper Trading이 체결됩니다.</p>
+                </div>
+            </div>
+            <div class="pipeline-desc-item">
+                <span class="pipeline-desc-num">5</span>
+                <div>
+                    <strong>Monitor</strong>
+                    <p>Positions, Performance 페이지에서 포지션별 P&L, 에퀴티 커브, 드로우다운을 추적합니다.</p>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+<!-- Pipeline Logs -->
+<div class="section-card">
+    <h4 class="section-title">
+        <span class="material-symbols-outlined" style="font-size:18px">receipt_long</span>
+        Pipeline Logs
+    </h4>
+    @if (pipelineLogs.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Step</th>
+                        <th>Status</th>
+                        <th>Duration</th>
+                        <th>Details</th>
+                        <th>Error</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var log in pipelineLogs)
+                    {
+                        <tr>
+                            <td class="font-mono">@log.CreatedAt.ToString("MM/dd HH:mm:ss")</td>
+                            <td>@log.StepName</td>
+                            <td>
+                                <span class="status-chip status-@StatusCss(log.Status)">@log.Status</span>
+                            </td>
+                            <td class="font-mono">@(log.ElapsedSec != null ? $"{log.ElapsedSec:F1}s" : "--")</td>
+                            <td class="text-muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                                @(log.Details ?? "")
+                            </td>
+                            <td class="text-red" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                                @(log.ErrorMsg ?? "")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="text-muted" style="padding:1rem;text-align:center">No pipeline logs yet</div>
+    }
+</div>
+
+@code {
+    // ── Data ──
+    private bool engineOnline;
+    private int universeCount;
+    private int indicatorCount;
+    private DateTime? indicatorLastUpdated;
+    private Dictionary<string, int> signalCounts = new();
+    private int openPositions;
+    private double? cumulativeReturn;
+    private List<SwingPipelineLog> pipelineLogs = new();
+    private bool showDesc;
+
+    // ── UI State ──
+    private string? runningStep;
+    private string? statusMsg;
+
+    // ── Popup State ──
+    private int popupStep;
+    private List<SwingUniverseItem> popupUniverse = new();
+    private List<SwingIndicatorRow> popupIndicators = new();
+    private List<SwingSignal> popupSignals = new();
+    private List<SwingPosition> popupPositions = new();
+
+    // ── Symbol Detail Modal ──
+    private bool sdmVisible;
+    private string sdmSymbol = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAllData();
+    }
+
+    private async Task LoadAllData()
+    {
+        try
+        {
+            var t1 = CheckEngineHealth();
+            var t2 = Db.GetUniverseCountAsync();
+            var t3 = Db.GetIndicatorStatusAsync();
+            var t4 = Db.GetSignalCountsByStatusAsync();
+            var t5 = Db.GetLatestSnapshotAsync();
+            var t6 = Db.GetPipelineLogsAsync(20);
+
+            await Task.WhenAll(t1, t2, t3, t4, t5, t6);
+
+            universeCount = t2.Result;
+            (indicatorCount, indicatorLastUpdated) = t3.Result;
+            signalCounts = t4.Result;
+
+            var snap = t5.Result;
+            openPositions = snap?.OpenPositions ?? 0;
+            cumulativeReturn = snap?.CumulativeReturn;
+
+            pipelineLogs = t6.Result;
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error loading data: {ex.Message}";
+        }
+    }
+
+    private async Task CheckEngineHealth()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetAsync("/health");
+            engineOnline = resp.IsSuccessStatusCode;
+        }
+        catch { engineOnline = false; }
+    }
+
+    // ════════════════════════════════
+    // Popup
+    // ════════════════════════════════
+
+    private async Task OpenPopup(int step)
+    {
+        popupStep = step;
+        StateHasChanged();
+
+        try
+        {
+            switch (step)
+            {
+                case 1:
+                    popupUniverse = await Db.GetUniverseListAsync();
+                    break;
+                case 2:
+                    popupIndicators = await Db.GetIndicatorListAsync();
+                    break;
+                case 3:
+                    popupSignals = await Db.GetSignalsAsync("pending", 100);
+                    break;
+                case 4:
+                    var approved = await Db.GetSignalsAsync("approved", 50);
+                    var executed = await Db.GetSignalsAsync("executed", 50);
+                    popupSignals = approved.Concat(executed).OrderByDescending(s => s.Time).ToList();
+                    break;
+                case 5:
+                    popupPositions = await Db.GetOpenPositionsAsync();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Popup load error: {ex.Message}";
+            popupStep = 0;
+        }
+        finally
+        {
+            StateHasChanged();
+        }
+    }
+
+    private void ClosePopup() => popupStep = 0;
+
+    private void OpenSymbolModal(string symbol) { sdmSymbol = symbol; sdmVisible = true; }
+    private void CloseSymbolModal() { sdmVisible = false; }
+
+    // ════════════════════════════════
+    // Step Actions
+    // ════════════════════════════════
+
+    private async Task RefreshUniverse()
+    {
+        runningStep = "universe";
+        statusMsg = null;
+        try
+        {
+            var beforeCount = universeCount;
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/universe/refresh", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                statusMsg = "Universe refresh started...";
+                StateHasChanged();
+                for (int i = 0; i < 20; i++)
+                {
+                    await Task.Delay(3000);
+                    var newCount = await Db.GetUniverseCountAsync();
+                    if (newCount != beforeCount || i >= 5)
+                    {
+                        statusMsg = $"Universe refreshed: {newCount} symbols";
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                statusMsg = $"Error: {resp.StatusCode}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { runningStep = null; await LoadAllData(); }
+    }
+
+    private async Task CollectData()
+    {
+        runningStep = "collect";
+        statusMsg = null;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/collect", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                statusMsg = "Data collection started...";
+                await PollUntilDone("collect", 300);   // max 5min
+            }
+            else
+            {
+                statusMsg = $"Error: {resp.StatusCode}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { runningStep = null; await LoadAllData(); }
+    }
+
+    private async Task ScanSignals()
+    {
+        runningStep = "scan";
+        statusMsg = null;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/scan", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var entries = json.TryGetProperty("entries", out var e) ? e.GetInt32() : 0;
+                var exits = json.TryGetProperty("exits", out var x) ? x.GetInt32() : 0;
+                var elapsed = json.TryGetProperty("elapsed_sec", out var t) ? t.GetDouble() : 0;
+                statusMsg = $"Scan complete ({elapsed:F1}s) — {entries} entry signals, {exits} exit signals";
+            }
+            else
+            {
+                statusMsg = $"Scan error: {resp.StatusCode}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { runningStep = null; await LoadAllData(); }
+    }
+
+    private async Task RunFullPipeline()
+    {
+        runningStep = "full";
+        statusMsg = null;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/pipeline/run", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                statusMsg = "Full pipeline started...";
+                await PollUntilDone("full_pipeline", 300);   // max 5min
+            }
+            else
+            {
+                statusMsg = $"Error: {resp.StatusCode}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { runningStep = null; await LoadAllData(); }
+    }
+
+    private async Task PollUntilDone(string stepName, int maxSeconds)
+    {
+        var pollStart = DateTime.UtcNow;
+        for (int i = 0; i < maxSeconds / 3; i++)
+        {
+            await Task.Delay(3000);
+            pipelineLogs = await Db.GetPipelineLogsAsync(20);
+            StateHasChanged();
+
+            // Find the latest log for this step that was created after we started
+            var latest = pipelineLogs.FirstOrDefault(l =>
+                l.StepName == stepName && l.CreatedAt >= pollStart.AddSeconds(-2));
+            if (latest != null && (latest.Status == "completed" || latest.Status == "failed"))
+            {
+                statusMsg = latest.Status == "completed"
+                    ? $"{stepName} completed in {latest.ElapsedSec:F1}s"
+                    : $"{stepName} failed: {latest.ErrorMsg}";
+                return;
+            }
+        }
+        statusMsg = $"{stepName}: polling timeout ({maxSeconds}s) — may still be running";
+    }
+
+    // ════════════════════════════════
+    // Helpers
+    // ════════════════════════════════
+
+    private static string StatusCss(string status) => status switch
+    {
+        "completed" => "executed",
+        "started" => "approved",
+        "failed" => "rejected",
+        _ => "pending"
+    };
+
+    private static string FormatMarketCap(decimal? cap)
+    {
+        if (cap == null) return "--";
+        var v = (double)cap.Value;
+        if (v >= 1_000_000_000_000) return $"{v / 1_000_000_000_000:F1}T";
+        if (v >= 1_000_000_000) return $"{v / 1_000_000_000:F1}B";
+        if (v >= 1_000_000) return $"{v / 1_000_000:F0}M";
+        return $"{v:N0}";
+    }
+}

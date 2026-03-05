@@ -1,10 +1,18 @@
-<a class="symbol-link" href="https://www.google.com/finance/quote/@Symbol:@GoogleExchange" target="_blank">@Symbol</a>
+@if (OnSymbolClick.HasDelegate)
+{
+    <a class="symbol-link" href="javascript:void(0)" @onclick="@(() => OnSymbolClick.InvokeAsync(Symbol))" @onclick:preventDefault>@Symbol</a>
+}
+else
+{
+    <a class="symbol-link" href="https://www.google.com/finance/quote/@Symbol:@GoogleExchange" target="_blank">@Symbol</a>
+}
 
 @code {
     [Parameter] public string Symbol { get; set; } = "";
     [Parameter] public string? Exchange { get; set; }
+    [Parameter] public EventCallback<string> OnSymbolClick { get; set; }
 
-    // yfinance exchange code → Google Finance suffix
+    // yfinance exchange code -> Google Finance suffix
     private static readonly Dictionary<string, string> ExchangeMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["NYQ"] = "NYSE",

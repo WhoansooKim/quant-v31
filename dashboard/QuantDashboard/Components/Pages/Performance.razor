@@ -1,0 +1,377 @@
+@page "/performance"
+@attribute [Authorize]
+@inject SwingService Db
+@inject IJSRuntime JS
+@inject IHttpClientFactory HttpFactory
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Performance</PageTitle>
+
+<div class="page-header">
+    <h3>Performance</h3>
+</div>
+
+<!-- Period Selector -->
+<div class="tab-bar">
+    @foreach (var p in new[] { ("7D", 7), ("30D", 30), ("90D", 90), ("YTD", 365), ("ALL", 9999) })
+    {
+        <button class="tab-btn @(selectedDays == p.Item2 ? "active" : "")"
+                @onclick="() => ChangePeriod(p.Item2)">
+            @p.Item1
+        </button>
+    }
+</div>
+
+<!-- Stats Cards -->
+<div class="stat-grid cols-6" style="margin-top:0.5rem">
+    <div class="stat-card">
+        <span class="stat-label">Total Trades</span>
+        <span class="stat-value">@totalTrades</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Win Rate</span>
+        <span class="stat-value @(winRate >= 0.5 ? "text-green" : "text-red")">
+            @($"{winRate * 100:F1}")%
+        </span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Total P&L</span>
+        <span class="stat-value @(totalPnl >= 0 ? "text-green" : "text-red")">
+            @(totalPnl >= 0 ? "+" : "")$@($"{totalPnl:N2}")
+        </span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Cum. Return</span>
+        <span class="stat-value @(cumReturn >= 0 ? "text-green" : "text-red")">
+            @(cumReturn >= 0 ? "+" : "")@($"{cumReturn * 100:F2}")%
+        </span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Max Drawdown</span>
+        <span class="stat-value text-red">@($"{maxDD * 100:F2}")%</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Win / Loss</span>
+        <span class="stat-value">@winCount / @(totalTrades - winCount)</span>
+    </div>
+</div>
+
+<!-- Equity Curve -->
+<div class="section-card" style="margin-top:1rem">
+    <h4 class="section-title">Equity Curve</h4>
+    <div style="height:300px">
+        <canvas id="perfEquityChart"></canvas>
+    </div>
+</div>
+
+<!-- Drawdown Chart -->
+<div class="section-card" style="margin-top:1rem">
+    <h4 class="section-title">Drawdown</h4>
+    <div style="height:200px">
+        <canvas id="perfDDChart"></canvas>
+    </div>
+</div>
+
+<!-- Backtest Performance Section -->
+<div class="section-card" style="margin-top:1rem">
+    <h4 class="section-title" style="cursor:pointer" @onclick="() => showBtSection = !showBtSection">
+        Backtest Performance
+        <span class="material-symbols-outlined" style="font-size:18px; margin-left:auto">
+            @(showBtSection ? "expand_less" : "expand_more")
+        </span>
+    </h4>
+    @if (latestBt != null && showBtSection)
+    {
+        <div class="stat-grid cols-6" style="margin-bottom:1rem">
+            <div class="stat-card">
+                <span class="stat-label">Total Return</span>
+                <span class="stat-value @((latestBt.TotalReturn ?? 0) >= 0 ? "text-green" : "text-red")">
+                    @($"{(latestBt.TotalReturn ?? 0) * 100:F1}")%
+                </span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">CAGR</span>
+                <span class="stat-value @((latestBt.Cagr ?? 0) >= 0 ? "text-green" : "text-red")">
+                    @($"{(latestBt.Cagr ?? 0) * 100:F1}")%
+                </span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Max Drawdown</span>
+                <span class="stat-value text-red">@($"{(latestBt.MaxDrawdown ?? 0) * 100:F1}")%</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Sharpe</span>
+                <span class="stat-value">@($"{latestBt.SharpeRatio:F2}")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Win Rate</span>
+                <span class="stat-value">@($"{(latestBt.WinRate ?? 0) * 100:F0}")%</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Profit Factor</span>
+                <span class="stat-value">@($"{latestBt.ProfitFactor:F2}")</span>
+            </div>
+        </div>
+
+        <div style="height:250px; margin-bottom:1rem">
+            <canvas id="perfBtEquityChart"></canvas>
+        </div>
+        <div style="height:150px">
+            <canvas id="perfBtDDChart"></canvas>
+        </div>
+
+        <div style="text-align:center; margin-top:0.5rem">
+            <span class="text-muted" style="font-size:0.72rem">
+                @latestBt.StartDate.ToString("yy/MM") - @latestBt.EndDate.ToString("yy/MM")
+                &middot; @latestBt.TotalTrades trades &middot; @($"{latestBt.AvgHoldDays:F1}") avg hold days
+            </span>
+        </div>
+    }
+    else if (latestBt == null && showBtSection)
+    {
+        <p class="text-muted" style="font-size:0.85rem">
+            No backtest data. <a href="/backtest">Run a backtest</a> to see projected results.
+        </p>
+    }
+</div>
+
+@code {
+    private List<SwingSnapshot> snapshots = new();
+    private SwingBacktestRun? latestBt;
+    private BacktestRunDetail? btDetail;
+    private int selectedDays = 30;
+    private int totalTrades;
+    private int winCount;
+    private decimal totalPnl;
+    private double winRate;
+    private double cumReturn;
+    private double maxDD;
+    private bool showBtSection = true;
+    private bool _btChartRendered;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            var snapTask = Db.GetSnapshotHistoryAsync(selectedDays);
+            var statsTask = Db.GetPerformanceStatsAsync();
+            var btTask = Db.GetLatestBacktestRunAsync();
+            await Task.WhenAll(snapTask, statsTask, btTask);
+
+            snapshots = snapTask.Result;
+            var (total, wins, pnl, wr) = statsTask.Result;
+            totalTrades = total;
+            winCount = wins;
+            totalPnl = pnl;
+            winRate = wr;
+            latestBt = btTask.Result;
+
+            if (snapshots.Any())
+            {
+                cumReturn = snapshots.Last().CumulativeReturn ?? 0;
+                maxDD = snapshots.Min(s => s.MaxDrawdown ?? 0);
+            }
+
+            // Load backtest equity for charts
+            if (latestBt != null)
+            {
+                try
+                {
+                    var client = HttpFactory.CreateClient("Engine");
+                    var resp = await client.GetAsync($"/backtest/results/{latestBt.RunId}");
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                        btDetail = ParseBtDetail(json);
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+    }
+
+    private static BacktestRunDetail ParseBtDetail(System.Text.Json.JsonElement json)
+    {
+        var d = new BacktestRunDetail();
+        if (json.TryGetProperty("equity_curve", out var ec) && ec.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in ec.EnumerateArray())
+            {
+                d.EquityCurve.Add(new BacktestEquityPoint(
+                    Date: item.TryGetProperty("date", out var dt) ? dt.GetString() ?? "" : "",
+                    Value: item.TryGetProperty("value", out var v) ? v.GetDouble() : 0,
+                    Cash: item.TryGetProperty("cash", out var c) ? c.GetDouble() : 0,
+                    Drawdown: item.TryGetProperty("drawdown", out var dd) ? dd.GetDouble() : 0,
+                    Positions: item.TryGetProperty("positions", out var pos) ? pos.GetInt32() : 0
+                ));
+            }
+        }
+        if (json.TryGetProperty("trades_log", out var tl) && tl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in tl.EnumerateArray())
+            {
+                d.TradesLog.Add(new BacktestTradeEntry(
+                    Date: item.TryGetProperty("date", out var dt2) ? dt2.GetString() ?? "" : "",
+                    Symbol: item.TryGetProperty("symbol", out var sym) ? sym.GetString() ?? "" : "",
+                    Side: item.TryGetProperty("side", out var side) ? side.GetString() ?? "" : "",
+                    Qty: item.TryGetProperty("qty", out var q) ? q.GetDouble() : 0,
+                    Price: item.TryGetProperty("price", out var pr) ? pr.GetDouble() : 0,
+                    Pnl: item.TryGetProperty("pnl", out var pnl) ? pnl.GetDouble() : 0,
+                    PnlPct: item.TryGetProperty("pnl_pct", out var pp) ? pp.GetDouble() : 0,
+                    Reason: item.TryGetProperty("reason", out var rs) ? rs.GetString() : null,
+                    HoldDays: item.TryGetProperty("hold_days", out var hd) ? hd.GetInt32() : 0
+                ));
+            }
+        }
+        return d;
+    }
+
+    private async Task ChangePeriod(int days)
+    {
+        selectedDays = days;
+        await LoadData();
+        await RenderCharts();
+        StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await RenderCharts();
+            if (btDetail != null && btDetail.EquityCurve.Any())
+            {
+                await RenderBtCharts();
+            }
+        }
+        if (!_btChartRendered && btDetail != null && btDetail.EquityCurve.Any() && showBtSection)
+        {
+            _btChartRendered = true;
+            await RenderBtCharts();
+        }
+    }
+
+    private async Task RenderCharts()
+    {
+        if (!snapshots.Any()) return;
+        try
+        {
+            var labels = snapshots.Select(s => s.Time.ToString("MM/dd")).ToArray();
+
+            // Equity
+            var values = snapshots.Select(s => (double)(s.TotalValueUsd ?? 0)).ToArray();
+            var eqDatasets = new[]
+            {
+                new {
+                    label = "Portfolio ($)",
+                    data = values,
+                    borderColor = "#197fe6",
+                    backgroundColor = "rgba(25,127,230,0.08)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+            await JS.InvokeVoidAsync("chartHelper.createLine",
+                "perfEquityChart", labels, eqDatasets, (object?)null);
+
+            // Drawdown
+            var dd = snapshots.Select(s => (s.MaxDrawdown ?? 0) * 100).ToArray();
+            var ddDatasets = new[]
+            {
+                new {
+                    label = "Drawdown (%)",
+                    data = dd,
+                    borderColor = "#ef4444",
+                    backgroundColor = "rgba(239,68,68,0.12)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+            await JS.InvokeVoidAsync("chartHelper.createLine",
+                "perfDDChart", labels, ddDatasets, (object?)null);
+        }
+        catch { }
+    }
+
+    private async Task RenderBtCharts()
+    {
+        if (btDetail == null || !btDetail.EquityCurve.Any()) return;
+        try
+        {
+            // Send full dates (yyyy-MM-dd) — charts.js adaptive ticks handle zoom-level formatting
+            var labels = btDetail.EquityCurve.Select(e => e.Date.Length >= 10 ? e.Date[..10] : e.Date).ToArray();
+            var fullDates = btDetail.EquityCurve.Select(e => e.Date).ToList();
+            var values = btDetail.EquityCurve.Select(e => e.Value).ToArray();
+            var count = labels.Length;
+
+            // Build date→index lookup for trade markers
+            var dateToIndex = new Dictionary<string, int>();
+            for (int i = 0; i < fullDates.Count; i++)
+            {
+                var dateKey = fullDates[i].Length >= 10 ? fullDates[i][..10] : fullDates[i];
+                dateToIndex[dateKey] = i;
+            }
+
+            // Build sparse arrays (same length as labels)
+            var buyValues = new double?[count];
+            var sellValues = new double?[count];
+            var buyMeta = new object?[count];
+            var sellMeta = new object?[count];
+
+            foreach (var t in btDetail.TradesLog)
+            {
+                var tradeDate = t.Date.Length >= 10 ? t.Date[..10] : t.Date;
+                if (!dateToIndex.TryGetValue(tradeDate, out var idx)) continue;
+                var meta = new Dictionary<string, object?>
+                {
+                    ["date"] = tradeDate, ["symbol"] = t.Symbol, ["qty"] = t.Qty,
+                    ["price"] = t.Price, ["pnl"] = t.Pnl, ["pnlPct"] = t.PnlPct,
+                    ["reason"] = t.Reason, ["holdDays"] = t.HoldDays
+                };
+                if (t.Side == "BUY")
+                {
+                    buyValues[idx] = values[idx];
+                    buyMeta[idx] = meta;
+                }
+                else
+                {
+                    sellValues[idx] = values[idx];
+                    sellMeta[idx] = meta;
+                }
+            }
+
+            var eqDs = new object[]
+            {
+                new {
+                    label = "Backtest Equity ($)",
+                    data = values,
+                    borderColor = "#a78bfa",
+                    backgroundColor = "rgba(167,139,250,0.08)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+            var buyData = new { values = buyValues, meta = buyMeta };
+            var sellData = new { values = sellValues, meta = sellMeta };
+            await JS.InvokeVoidAsync("chartHelper.createLineWithTrades",
+                "perfBtEquityChart", labels, eqDs, buyData, sellData, null);
+
+            var dd = btDetail.EquityCurve.Select(e => e.Drawdown * 100).ToArray();
+            var ddDs = new[]
+            {
+                new {
+                    label = "Backtest Drawdown (%)",
+                    data = dd,
+                    borderColor = "#ef4444",
+                    backgroundColor = "rgba(239,68,68,0.12)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+            await JS.InvokeVoidAsync("chartHelper.createLine", "perfBtDDChart", labels, ddDs, (object?)null);
+        }
+        catch { }
+    }
+}

@@ -1,5 +1,5 @@
 @inherits LayoutComponentBase
-@using System.Security.Claims
+@inject SwingService SwingSvc
 
 <div class="page dark-theme">
     <div class="sidebar">
@@ -7,26 +7,33 @@
     </div>
 
     <main>
-        <div class="top-bar">
-            <AuthorizeView>
-                <Authorized>
-                    <div class="top-bar-user">
-                        <span class="user-avatar">@(context.User.Identity?.Name?[..1].ToUpper())</span>
-                        <span class="user-name">@context.User.Identity?.Name</span>
+        <!-- Ticker Bar -->
+        <div class="ticker-bar">
+            @if (tickerData.Any())
+            {
+                @foreach (var t in tickerData)
+                {
+                    <div class="ticker-item">
+                        <span class="ticker-symbol">@t.Symbol</span>
+                        <span class="ticker-price">@t.Price.ToString("F2")</span>
+                        <span class="ticker-change @(t.ChangePercent >= 0 ? "ticker-up" : "ticker-down")">
+                            @(t.ChangePercent >= 0 ? "+" : "")@t.ChangePercent.ToString("F2")%
+                        </span>
                     </div>
-                    <form method="post" action="/account/logout">
-                        <button type="submit" class="top-bar-logout">Sign Out</button>
-                    </form>
-                </Authorized>
-            </AuthorizeView>
+                }
+            }
+            else
+            {
+                <span class="text-muted" style="font-size:0.72rem">SPY -- | QQQ -- | AAPL -- | MSFT -- | NVDA --</span>
+            }
         </div>
 
-        <article class="content px-4 py-3">
+        <article class="content">
             @Body
         </article>
 
         <footer class="app-footer">
-            Quant V3.1 Ubuntu Edition | HMM Regime + Kill Switch + FinBERT
+            Swing V4 &mdash; Semi-Auto Swing Trading System
         </footer>
     </main>
 </div>
@@ -36,3 +43,19 @@
     <a href="" class="reload">Reload</a>
     <a class="dismiss">X</a>
 </div>
+
+@code {
+    private List<TickerBarItem> tickerData = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            tickerData = await SwingSvc.GetTickerBarDataAsync();
+        }
+        catch
+        {
+            tickerData = new();
+        }
+    }
+}

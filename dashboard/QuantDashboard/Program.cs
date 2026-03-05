@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using QuantDashboard.Components;
 using QuantDashboard.Services;
 
+// Npgsql: timestamptz → 로컬 시간(KST) 반환 (UTC 대신)
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ─── Blazor Server ───
@@ -16,11 +19,22 @@ var connStr = builder.Configuration.GetConnectionString("Default")!;
 builder.Services.AddSingleton<PostgresService>(sp =>
     new PostgresService(connStr, sp.GetRequiredService<ILogger<PostgresService>>()));
 
+builder.Services.AddSingleton<SwingService>(sp =>
+    new SwingService(connStr, sp.GetRequiredService<ILogger<SwingService>>()));
+
 builder.Services.AddSingleton<AuthService>(sp =>
     new AuthService(connStr, sp.GetRequiredService<ILogger<AuthService>>()));
 
 // ─── gRPC Client (Python 엔진 통신) ───
 builder.Services.AddSingleton<GrpcClient>();
+
+// ─── HttpClient for Engine V4 API ───
+builder.Services.AddHttpClient("Engine", client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["EngineApi:BaseUrl"] ?? "http://localhost:8001");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 
 // ─── SignalR Hub (실시간 푸시) ───
 builder.Services.AddSignalR();
@@ -44,6 +58,10 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
     app.UseHsts();
 }
+else
+{
+    app.UseDeveloperExceptionPage();
+}
 
 app.UseStaticFiles();
 app.UseRouting();
@@ -60,9 +78,11 @@ app.MapPost("/account/login", async (HttpContext ctx, AuthService auth) =>
 
     if (await auth.ValidateAsync(username, password))
     {
+        var user = await auth.GetUserAsync(username);
         var claims = new List<Claim>
         {
-            new(ClaimTypes.Name, username)
+            new(ClaimTypes.Name, username),
+            new(ClaimTypes.NameIdentifier, user!.Id.ToString())
         };
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         await ctx.SignInAsync(

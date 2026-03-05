@@ -1,0 +1,344 @@
+@page "/sentiment"
+@attribute [Authorize]
+@inject PostgresService Db
+@inject IHttpClientFactory HttpFactory
+@inject IJSRuntime JS
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+
+<PageTitle>Quant V3.1 - 감성분석</PageTitle>
+
+<PageLoadingOverlay Visible="@_pageLoading" />
+
+@if (!_pageLoading)
+{
+<div class="page-header">
+    <h3>감성 히트맵</h3>
+    <HelpTooltip Title="감성 히트맵"
+                 Description="FinBERT + Claude 하이브리드 감성 분석 히트맵"
+                 Links="@(new Dictionary<string,string>{["FinBERT Paper"]="https://arxiv.org/abs/1908.10063"})" />
+    <span class="text-muted">FinBERT + Claude Hybrid</span>
+    <button class="bt-btn bt-primary" @onclick="CollectNow" disabled="@isCollecting"
+            style="margin-left:auto">
+        @(isCollecting ? "수집 중..." : "수집 시작")
+    </button>
+</div>
+
+@if (!string.IsNullOrEmpty(toastMsg))
+{
+    <div class="toast-msg @(toastOk ? "toast-ok" : "toast-error")">@toastMsg</div>
+}
+
+<!-- Period Tabs -->
+<div class="tab-bar">
+    @foreach (var tab in periodTabs)
+    {
+        <button class="tab-btn @(activeTab == tab.Key ? "active" : "")"
+                @onclick="@(() => SwitchTab(tab.Key))">@tab.Label</button>
+    }
+</div>
+
+<!-- Sentiment Chart (Top 5) -->
+<div class="section-card">
+    <h5>감성 추이 (상위 5)
+        <HelpTooltip Title="감성 추이"
+                     Description="상위 5개 종목의 sentiment 시계열 추이" />
+    </h5>
+    <div class="chart-wrap">
+        <canvas id="sentimentChart"></canvas>
+    </div>
+</div>
+
+<!-- Sentiment Scores Table (raw timestamps) -->
+<div class="section-card">
+    <h5>감성 점수 (@activePeriodLabel)
+        <HelpTooltip Title="감성 점수"
+                     Description="종목별 감성 점수 (-1 ~ +1). 양수=긍정, 음수=부정. 원본 타임스탬프 표시." />
+    </h5>
+    @if (rawScores.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" @onclick="@(() => _rawSort.Toggle("Date"))">날짜<span class="sort-arrow">@_rawSort.Arrow("Date")</span></th>
+                        <th class="sortable" @onclick="@(() => _rawSort.Toggle("Symbol"))">종목<span class="sort-arrow">@_rawSort.Arrow("Symbol")</span></th>
+                        <th class="sortable" style="text-align:right" @onclick="@(() => _rawSort.Toggle("Score"))">점수<span class="sort-arrow">@_rawSort.Arrow("Score")</span></th>
+                        <th class="sortable" @onclick="@(() => _rawSort.Toggle("Sentiment"))">감성<span class="sort-arrow">@_rawSort.Arrow("Sentiment")</span></th>
+                        <th class="sortable" @onclick="@(() => _rawSort.Toggle("Source"))">출처<span class="sort-arrow">@_rawSort.Arrow("Source")</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _rawSort.Apply(rawScores, _rawCols).Take(200))
+                    {
+                        var scoreClass = s.Score > 0.3 ? "text-green" :
+                                        s.Score < -0.3 ? "text-red" : "text-muted";
+                        var barWidth = Math.Abs(s.Score) * 100;
+
+                        <tr>
+                            <td>@s.Time.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td><SymbolLink Symbol="@s.Symbol" Exchange="@(exchangeMap.GetValueOrDefault(s.Symbol))" /></td>
+                            <td class="@scoreClass" style="text-align:right">@(s.Score.ToString("F3"))</td>
+                            <td>
+                                <div class="sentiment-bar">
+                                    @if (s.Score > 0)
+                                    {
+                                        <div class="sentiment-center"></div>
+                                        <div class="sentiment-fill-right bull-bg"
+                                             style="width:@(barWidth)%"></div>
+                                    }
+                                    else
+                                    {
+                                        <div class="sentiment-fill-left bear-bg"
+                                             style="width:@(barWidth)%"></div>
+                                        <div class="sentiment-center"></div>
+                                    }
+                                </div>
+                            </td>
+                            <td>@(s.Headline ?? "-")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="empty-state">
+            <p>해당 기간의 감성 데이터가 없습니다.</p>
+            <p class="text-muted">FinBERT가 활성화된 파이프라인을 실행하거나 '수집 시작'을 클릭하세요.</p>
+        </div>
+    }
+</div>
+
+<!-- Top Positive / Negative -->
+@if (heatmap.Any())
+{
+    <div class="stat-grid">
+        <div class="section-card">
+            <h5 class="bull-text">긍정 상위</h5>
+            @foreach (var s in heatmap.Where(x => x.AvgScore > 0).OrderByDescending(x => x.AvgScore).Take(10))
+            {
+                <div class="sentiment-row">
+                    <span class="fw-bold">@s.Symbol</span>
+                    <span class="text-green">+@(s.AvgScore.ToString("F3"))</span>
+                </div>
+            }
+        </div>
+        <div class="section-card">
+            <h5 class="bear-text">부정 상위</h5>
+            @foreach (var s in heatmap.Where(x => x.AvgScore < 0).OrderBy(x => x.AvgScore).Take(10))
+            {
+                <div class="sentiment-row">
+                    <span class="fw-bold">@s.Symbol</span>
+                    <span class="text-red">@(s.AvgScore.ToString("F3"))</span>
+                </div>
+            }
+        </div>
+    </div>
+}
+} @* end !_pageLoading *@
+
+@code {
+    private bool _pageLoading = true;
+    private List<SentimentPoint> heatmap = new();
+    private List<SentimentScoreRow> rawScores = new();
+    private Dictionary<string, string> exchangeMap = new();
+
+    private readonly SortState _rawSort = new();
+    private static readonly Dictionary<string, Func<SentimentScoreRow, object>> _rawCols = new()
+    {
+        ["Date"] = x => x.Time,
+        ["Symbol"] = x => x.Symbol,
+        ["Score"] = x => x.Score,
+        ["Sentiment"] = x => x.Score,
+        ["Source"] = x => x.Headline ?? "",
+    };
+    private string activeTab = "24h";
+    private bool isCollecting = false;
+    private string? toastMsg;
+    private bool toastOk;
+    private bool chartRendered = false;
+
+    private string activePeriodLabel => periodTabs.FirstOrDefault(t => t.Key == activeTab).Label ?? "24h";
+
+    private static readonly List<(string Key, string Label, int Days, string Bucket)> periodTabs = new()
+    {
+        ("24h", "24h", 1, "1 hour"),
+        ("7d", "7d", 7, "4 hours"),
+        ("30d", "30d", 30, "1 day"),
+        ("90d", "90d", 90, "1 week"),
+        ("180d", "180d", 180, "1 week"),
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            exchangeMap = await Db.GetSymbolExchangeMapAsync();
+            await LoadData();
+        }
+        catch { }
+        finally { _pageLoading = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!chartRendered && heatmap.Any())
+        {
+            try
+            {
+                await RenderChart();
+                chartRendered = true;
+            }
+            catch { }
+        }
+    }
+
+    private async Task LoadData()
+    {
+        var tab = periodTabs.FirstOrDefault(t => t.Key == activeTab);
+        var days = tab.Days > 0 ? tab.Days : 1;
+        var bucket = !string.IsNullOrEmpty(tab.Bucket) ? tab.Bucket : "1 day";
+
+        var heatTask = Db.GetSentimentHeatmapAsync(days, bucket);
+        var rawTask = Db.GetSentimentScoresRawAsync(days, 200);
+        await Task.WhenAll(heatTask, rawTask);
+
+        heatmap = heatTask.Result;
+        rawScores = rawTask.Result;
+    }
+
+    private async Task SwitchTab(string tab)
+    {
+        if (activeTab == tab) return;
+        activeTab = tab;
+        chartRendered = false;
+
+        // Destroy old chart immediately for visual feedback
+        try { await JS.InvokeVoidAsync("chartHelper.destroy", "sentimentChart"); } catch { }
+
+        try
+        {
+            await LoadData();
+        }
+        catch { }
+
+        StateHasChanged();
+    }
+
+    private async Task CollectNow()
+    {
+        isCollecting = true;
+        toastMsg = null;
+        StateHasChanged();
+
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/sentiment-scan", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                toastMsg = "감성 스캔 시작됨. FinBERT 분석 중... (약 30초 후 자동 새로고침)";
+                toastOk = true;
+                // FinBERT 모델 로딩 + yfinance 20종목 수집 → 시간이 걸림
+                // 15초, 30초, 60초에 자동 리프레시
+                _ = Task.Run(async () =>
+                {
+                    foreach (var delay in new[] { 15_000, 15_000, 30_000 })
+                    {
+                        await Task.Delay(delay);
+                        await InvokeAsync(async () =>
+                        {
+                            await LoadData();
+                            chartRendered = false;
+                            if (rawScores.Any())
+                                toastMsg = $"스캔 완료 — {rawScores.Count}건 로딩됨.";
+                            StateHasChanged();
+                        });
+                        if (rawScores.Any()) break;
+                    }
+                    // 토스트 5초 후 제거
+                    await Task.Delay(5000);
+                    await InvokeAsync(() => { toastMsg = null; StateHasChanged(); });
+                });
+            }
+            else
+            {
+                toastMsg = $"Failed: {resp.StatusCode}";
+                toastOk = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            toastMsg = $"Error: {ex.Message}";
+            toastOk = false;
+        }
+        finally
+        {
+            isCollecting = false;
+            StateHasChanged();
+        }
+    }
+
+    private string GetChartDateFormat()
+    {
+        return activeTab switch
+        {
+            "24h" => "HH:mm",
+            "7d"  => "MM-dd HH:mm",
+            _     => "MM-dd",
+        };
+    }
+
+    private async Task RenderChart()
+    {
+        var top5 = heatmap
+            .GroupBy(s => s.Symbol)
+            .OrderByDescending(g => g.Count())
+            .Take(5)
+            .ToList();
+
+        if (!top5.Any()) return;
+
+        var fmt = GetChartDateFormat();
+        var allDays = heatmap.Select(s => s.Day.ToString(fmt)).Distinct().OrderBy(d => d).ToArray();
+
+        var colors = new[] { "#00c896", "#6366f1", "#ff4757", "#ffa502", "#22d3ee" };
+        var datasets = new List<object>();
+        int ci = 0;
+
+        foreach (var g in top5)
+        {
+            // Use last value per time slot to safely handle any remaining duplicates
+            var symbolData = new Dictionary<string, double>();
+            foreach (var s in g)
+                symbolData[s.Day.ToString(fmt)] = s.AvgScore;
+
+            var values = allDays.Select(d => symbolData.GetValueOrDefault(d, 0.0)).ToArray();
+
+            datasets.Add(new
+            {
+                label = g.Key,
+                data = values,
+                borderColor = colors[ci % colors.Length],
+                backgroundColor = "transparent",
+                borderWidth = 2,
+                tension = 0.3,
+                pointRadius = 2,
+            });
+            ci++;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("chartHelper.createLine", "sentimentChart", allDays, datasets, (object?)null);
+        }
+        catch { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("chartHelper.destroy", "sentimentChart"); } catch { }
+    }
+}

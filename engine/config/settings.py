@@ -88,3 +88,14 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+
+_settings: Settings | None = None
+
+
+def get_config() -> Settings:
+    """Settings 싱글턴 반환"""
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings

@@ -1,0 +1,211 @@
+@page "/positions"
+@attribute [Authorize]
+@inject SwingService Db
+@inject IJSRuntime JS
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Positions</PageTitle>
+
+<div class="page-header">
+    <h3>Positions</h3>
+</div>
+
+<!-- Tabs -->
+<div class="tab-bar">
+    <button class="tab-btn @(showOpen ? "active" : "")" @onclick="() => showOpen = true">
+        Open (@openPositions.Count)
+    </button>
+    <button class="tab-btn @(!showOpen ? "active" : "")" @onclick="() => showOpen = false">
+        Closed (@closedPositions.Count)
+    </button>
+</div>
+
+<div class="section-card" style="margin-top:0.5rem">
+    @if (showOpen)
+    {
+        <!-- Open Positions -->
+        @if (openPositions.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="sortable" @onclick='() => openSort.Toggle("symbol")'>Symbol@(openSort.Arrow("symbol"))</th>
+                            <th>Side</th>
+                            <th class="sortable" @onclick='() => openSort.Toggle("qty")'>Qty@(openSort.Arrow("qty"))</th>
+                            <th class="sortable" @onclick='() => openSort.Toggle("entry")'>Entry@(openSort.Arrow("entry"))</th>
+                            <th>Current</th>
+                            <th class="sortable" @onclick='() => openSort.Toggle("pnl")'>P&L ($)@(openSort.Arrow("pnl"))</th>
+                            <th class="sortable" @onclick='() => openSort.Toggle("pnlPct")'>P&L (%)@(openSort.Arrow("pnlPct"))</th>
+                            <th>Stop Loss</th>
+                            <th>Take Profit</th>
+                            <th>SL Distance</th>
+                            <th>TP Distance</th>
+                            <th class="sortable" @onclick='() => openSort.Toggle("holdDays")'>Hold Days@(openSort.Arrow("holdDays"))</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var p in SortedOpen)
+                        {
+                            var pnlClass = (p.UnrealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
+                            var holdDays = (DateTime.Now - p.EntryTime).Days;
+                            var current = p.CurrentPrice ?? p.EntryPrice;
+                            var slDist = p.StopLoss != null ? (double)((current - p.StopLoss.Value) / current * 100) : 0;
+                            var tpDist = p.TakeProfit != null ? (double)((p.TakeProfit.Value - current) / current * 100) : 0;
+                            <tr>
+                                <td><SymbolLink Symbol="@p.Symbol" OnSymbolClick="OpenModal" /></td>
+                                <td>@p.Side</td>
+                                <td>@p.Qty</td>
+                                <td>$@p.EntryPrice.ToString("F2")</td>
+                                <td>@(p.CurrentPrice != null ? $"${p.CurrentPrice:F2}" : "--")</td>
+                                <td class="@pnlClass">
+                                    @(p.UnrealizedPnl != null ? $"{(p.UnrealizedPnl >= 0 ? "+" : "")}${p.UnrealizedPnl:F2}" : "--")
+                                </td>
+                                <td class="@pnlClass">
+                                    @(p.UnrealizedPct != null ? $"{(p.UnrealizedPct >= 0 ? "+" : "")}{p.UnrealizedPct * 100:F2}%" : "--")
+                                </td>
+                                <td class="text-red">@(p.StopLoss != null ? $"${p.StopLoss:F2}" : "--")</td>
+                                <td class="text-green">@(p.TakeProfit != null ? $"${p.TakeProfit:F2}" : "--")</td>
+                                <td>
+                                    <div class="progress-bar-mini">
+                                        <div class="progress-fill bg-red" style="width:@Math.Min(Math.Max(100 - slDist * 10, 0), 100)%"></div>
+                                    </div>
+                                    <span class="text-muted" style="font-size:0.65rem">@($"{slDist:F1}")%</span>
+                                </td>
+                                <td>
+                                    <div class="progress-bar-mini">
+                                        <div class="progress-fill bg-green" style="width:@Math.Min(Math.Max(100 - tpDist * 10, 0), 100)%"></div>
+                                    </div>
+                                    <span class="text-muted" style="font-size:0.65rem">@($"{tpDist:F1}")%</span>
+                                </td>
+                                <td>@holdDays</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p class="text-muted" style="padding:1rem">No open positions</p>
+        }
+    }
+    else
+    {
+        <!-- Closed Positions -->
+        @if (closedPositions.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("symbol")'>Symbol@(closedSort.Arrow("symbol"))</th>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("entry")'>Entry@(closedSort.Arrow("entry"))</th>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("exit")'>Exit@(closedSort.Arrow("exit"))</th>
+                            <th>Qty</th>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("pnl")'>P&L ($)@(closedSort.Arrow("pnl"))</th>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("pnlPct")'>P&L (%)@(closedSort.Arrow("pnlPct"))</th>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("reason")'>Exit Reason@(closedSort.Arrow("reason"))</th>
+                            <th class="sortable" @onclick='() => closedSort.Toggle("holdDays")'>Hold Days@(closedSort.Arrow("holdDays"))</th>
+                            <th>Entry Date</th>
+                            <th>Exit Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var p in SortedClosed)
+                        {
+                            var pnlClass = (p.RealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
+                            <tr>
+                                <td><SymbolLink Symbol="@p.Symbol" OnSymbolClick="OpenModal" /></td>
+                                <td>$@p.EntryPrice.ToString("F2")</td>
+                                <td>@(p.ExitPrice != null ? $"${p.ExitPrice:F2}" : "--")</td>
+                                <td>@p.Qty</td>
+                                <td class="@pnlClass">
+                                    @(p.RealizedPnl != null ? $"{(p.RealizedPnl >= 0 ? "+" : "")}${p.RealizedPnl:F2}" : "--")
+                                </td>
+                                <td class="@pnlClass">
+                                    @(p.RealizedPct != null ? $"{(p.RealizedPct >= 0 ? "+" : "")}{p.RealizedPct * 100:F2}%" : "--")
+                                </td>
+                                <td>
+                                    <span class="exit-reason-chip @GetExitReasonClass(p.ExitReason)">
+                                        @(p.ExitReason ?? "--")
+                                    </span>
+                                </td>
+                                <td>@(p.HoldDays ?? 0)</td>
+                                <td>@p.EntryTime.ToString("MM/dd")</td>
+                                <td>@(p.ExitTime?.ToString("MM/dd") ?? "--")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p class="text-muted" style="padding:1rem">No closed positions</p>
+        }
+    }
+</div>
+
+<SymbolDetailModal Visible="@modalVisible" Symbol="@modalSymbol" OnClose="CloseModal" />
+
+@code {
+    private List<SwingPosition> openPositions = new();
+    private List<SwingPosition> closedPositions = new();
+    private bool showOpen = true;
+
+    // Sort state
+    private SortState openSort = new();
+    private SortState closedSort = new();
+
+    private static readonly Dictionary<string, Func<SwingPosition, object>> OpenSelectors = new()
+    {
+        ["symbol"] = p => p.Symbol,
+        ["qty"] = p => (double)p.Qty,
+        ["entry"] = p => (double)p.EntryPrice,
+        ["pnl"] = p => (double)(p.UnrealizedPnl ?? 0),
+        ["pnlPct"] = p => p.UnrealizedPct ?? 0,
+        ["holdDays"] = p => (DateTime.Now - p.EntryTime).Days,
+    };
+
+    private static readonly Dictionary<string, Func<SwingPosition, object>> ClosedSelectors = new()
+    {
+        ["symbol"] = p => p.Symbol,
+        ["entry"] = p => (double)p.EntryPrice,
+        ["exit"] = p => (double)(p.ExitPrice ?? 0),
+        ["pnl"] = p => (double)(p.RealizedPnl ?? 0),
+        ["pnlPct"] = p => p.RealizedPct ?? 0,
+        ["reason"] = p => p.ExitReason ?? "",
+        ["holdDays"] = p => p.HoldDays ?? 0,
+    };
+
+    private IEnumerable<SwingPosition> SortedOpen => openSort.Apply(openPositions, OpenSelectors);
+    private IEnumerable<SwingPosition> SortedClosed => closedSort.Apply(closedPositions, ClosedSelectors);
+
+    // Modal state
+    private bool modalVisible;
+    private string modalSymbol = "";
+    private void OpenModal(string symbol) { modalSymbol = symbol; modalVisible = true; }
+    private void CloseModal() { modalVisible = false; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var openTask = Db.GetOpenPositionsAsync();
+            var closedTask = Db.GetClosedPositionsAsync(100);
+            await Task.WhenAll(openTask, closedTask);
+            openPositions = openTask.Result;
+            closedPositions = closedTask.Result;
+        }
+        catch { }
+    }
+
+    private string GetExitReasonClass(string? reason) => reason switch
+    {
+        "stop_loss" => "exit-sl",
+        "take_profit" => "exit-tp",
+        "trend_break" => "exit-trend",
+        _ => ""
+    };
+}

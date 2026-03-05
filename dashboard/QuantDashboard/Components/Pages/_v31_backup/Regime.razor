@@ -1,0 +1,265 @@
+@page "/regime"
+@attribute [Authorize]
+@inject PostgresService Db
+@inject NavigationManager Nav
+@inject IHttpClientFactory HttpFactory
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+
+<PageTitle>Quant V3.1 - 레짐</PageTitle>
+
+<PageLoadingOverlay Visible="@_pageLoading" />
+
+@if (!_pageLoading)
+{
+<div class="page-header">
+    <h3>시장 레짐 모니터</h3>
+    <HelpTooltip Title="Market Regime Monitor"
+                 Description="HMM 기반 레짐 감지 모니터. 시장을 Bull/Sideways/Bear로 분류"
+                 Links="@(new Dictionary<string,string>{["Wikipedia: Hidden Markov Model"]="https://en.wikipedia.org/wiki/Hidden_Markov_model"})" />
+</div>
+
+@if (regime != null)
+{
+    <!-- Current Regime Card -->
+    <div class="regime-hero regime-card-@regime.Regime">
+        <div class="regime-hero-label">현재 레짐
+            <HelpTooltip Title="Current Regime"
+                         Description="현재 감지된 레짐 상태와 신뢰도" />
+        </div>
+        <div class="regime-hero-value">@regime.Regime.ToUpper()</div>
+        <div class="regime-hero-conf">신뢰도: @(regime.Confidence.ToString("P1"))</div>
+        <div class="regime-hero-time">감지: @regime.DetectedAt.ToString("yyyy-MM-dd HH:mm")</div>
+        @if (regime.IsTransition)
+        {
+            <div class="regime-transition-badge">
+                전환 — 이전: @(regime.PreviousRegime?.ToUpper() ?? "?")
+            </div>
+        }
+    </div>
+
+    <!-- Probability Gauges -->
+    <div class="stat-grid three-col">
+        <div class="stat-card">
+            <span class="stat-label bull-text">Bull</span>
+            <span class="stat-value">@(regime.BullProb.ToString("P1"))</span>
+            <div class="mini-bar">
+                <div class="mini-fill bull-bg" style="width:@(regime.BullProb * 100)%"></div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label sideways-text">Sideways</span>
+            <span class="stat-value">@(regime.SidewaysProb.ToString("P1"))</span>
+            <div class="mini-bar">
+                <div class="mini-fill sideways-bg" style="width:@(regime.SidewaysProb * 100)%"></div>
+            </div>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label bear-text">Bear</span>
+            <span class="stat-value">@(regime.BearProb.ToString("P1"))</span>
+            <div class="mini-bar">
+                <div class="mini-fill bear-bg" style="width:@(regime.BearProb * 100)%"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Regime Forecast -->
+    <div class="section-card">
+        <h5>레짐 전망
+            <HelpTooltip Title="Regime Forecast"
+                         Description="Hamilton (1989) 기반 전이확률 행렬 k-step 예측. P(regime_t+k | current) = current_probs x T^k"
+                         Links="@(new Dictionary<string,string>{["Hamilton 1989 Paper"]="https://doi.org/10.2307/1912559"})" />
+        </h5>
+        @if (forecasts.Any())
+        {
+            <div class="forecast-grid">
+                @foreach (var fc in forecasts)
+                {
+                    var horizonLabel = fc.HorizonDays switch { 5 => "1주", 21 => "1개월", 63 => "3개월", _ => $"{fc.HorizonDays}d" };
+                    var dominantColor = fc.Dominant switch { "bull" => "var(--bull)", "bear" => "var(--bear)", _ => "var(--sideways)" };
+
+                    <div class="forecast-card">
+                        <div class="forecast-horizon">@horizonLabel</div>
+                        <div class="forecast-dominant" style="color:@dominantColor">@fc.Dominant.ToUpper()</div>
+                        <div class="forecast-mini-bars">
+                            <div class="forecast-mini-row">
+                                <span class="forecast-mini-label bull-text">Bull</span>
+                                <div class="forecast-mini-track">
+                                    <div class="forecast-mini-fill bull-bg" style="width:@(fc.Bull * 100)%"></div>
+                                </div>
+                                <span class="forecast-mini-pct">@(fc.Bull.ToString("P0"))</span>
+                            </div>
+                            <div class="forecast-mini-row">
+                                <span class="forecast-mini-label sideways-text">Side</span>
+                                <div class="forecast-mini-track">
+                                    <div class="forecast-mini-fill sideways-bg" style="width:@(fc.Sideways * 100)%"></div>
+                                </div>
+                                <span class="forecast-mini-pct">@(fc.Sideways.ToString("P0"))</span>
+                            </div>
+                            <div class="forecast-mini-row">
+                                <span class="forecast-mini-label bear-text">Bear</span>
+                                <div class="forecast-mini-track">
+                                    <div class="forecast-mini-fill bear-bg" style="width:@(fc.Bear * 100)%"></div>
+                                </div>
+                                <span class="forecast-mini-pct">@(fc.Bear.ToString("P0"))</span>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <p class="text-muted">전망 데이터가 없습니다. 엔진이 오프라인일 수 있습니다.</p>
+        }
+    </div>
+}
+
+<!-- Allocation Matrix -->
+@if (regime != null)
+{
+    <div class="section-card">
+        <h5>레짐별 배분 매트릭스
+            <HelpTooltip Title="Regime Allocation Matrix"
+                         Description="각 레짐별 전략 배분 비율 — 레짐 전환 시 자동 리밸런싱" />
+        </h5>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr><th>전략</th><th>Bull</th><th>Sideways</th><th>Bear</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>Low-Vol+Quality</td><td>25%</td><td>30%</td><td class="fw-bold">35%</td></tr>
+                    <tr><td>Vol-Momentum</td><td class="fw-bold">30%</td><td>15%</td><td>5%</td></tr>
+                    <tr><td>Pairs Trading</td><td>10%</td><td>25%</td><td>20%</td></tr>
+                    <tr><td>Vol-Targeting</td><td>20%</td><td>15%</td><td>10%</td></tr>
+                    <tr><td>Sentiment</td><td>10%</td><td>10%</td><td>5%</td></tr>
+                    <tr class="row-highlight"><td>Cash</td><td>5%</td><td>5%</td><td class="text-red fw-bold">25%</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<!-- Regime History -->
+<div class="section-card">
+    <h5>레짐 이력 (90일)
+        <HelpTooltip Title="Regime History"
+                     Description="과거 90일 레짐 변화 기록" />
+    </h5>
+    @if (history.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("Time"))">시간<span class="sort-arrow">@_histSort.Arrow("Time")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("Regime"))">레짐<span class="sort-arrow">@_histSort.Arrow("Regime")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("Confidence"))">신뢰도<span class="sort-arrow">@_histSort.Arrow("Confidence")</span></th>
+                        <th class="sortable" @onclick="@(() => _histSort.Toggle("Transition"))">전환<span class="sort-arrow">@_histSort.Arrow("Transition")</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var h in _histSort.Apply(history, _histCols).Take(30))
+                    {
+                        <tr>
+                            <td>@h.DetectedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td class="regime-@h.Regime fw-bold">@h.Regime.ToUpper()</td>
+                            <td>@(h.Confidence.ToString("P1"))</td>
+                            <td>
+                                @if (h.IsTransition)
+                                {
+                                    <span class="badge-transition">@h.PreviousRegime -> @h.Regime</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">레짐 이력이 없습니다.</p>
+    }
+</div>
+} @* end !_pageLoading *@
+
+@code {
+    private bool _pageLoading = true;
+    private RegimeState? regime;
+    private List<RegimeState> history = new();
+    private List<RegimeForecast> forecasts = new();
+
+    private readonly SortState _histSort = new();
+    private static readonly Dictionary<string, Func<RegimeState, object>> _histCols = new()
+    {
+        ["Time"] = x => x.DetectedAt,
+        ["Regime"] = x => x.Regime,
+        ["Confidence"] = x => x.Confidence,
+        ["Transition"] = x => x.IsTransition,
+    };
+    private HubConnection? hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var regimeTask = Db.GetCurrentRegimeAsync();
+            var historyTask = Db.GetRegimeHistoryAsync(90);
+            var forecastTask = LoadForecast();
+
+            await Task.WhenAll(regimeTask, historyTask, forecastTask);
+
+            regime = regimeTask.Result;
+            history = historyTask.Result;
+        }
+        catch { }
+        finally { _pageLoading = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                hubConnection = new HubConnectionBuilder()
+                    .WithUrl(Nav.ToAbsoluteUri("/hubs/realtime"))
+                    .WithAutomaticReconnect()
+                    .Build();
+
+                hubConnection.On<string, double>("RegimeChanged", async (r, c) =>
+                {
+                    regime = await Db.GetCurrentRegimeAsync();
+                    history = await Db.GetRegimeHistoryAsync(90);
+                    await LoadForecast();
+                    await InvokeAsync(StateHasChanged);
+                });
+
+                await hubConnection.StartAsync();
+            }
+            catch { }
+        }
+    }
+
+    private async Task LoadForecast()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var items = await client.GetFromJsonAsync<List<RegimeForecast>>("/regime/forecast");
+            forecasts = items ?? new();
+        }
+        catch
+        {
+            forecasts = new();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+            await hubConnection.DisposeAsync();
+    }
+}

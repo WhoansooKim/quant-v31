@@ -8,6 +8,7 @@ V3.1 Phase 3.3 — APScheduler 자동 실행
   5. 물리뷰 갱신 (일요일 02:00 ET)
 """
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -16,15 +17,23 @@ import pytz
 
 if TYPE_CHECKING:
     from engine.api.main import PortfolioOrchestrator
+    from engine.data.storage import PostgresStore
 
 logger = logging.getLogger(__name__)
 
 # 미국 동부시간
 ET = pytz.timezone("US/Eastern")
 
+# 모듈 레벨 pg 참조 (setup_scheduler에서 주입)
+_pg: "PostgresStore | None" = None
+
 
 def setup_scheduler(orchestrator: "PortfolioOrchestrator") -> AsyncIOScheduler:
     """전체 스케줄 설정 (미국 동부시간 기준)"""
+    global _pg
+    from engine.api.main import pg as main_pg
+    _pg = main_pg
+
     scheduler = AsyncIOScheduler(timezone=ET)
 
     # ─── 1. 메인 파이프라인: 장 마감 30분 전 (15:30 ET) ───
@@ -100,16 +109,25 @@ def setup_scheduler(orchestrator: "PortfolioOrchestrator") -> AsyncIOScheduler:
 async def _retrain_hmm(orchestrator: "PortfolioOrchestrator"):
     """HMM 모델 재학습"""
     logger.info("[scheduler] HMM retrain started")
+    start = datetime.now()
+    if _pg:
+        _pg.insert_pipeline_log('hmm_retrain', 'started')
     try:
         detector = orchestrator.regime_detector
         detector.fit()
+        elapsed = (datetime.now() - start).total_seconds()
         logger.info("[scheduler] HMM retrain completed")
+        if _pg:
+            _pg.insert_pipeline_log('hmm_retrain', 'completed', elapsed)
         if orchestrator.telegram:
             await orchestrator.telegram.send(
                 "🔄 <b>HMM 재학습 완료</b>\n월간 모델 업데이트 성공"
             )
     except Exception as e:
+        elapsed = (datetime.now() - start).total_seconds()
         logger.error(f"[scheduler] HMM retrain failed: {e}")
+        if _pg:
+            _pg.insert_pipeline_log('hmm_retrain', 'failed', elapsed, error_msg=str(e))
         if orchestrator.telegram:
             await orchestrator.telegram.send_error("HMM retrain", str(e))
 
@@ -117,11 +135,20 @@ async def _retrain_hmm(orchestrator: "PortfolioOrchestrator"):
 async def _collect_data(orchestrator: "PortfolioOrchestrator"):
     """일봉 데이터 수집 (yfinance)"""
     logger.info("[scheduler] Data collection started")
+    start = datetime.now()
+    if _pg:
+        _pg.insert_pipeline_log('data_collection', 'started')
     try:
         await orchestrator.collect_daily_data()
+        elapsed = (datetime.now() - start).total_seconds()
         logger.info("[scheduler] Data collection completed")
+        if _pg:
+            _pg.insert_pipeline_log('data_collection', 'completed', elapsed)
     except Exception as e:
+        elapsed = (datetime.now() - start).total_seconds()
         logger.error(f"[scheduler] Data collection failed: {e}")
+        if _pg:
+            _pg.insert_pipeline_log('data_collection', 'failed', elapsed, error_msg=str(e))
         if orchestrator.telegram:
             await orchestrator.telegram.send_error("Data collection", str(e))
 
@@ -129,23 +156,41 @@ async def _collect_data(orchestrator: "PortfolioOrchestrator"):
 async def _sentiment_scan(orchestrator: "PortfolioOrchestrator"):
     """FinBERT 센티먼트 스캔"""
     logger.info("[scheduler] Sentiment scan started")
+    start = datetime.now()
+    if _pg:
+        _pg.insert_pipeline_log('sentiment_scan', 'started')
     try:
         if hasattr(orchestrator, "sentiment") and orchestrator.sentiment:
             await orchestrator.scan_sentiment()
+            elapsed = (datetime.now() - start).total_seconds()
             logger.info("[scheduler] Sentiment scan completed")
+            if _pg:
+                _pg.insert_pipeline_log('sentiment_scan', 'completed', elapsed)
         else:
             logger.debug("[scheduler] Sentiment module not configured, skip")
     except Exception as e:
+        elapsed = (datetime.now() - start).total_seconds()
         logger.error(f"[scheduler] Sentiment scan failed: {e}")
+        if _pg:
+            _pg.insert_pipeline_log('sentiment_scan', 'failed', elapsed, error_msg=str(e))
 
 
 async def _refresh_views(orchestrator: "PortfolioOrchestrator"):
     """물리뷰(Materialized View) 갱신"""
     logger.info("[scheduler] Materialized view refresh started")
+    start = datetime.now()
+    if _pg:
+        _pg.insert_pipeline_log('mv_refresh', 'started')
     try:
         await orchestrator.refresh_materialized_views()
+        elapsed = (datetime.now() - start).total_seconds()
         logger.info("[scheduler] Materialized view refresh completed")
+        if _pg:
+            _pg.insert_pipeline_log('mv_refresh', 'completed', elapsed)
     except Exception as e:
+        elapsed = (datetime.now() - start).total_seconds()
         logger.error(f"[scheduler] MV refresh failed: {e}")
+        if _pg:
+            _pg.insert_pipeline_log('mv_refresh', 'failed', elapsed, error_msg=str(e))
         if orchestrator.telegram:
             await orchestrator.telegram.send_error("MV refresh", str(e))

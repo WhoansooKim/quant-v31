@@ -1,0 +1,678 @@
+@page "/admin"
+@attribute [Authorize]
+@using QuantDashboard.Models
+@using QuantDashboard.Services
+@using System.Text.Json
+@inject PostgresService Pg
+@inject IConfiguration Config
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<div class="admin-page" @onclick="CloseContextMenu">
+    <div class="page-header">
+        <h3>Admin</h3>
+        <span class="badge-version">MONITORING</span>
+    </div>
+
+    @* ─── Toast Message ─── *@
+    @if (!string.IsNullOrEmpty(_toastMsg))
+    {
+        <div class="toast-msg @(_toastIsError ? "toast-error" : "toast-ok")">@_toastMsg</div>
+    }
+
+    <PageLoadingOverlay Visible="@_loading" />
+
+    @if (!_loading)
+    {
+        @* ─── Engine Control ─── *@
+        <div class="section-title">엔진 제어</div>
+        <div class="stat-grid three-col">
+            <div class="stat-card">
+                <span class="stat-label">엔진 상태</span>
+                <span class="stat-value @(_engineStatus == "ONLINE" ? "val-go" : "val-stop")">@_engineStatus</span>
+                <span class="stat-sub">@(_engineUptime ?? "")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">API 상태</span>
+                <span class="stat-value @(_engineHealthOk ? "val-go" : "val-stop")">
+                    @(_engineHealthOk ? "OK" : "FAIL")
+                </span>
+                <span class="stat-sub">http://localhost:8000</span>
+            </div>
+            <div class="stat-card" style="display:flex;flex-direction:column;justify-content:center;gap:8px;">
+                <div class="job-actions" style="margin:0;padding:0;gap:6px;">
+                    <button class="job-btn jb-pipeline" disabled="@_engineActionRunning" @onclick="EngineStart">시작</button>
+                    <button class="job-btn jb-sentiment" disabled="@_engineActionRunning" @onclick="EngineStop" style="background:var(--bear);">중지</button>
+                    <button class="job-btn jb-data" disabled="@_engineActionRunning" @onclick="EngineRestart">재시작</button>
+                </div>
+            </div>
+        </div>
+
+        @* ─── Kill Switch Control ─── *@
+        <div class="section-title">KILL SWITCH 제어</div>
+        <div class="stat-grid" style="grid-template-columns: 1fr 2fr;">
+            <div class="stat-card">
+                <span class="stat-label">현재 단계</span>
+                <span class="stat-value kill-@_currentKillLevel.ToLower()">@_currentKillLevel</span>
+                <span class="stat-sub">MDD: @_currentKillMdd.ToString("P2")</span>
+            </div>
+            <div class="stat-card" style="display:flex;flex-direction:column;justify-content:center;gap:8px;">
+                <span class="stat-label">단계 변경</span>
+                <div class="job-actions" style="margin:0;padding:0;gap:6px;">
+                    <button class="job-btn" disabled="@(_killActionRunning || _currentKillLevel == "NORMAL")"
+                            style="background:var(--bull);" @onclick='() => ChangeKillLevel("NORMAL")'>NORMAL</button>
+                    <button class="job-btn" disabled="@(_killActionRunning || _currentKillLevel == "WARNING")"
+                            style="background:var(--sideways);color:#000;" @onclick='() => ChangeKillLevel("WARNING")'>WARNING</button>
+                    <button class="job-btn" disabled="@(_killActionRunning || _currentKillLevel == "DEFENSIVE")"
+                            style="background:#e67e22;" @onclick='() => ChangeKillLevel("DEFENSIVE")'>DEFENSIVE</button>
+                    <button class="job-btn" disabled="@(_killActionRunning || _currentKillLevel == "EMERGENCY")"
+                            style="background:var(--bear);" @onclick='() => ChangeKillLevel("EMERGENCY")'>EMERGENCY</button>
+                </div>
+            </div>
+        </div>
+
+        @* ─── A. Data Collection Status ─── *@
+        <div class="section-title">데이터 수집</div>
+        <div class="stat-grid three-col">
+            <div class="stat-card">
+                <span class="stat-label">최신 데이터</span>
+                <span class="stat-value">@(_dataStatus.LatestDataDate?.ToString("yyyy-MM-dd") ?? "N/A")</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">활성 종목</span>
+                <span class="stat-value">@_dataStatus.ActiveSymbols</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">최근 3일 종목</span>
+                <span class="stat-value">@_dataStatus.RecentSymbols</span>
+            </div>
+        </div>
+
+        @* ─── B. Sentiment Scan Status ─── *@
+        <div class="section-title">감성 스캔</div>
+        <div class="stat-grid" style="grid-template-columns: repeat(2, 1fr);">
+            <div class="stat-card">
+                <span class="stat-label">24시간 점수</span>
+                <span class="stat-value">@_sentimentStatus.Recent24hCount</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">마지막 스캔</span>
+                <span class="stat-value" style="font-size: 1.1rem;">@(_sentimentStatus.LastScanTime?.ToString("MM-dd HH:mm") ?? "N/A")</span>
+            </div>
+        </div>
+
+        @* ─── C. Latest Pipeline Detail ─── *@
+        @if (_pipelineDetail != null)
+        {
+            <div class="section-title">최근 파이프라인 결과</div>
+            <div class="section-card">
+                <div class="pipeline-steps">
+                    @foreach (var kv in _pipelineDetail)
+                    {
+                        <div class="pipeline-step">
+                            <span class="pipeline-step-name">@FormatStepName(kv.Key)</span>
+                            <span class="pipeline-step-value">@FormatStepValue(kv.Value)</span>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+
+        @* ─── D. Scheduler Next Runs ─── *@
+        @if (_schedulerJobs != null)
+        {
+            <div class="section-title">SCHEDULER <span style="font-weight:400;font-size:0.6rem;color:var(--t);margin-left:6px;">작업 우클릭으로 실행</span></div>
+            <div class="section-card">
+                <div class="table-responsive">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th class="sortable" @onclick="@(() => _schedSort.Toggle("Job"))">
+                                    작업<span class="sort-arrow">@_schedSort.Arrow("Job")</span></th>
+                                <th class="sortable" @onclick="@(() => _schedSort.Toggle("Name"))">
+                                    이름<span class="sort-arrow">@_schedSort.Arrow("Name")</span></th>
+                                <th class="sortable" @onclick="@(() => _schedSort.Toggle("Next Run"))">
+                                    다음 실행<span class="sort-arrow">@_schedSort.Arrow("Next Run")</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var job in _schedSort.Apply(_schedulerJobs, _schedCols))
+                            {
+                                <tr>
+                                    <td>
+                                        <span class="job-type-label job-ctx-target"
+                                              @oncontextmenu="(e) => ShowContextMenu(e, job.Id)"
+                                              @oncontextmenu:preventDefault="true">
+                                            @job.Id
+                                        </span>
+                                    </td>
+                                    <td>@job.Name</td>
+                                    <td>@(job.NextRun ?? "—")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+
+        @* ─── Context Menu (absolute positioned) ─── *@
+        @if (_ctxVisible)
+        {
+            <div class="context-menu" style="top:@(_ctxY)px;left:@(_ctxX)px;" @onclick:stopPropagation="true">
+                <div class="context-menu-item" @onclick="RunContextJob">▶ 수동 실행</div>
+            </div>
+        }
+
+        @* ─── E. Pipeline Execution Log ─── *@
+        <div class="section-title">파이프라인 로그</div>
+
+        @* ─── Pipeline Manual Run Buttons ─── *@
+        <div class="job-actions">
+            <button class="job-btn jb-pipeline" disabled="@_jobRunning" @onclick='() => RunJob("daily_pipeline", "/run")'>▶ 전체 파이프라인</button>
+            <button class="job-btn jb-data" disabled="@_jobRunning" @onclick='() => RunJob("data_collection", "/collect")'>▶ 데이터 수집</button>
+            <button class="job-btn jb-sentiment" disabled="@_jobRunning" @onclick='() => RunJob("sentiment_scan", "/sentiment-scan")'>▶ 감성분석</button>
+            <button class="job-btn jb-hmm" disabled="@_jobRunning" @onclick='() => RunJob("hmm_retrain", "/retrain-hmm")'>▶ HMM 재학습</button>
+            <button class="job-btn jb-mv" disabled="@_jobRunning" @onclick='() => RunJob("mv_refresh", "/refresh-views")'>▶ MV 갱신</button>
+        </div>
+
+        <div class="section-card">
+            @if (_logs.Count == 0)
+            {
+                <div class="empty-state">파이프라인 로그가 없습니다. 파이프라인을 실행하세요.</div>
+            }
+            else
+            {
+                <div class="table-responsive" style="max-height: 480px; overflow-y: auto;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th class="sortable" @onclick="@(() => _logSort.Toggle("Time"))">
+                                    시간<span class="sort-arrow">@_logSort.Arrow("Time")</span></th>
+                                <th class="sortable" @onclick="@(() => _logSort.Toggle("Job Type"))">
+                                    작업 유형<span class="sort-arrow">@_logSort.Arrow("Job Type")</span></th>
+                                <th class="sortable" @onclick="@(() => _logSort.Toggle("Status"))">
+                                    상태<span class="sort-arrow">@_logSort.Arrow("Status")</span></th>
+                                <th class="sortable" @onclick="@(() => _logSort.Toggle("Duration"))">
+                                    소요시간<span class="sort-arrow">@_logSort.Arrow("Duration")</span></th>
+                                <th class="sortable" @onclick="@(() => _logSort.Toggle("Details"))">
+                                    상세 / 오류<span class="sort-arrow">@_logSort.Arrow("Details")</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var log in _logSort.Apply(_logs, _logCols))
+                            {
+                                <tr>
+                                    <td>@log.Time.ToString("MM-dd HH:mm:ss")</td>
+                                    <td><span class="job-type-label @JobTypeCss(log.JobType)">@log.JobType</span></td>
+                                    <td><span class="status-badge @StatusCss(log.Status)">@log.Status</span></td>
+                                    <td>@(log.DurationSec.HasValue ? $"{log.DurationSec:F1}s" : "—")</td>
+                                    <td class="log-detail">@(log.ErrorMsg ?? TruncateDetails(log.Details) ?? "—")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+
+        <div class="refresh-note">
+            <button class="btn-refresh" @onclick="LoadDataAsync">새로고침</button>
+        </div>
+    }
+</div>
+
+@code {
+    private bool _loading = true;
+    private List<PipelineLogEntry> _logs = new();
+    private DataCollectionStatus _dataStatus = new(null, 0, 0);
+    private SentimentScanStatus _sentimentStatus = new(0, null);
+    private Dictionary<string, JsonElement>? _pipelineDetail;
+    private List<SchedulerJob>? _schedulerJobs;
+
+    // ── Sort States ──
+    private readonly SortState _schedSort = new();
+    private static readonly Dictionary<string, Func<SchedulerJob, object>> _schedCols = new()
+    {
+        ["Job"] = x => x.Id,
+        ["Name"] = x => x.Name,
+        ["Next Run"] = x => x.NextRun ?? "",
+    };
+
+    private readonly SortState _logSort = new();
+    private static readonly Dictionary<string, Func<PipelineLogEntry, object>> _logCols = new()
+    {
+        ["Time"] = x => x.Time,
+        ["Job Type"] = x => x.JobType,
+        ["Status"] = x => x.Status,
+        ["Duration"] = x => x.DurationSec ?? 0.0,
+        ["Details"] = x => x.ErrorMsg ?? x.Details ?? "",
+    };
+
+    // Engine control state
+    private string _engineStatus = "CHECKING...";
+    private string? _engineUptime;
+    private bool _engineHealthOk;
+    private bool _engineActionRunning;
+
+    // Kill Switch control state
+    private string _currentKillLevel = "NORMAL";
+    private double _currentKillMdd = 0;
+    private bool _killActionRunning;
+
+    // Context menu state
+    private bool _ctxVisible;
+    private double _ctxX;
+    private double _ctxY;
+    private string _ctxJobId = "";
+
+    // Toast state
+    private string _toastMsg = "";
+    private bool _toastIsError;
+
+    // Job running guard
+    private bool _jobRunning;
+
+    // Job ID → API endpoint mapping
+    private static readonly Dictionary<string, string> JobEndpointMap = new()
+    {
+        ["daily_pipeline"] = "/run",
+        ["data_collection"] = "/collect",
+        ["sentiment_scan"] = "/sentiment-scan",
+        ["hmm_retrain"] = "/retrain-hmm",
+        ["mv_refresh"] = "/refresh-views",
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            // Run ALL queries in parallel (DB + HTTP + systemctl)
+            var logsTask = Pg.GetPipelineLogsAsync(50);
+            var dataTask = Pg.GetDataCollectionStatusAsync();
+            var sentTask = Pg.GetSentimentScanStatusAsync();
+            var detailTask = Pg.GetLatestPipelineDetailAsync();
+            var schedulerTask = LoadSchedulerAsync();
+            var engineTask = CheckEngineStatusAsync();
+            var killTask = LoadKillSwitchStatusAsync();
+
+            await Task.WhenAll(logsTask, dataTask, sentTask, detailTask,
+                               schedulerTask, engineTask, killTask);
+
+            _logs = logsTask.Result;
+            _dataStatus = dataTask.Result;
+            _sentimentStatus = sentTask.Result;
+
+            var detailJson = detailTask.Result;
+            if (!string.IsNullOrEmpty(detailJson))
+            {
+                _pipelineDetail = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(detailJson);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Admin load error: {ex.Message}");
+        }
+
+        _loading = false;
+        StateHasChanged();
+    }
+
+    private async Task LoadSchedulerAsync()
+    {
+        try
+        {
+            var engineUrl = Config["EngineUrl"] ?? "http://localhost:8000";
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var resp = await http.GetStringAsync($"{engineUrl}/scheduler");
+            var doc = JsonDocument.Parse(resp);
+
+            if (doc.RootElement.TryGetProperty("jobs", out var jobsArr))
+            {
+                _schedulerJobs = new List<SchedulerJob>();
+                foreach (var j in jobsArr.EnumerateArray())
+                {
+                    _schedulerJobs.Add(new SchedulerJob(
+                        j.GetProperty("id").GetString() ?? "",
+                        j.GetProperty("name").GetString() ?? "",
+                        j.TryGetProperty("next_run", out var nr) && nr.ValueKind != JsonValueKind.Null
+                            ? nr.GetString() : null
+                    ));
+                }
+            }
+        }
+        catch
+        {
+            _schedulerJobs = null;
+        }
+    }
+
+    // ─── Context Menu ───
+
+    private void ShowContextMenu(MouseEventArgs e, string jobId)
+    {
+        _ctxJobId = jobId;
+        _ctxX = e.ClientX;
+        _ctxY = e.ClientY;
+        _ctxVisible = true;
+    }
+
+    private void CloseContextMenu()
+    {
+        _ctxVisible = false;
+    }
+
+    private async Task RunContextJob()
+    {
+        _ctxVisible = false;
+        if (JobEndpointMap.TryGetValue(_ctxJobId, out var endpoint))
+        {
+            await RunJob(_ctxJobId, endpoint);
+        }
+    }
+
+    // ─── Job Execution ───
+
+    private async Task RunJob(string jobId, string endpoint)
+    {
+        if (_jobRunning) return;
+        _jobRunning = true;
+        _toastMsg = $"{jobId} starting...";
+        _toastIsError = false;
+        StateHasChanged();
+
+        try
+        {
+            var engineUrl = Config["EngineUrl"] ?? "http://localhost:8000";
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            var resp = await http.PostAsync($"{engineUrl}{endpoint}", null);
+
+            if (resp.IsSuccessStatusCode)
+            {
+                _toastMsg = $"{jobId} triggered successfully";
+                _toastIsError = false;
+            }
+            else
+            {
+                _toastMsg = $"{jobId} failed: HTTP {(int)resp.StatusCode}";
+                _toastIsError = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _toastMsg = $"{jobId} error: {ex.Message}";
+            _toastIsError = true;
+        }
+
+        _jobRunning = false;
+        StateHasChanged();
+
+        // Auto-refresh after 3 seconds
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(3000);
+            await InvokeAsync(async () =>
+            {
+                _toastMsg = "";
+                await LoadDataAsync();
+            });
+        });
+    }
+
+    private string StatusCss(string status) => status switch
+    {
+        "completed" => "status-completed",
+        "failed" => "status-failed",
+        "started" => "status-started",
+        _ => ""
+    };
+
+    private string JobTypeCss(string jobType) => jobType switch
+    {
+        "daily_pipeline" => "jt-pipeline",
+        "data_collection" => "jt-data",
+        "sentiment_scan" => "jt-sentiment",
+        "hmm_retrain" => "jt-hmm",
+        "mv_refresh" => "jt-mv",
+        _ => ""
+    };
+
+    private string? TruncateDetails(string? details)
+    {
+        if (details == null) return null;
+        return details.Length > 120 ? details[..120] + "..." : details;
+    }
+
+    private string FormatStepName(string key) => key switch
+    {
+        "regime" => "1. 레짐",
+        "kill_switch" => "2. Kill Switch",
+        "allocation" => "3. 배분",
+        "signals" => "4. 시그널",
+        "sentiment" => "5. 감성",
+        "vol_scale" => "6. 변동성 스케일",
+        "orders_prepared" => "7. 주문",
+        "trades_executed" => "8. 거래",
+        _ => key
+    };
+
+    private string FormatStepValue(JsonElement val)
+    {
+        if (val.ValueKind == JsonValueKind.Object)
+        {
+            var parts = new List<string>();
+            foreach (var p in val.EnumerateObject())
+            {
+                if (p.Value.ValueKind == JsonValueKind.Number)
+                    parts.Add($"{p.Name}: {p.Value.GetDouble():P0}");
+                else
+                    parts.Add($"{p.Name}: {p.Value}");
+            }
+            return string.Join(" | ", parts);
+        }
+        if (val.ValueKind == JsonValueKind.Number)
+        {
+            var d = val.GetDouble();
+            if (d == Math.Floor(d)) return ((int)d).ToString();
+            return d.ToString("F2");
+        }
+        return val.ToString();
+    }
+
+    // ─── Engine Control ───
+
+    private async Task CheckEngineStatusAsync()
+    {
+        try
+        {
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "systemctl",
+                Arguments = "show quant-engine.service --property=ActiveState,SubState,ActiveEnterTimestamp --no-pager",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            proc.Start();
+            var output = await proc.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var props = new Dictionary<string, string>();
+            foreach (var line in lines)
+            {
+                var parts = line.Split('=', 2);
+                if (parts.Length == 2) props[parts[0].Trim()] = parts[1].Trim();
+            }
+
+            var active = props.GetValueOrDefault("ActiveState", "unknown");
+            _engineStatus = active == "active" ? "ONLINE" : active == "inactive" ? "OFFLINE" : active.ToUpper();
+
+            if (props.TryGetValue("ActiveEnterTimestamp", out var ts) && !string.IsNullOrEmpty(ts))
+            {
+                _engineUptime = $"since {ts}";
+            }
+        }
+        catch
+        {
+            _engineStatus = "UNKNOWN";
+        }
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var resp = await http.GetAsync("http://localhost:8000/health");
+            _engineHealthOk = resp.IsSuccessStatusCode;
+        }
+        catch
+        {
+            _engineHealthOk = false;
+        }
+    }
+
+    private async Task EngineStart() => await RunEngineAction("start");
+    private async Task EngineStop() => await RunEngineAction("stop");
+    private async Task EngineRestart() => await RunEngineAction("restart");
+
+    private async Task RunEngineAction(string action)
+    {
+        _engineActionRunning = true;
+        _toastMsg = $"Engine {action}...";
+        _toastIsError = false;
+        StateHasChanged();
+
+        try
+        {
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "systemctl",
+                Arguments = $"{action} quant-engine.service",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            proc.Start();
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            if (proc.ExitCode == 0)
+            {
+                _toastMsg = $"Engine {action} successful";
+                _toastIsError = false;
+            }
+            else
+            {
+                _toastMsg = $"Engine {action} failed: {stderr.Trim()}";
+                _toastIsError = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _toastMsg = $"Engine {action} error: {ex.Message}";
+            _toastIsError = true;
+        }
+
+        _engineActionRunning = false;
+        StateHasChanged();
+
+        // Refresh status after action
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(3000);
+            await InvokeAsync(async () =>
+            {
+                _toastMsg = "";
+                await CheckEngineStatusAsync();
+                StateHasChanged();
+            });
+        });
+    }
+
+    // ─── Kill Switch Control ───
+
+    private static readonly Dictionary<string, double> KillExposureMap = new()
+    {
+        ["NORMAL"] = 1.0, ["WARNING"] = 0.7, ["DEFENSIVE"] = 0.4, ["EMERGENCY"] = 0.0,
+    };
+
+    private async Task LoadKillSwitchStatusAsync()
+    {
+        try
+        {
+            var ks = await Pg.GetKillSwitchAsync();
+            if (ks != null)
+            {
+                _currentKillLevel = ks.ToLevel.ToUpper();
+                _currentKillMdd = ks.CurrentMdd;
+            }
+            else
+            {
+                // Fallback: portfolio_snapshots
+                var snaps = await Pg.GetPerformanceAsync(1);
+                var latest = snaps.FirstOrDefault();
+                if (latest != null)
+                {
+                    _currentKillLevel = latest.KillLevel?.ToUpper() ?? "NORMAL";
+                    _currentKillMdd = latest.MaxDrawdown;
+                }
+            }
+        }
+        catch { }
+    }
+
+    private async Task ChangeKillLevel(string newLevel)
+    {
+        _killActionRunning = true;
+        _toastMsg = $"Changing Kill Switch to {newLevel}...";
+        _toastIsError = false;
+        StateHasChanged();
+
+        try
+        {
+            var fromLevel = _currentKillLevel;
+            var exposure = KillExposureMap.GetValueOrDefault(newLevel, 1.0);
+
+            // Get current portfolio value
+            double pv = 100000;
+            try
+            {
+                var snaps = await Pg.GetPerformanceAsync(1);
+                var latest = snaps.FirstOrDefault();
+                if (latest != null) pv = (double)latest.TotalValue;
+            }
+            catch { }
+
+            await Pg.InsertKillSwitchLogAsync(fromLevel, newLevel, _currentKillMdd, pv, exposure);
+
+            _currentKillLevel = newLevel;
+            _toastMsg = $"Kill Switch changed: {fromLevel} -> {newLevel}";
+            _toastIsError = false;
+        }
+        catch (Exception ex)
+        {
+            _toastMsg = $"Kill Switch error: {ex.Message}";
+            _toastIsError = true;
+        }
+
+        _killActionRunning = false;
+        StateHasChanged();
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(5000);
+            await InvokeAsync(() => { _toastMsg = ""; StateHasChanged(); });
+        });
+    }
+
+    private record SchedulerJob(string Id, string Name, string? NextRun);
+}

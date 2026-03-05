@@ -200,6 +200,36 @@ class RegimeDetector:
         
         return state
     
+    def forecast_k_step(self, horizons: list[int] = [5, 21, 63]) -> list[dict]:
+        """Hamilton (1989) k-step regime forecast via transition matrix power.
+        P(regime_t+k | current) = current_probs @ T^k
+        """
+        if self.model is None:
+            self.load()
+
+        T = self.model.transmat_
+
+        # Use smoothed probs if available, otherwise run predict_current
+        if self._smoothed_probs is None:
+            self.predict_current()
+
+        current = self._smoothed_probs
+        results = []
+        for k in horizons:
+            Tk = np.linalg.matrix_power(T, k)
+            future = current @ Tk
+            future = future / future.sum()  # normalize
+            probs = {self.state_map[i]: float(future[i]) for i in range(self.n_states)}
+            dominant = max(probs, key=probs.get)
+            results.append({
+                "horizon_days": k,
+                "bull": probs.get("bull", 0),
+                "sideways": probs.get("sideways", 0),
+                "bear": probs.get("bear", 0),
+                "dominant": dominant,
+            })
+        return results
+
     def record_to_db(self, state: RegimeState):
         """레짐 상태를 DB에 기록"""
         with self._get_conn() as conn:

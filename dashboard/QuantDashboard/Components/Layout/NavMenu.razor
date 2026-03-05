@@ -1,7 +1,7 @@
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">
-            <span class="brand-icon">Q</span> Quant V3.1
+            <span class="brand-icon">S</span> Swing V4
         </a>
     </div>
 </div>
@@ -9,53 +9,81 @@
 <input type="checkbox" title="Navigation menu" class="navbar-toggler" />
 
 <div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+
+    <AuthorizeView>
+        <Authorized>
+            <div class="nav-user-section">
+                <span class="nav-user-avatar">@(context.User.Identity?.Name?[..1].ToUpper())</span>
+                <span class="nav-user-name">@context.User.Identity?.Name</span>
+                <form method="post" action="/account/logout">
+                    <button type="submit" class="nav-user-logout">Logout</button>
+                </form>
+            </div>
+        </Authorized>
+    </AuthorizeView>
+
     <nav class="flex-column">
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="nav-icon">&#x1F4CA;</span> Portfolio
+                <span class="material-symbols-outlined nav-icon">dashboard</span> Dashboard
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="regime">
-                <span class="nav-icon">&#x1F3AF;</span> Regime
+            <NavLink class="nav-link" href="pipeline">
+                <span class="material-symbols-outlined nav-icon">conversion_path</span> Pipeline
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="risk">
-                <span class="nav-icon">&#x1F6E1;</span> Risk
+            <NavLink class="nav-link" href="signals">
+                <span class="material-symbols-outlined nav-icon">notifications_active</span> Signals
+                @if (_pendingCount > 0)
+                {
+                    <span class="nav-badge">@_pendingCount</span>
+                }
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="strategies">
-                <span class="nav-icon">&#x2699;</span> Strategies
+            <NavLink class="nav-link" href="performance">
+                <span class="material-symbols-outlined nav-icon">monitoring</span> Performance
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="sentiment">
-                <span class="nav-icon">&#x1F9E0;</span> Sentiment
+            <NavLink class="nav-link" href="positions">
+                <span class="material-symbols-outlined nav-icon">account_balance_wallet</span> Positions
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="backtest">
-                <span class="nav-icon">&#x1F9EA;</span> Backtest
+                <span class="material-symbols-outlined nav-icon">query_stats</span> Backtest
             </NavLink>
         </div>
 
+        <div class="nav-divider"></div>
+
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="status">
-                <span class="nav-icon">&#x1F4CB;</span> Status
+            <NavLink class="nav-link" href="settings">
+                <span class="material-symbols-outlined nav-icon">settings</span> Settings
             </NavLink>
         </div>
     </nav>
-
-    <div class="nav-logout">
-        <form method="post" action="/account/logout">
-            <button type="submit" class="nav-logout-btn">Sign Out</button>
-        </form>
-    </div>
 </div>
+
+@code {
+    [Inject] private SwingService? SwingSvc { get; set; }
+    private int _pendingCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (SwingSvc != null)
+                _pendingCount = await SwingSvc.GetPendingSignalCountAsync();
+        }
+        catch { }
+    }
+}

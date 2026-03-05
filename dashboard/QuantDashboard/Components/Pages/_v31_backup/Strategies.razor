@@ -1,0 +1,371 @@
+@page "/strategies"
+@attribute [Authorize]
+@inject PostgresService Db
+@inject IJSRuntime JS
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+
+<PageTitle>Quant V3.1 - 전략</PageTitle>
+
+<PageLoadingOverlay Visible="@_loading" />
+
+<div class="page-header">
+    <h3>전략 성과</h3>
+    <HelpTooltip Title="전략 성과"
+                 Description="5개 전략의 성과 요약, 필터링, 기간별 차트" />
+</div>
+
+@if (!_loading)
+{
+
+<!-- Filter Bar -->
+<div class="filter-bar">
+    <select class="filter-select" @bind="filterStrategy">
+        <option value="">전체 전략</option>
+        <option value="lowvol_quality">LV+Quality</option>
+        <option value="vol_momentum">Vol-Momentum</option>
+        <option value="pairs_trading">Pairs Trading</option>
+        <option value="vol_targeting">Vol-Targeting</option>
+        <option value="sentiment">Sentiment</option>
+    </select>
+    <select class="filter-select" @bind="filterDirection">
+        <option value="">전체 방향</option>
+        <option value="long">LONG</option>
+        <option value="short">SHORT</option>
+    </select>
+    <input class="filter-input" placeholder="종목..." @bind="filterSymbol" @bind:event="oninput" style="width:120px" />
+    <button class="bt-btn bt-primary" @onclick="ApplyFilter">적용</button>
+</div>
+
+<!-- Summary Cards -->
+<div class="summary-bar">
+    @foreach (var s in strategyInfo)
+    {
+        var total = filteredSignals.Count(x => x.Strategy == s.Key);
+        var longs = filteredSignals.Count(x => x.Strategy == s.Key && x.Direction == "long");
+        var shorts = filteredSignals.Count(x => x.Strategy == s.Key && x.Direction == "short");
+        var avgStr = filteredSignals.Where(x => x.Strategy == s.Key).Select(x => x.Strength).DefaultIfEmpty(0).Average();
+
+        <div class="summary-card" style="border-top: 2px solid @s.Color">
+            <div class="summary-card-title">@s.Name</div>
+            <div class="summary-card-value">@total</div>
+            <div class="summary-card-detail">
+                <span class="clickable-count text-green" @onclick="@(() => SetFilter(s.Key, "long"))">@longs L</span>
+                /
+                <span class="clickable-count text-red" @onclick="@(() => SetFilter(s.Key, "short"))">@shorts S</span>
+                &middot; 평균: @(avgStr.ToString("F2"))
+            </div>
+        </div>
+    }
+</div>
+
+<!-- Period Tabs + Chart -->
+<div class="section-card">
+    <h5>시그널 추이
+        <HelpTooltip Title="시그널 추이"
+                     Description="기간별 전략 시그널 강도 추이 (Chart.js)" />
+    </h5>
+    <div class="tab-bar">
+        @foreach (var tab in periodTabs)
+        {
+            <button class="tab-btn @(activeTab == tab.Key ? "active" : "")"
+                    @onclick="@(() => SwitchTab(tab.Key))">@tab.Label</button>
+        }
+    </div>
+    <div class="chart-wrap">
+        <canvas id="strategyChart"></canvas>
+    </div>
+</div>
+
+<!-- Filtered Signals Table -->
+<div class="section-card">
+    <h5>시그널 (@filteredSignals.Count)
+        <HelpTooltip Title="시그널"
+                     Description="각 전략이 생성한 매매 시그널 (필터 적용됨). Strength는 시그널 강도로 -1.0 ~ +1.0 범위입니다. 양수(+)는 매수(Long) 확신도, 음수(-)는 매도(Short) 확신도를 의미합니다. 절대값이 클수록 전략이 해당 방향에 강한 확신을 가진 것이며, 0에 가까우면 약한 시그널입니다. 예: +0.85 = 강한 매수, -0.30 = 약한 매도." />
+    </h5>
+    @if (filteredSignals.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" @onclick="@(() => _sigSort.Toggle("Time"))">시간<span class="sort-arrow">@_sigSort.Arrow("Time")</span></th>
+                        <th class="sortable" @onclick="@(() => _sigSort.Toggle("Symbol"))">종목<span class="sort-arrow">@_sigSort.Arrow("Symbol")</span></th>
+                        <th class="sortable" @onclick="@(() => _sigSort.Toggle("Strategy"))">전략<span class="sort-arrow">@_sigSort.Arrow("Strategy")</span></th>
+                        <th class="sortable" @onclick="@(() => _sigSort.Toggle("Direction"))">방향<span class="sort-arrow">@_sigSort.Arrow("Direction")</span></th>
+                        <th class="sortable" style="text-align:right" @onclick="@(() => _sigSort.Toggle("Strength"))">강도<span class="sort-arrow">@_sigSort.Arrow("Strength")</span></th>
+                        <th class="sortable" @onclick="@(() => _sigSort.Toggle("Regime"))">레짐<span class="sort-arrow">@_sigSort.Arrow("Regime")</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var sig in _sigSort.Apply(filteredSignals, _sigCols).Take(100))
+                    {
+                        <tr>
+                            <td>@sig.Time.ToString("MM-dd HH:mm")</td>
+                            <td><SymbolLink Symbol="@sig.Symbol" Exchange="@(exchangeMap.GetValueOrDefault(sig.Symbol))" /></td>
+                            <td>@GetLabel(sig.Strategy)
+                                <HelpTooltip Title="@GetLabel(sig.Strategy)"
+                                             Description="@GetStrategyDesc(sig.Strategy)" />
+                            </td>
+                            <td class="@(sig.Direction == "long" ? "text-green" : "text-red")">
+                                @sig.Direction.ToUpper()
+                            </td>
+                            <td style="text-align:right">
+                                <div class="strength-bar">
+                                    <div class="strength-fill @(sig.Strength > 0 ? "bull-bg" : "bear-bg")"
+                                         style="width:@(Math.Abs(sig.Strength) * 100)%"></div>
+                                </div>
+                                @(sig.Strength.ToString("F2"))
+                            </td>
+                            <td class="regime-@sig.Regime">@sig.Regime</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">현재 필터에 맞는 시그널이 없습니다.</p>
+    }
+</div>
+
+<!-- Strategy Performance History -->
+<div class="section-card">
+    <h5>전략 일간 성과 (30일)
+        <HelpTooltip Title="전략 일간 성과"
+                     Description="전략별 일간 수익률, 배분 비율, 시그널 수" />
+    </h5>
+    @if (perf.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" @onclick="@(() => _perfSort.Toggle("Date"))">날짜<span class="sort-arrow">@_perfSort.Arrow("Date")</span></th>
+                        <th class="sortable" @onclick="@(() => _perfSort.Toggle("Strategy"))">전략<span class="sort-arrow">@_perfSort.Arrow("Strategy")</span></th>
+                        <th class="sortable" style="text-align:right" @onclick="@(() => _perfSort.Toggle("Return"))">수익률<span class="sort-arrow">@_perfSort.Arrow("Return")</span></th>
+                        <th class="sortable" style="text-align:right" @onclick="@(() => _perfSort.Toggle("Allocation"))">배분<span class="sort-arrow">@_perfSort.Arrow("Allocation")</span></th>
+                        <th class="sortable" style="text-align:right" @onclick="@(() => _perfSort.Toggle("Signals"))">시그널 수<span class="sort-arrow">@_perfSort.Arrow("Signals")</span></th>
+                        <th class="sortable" @onclick="@(() => _perfSort.Toggle("Regime"))">레짐<span class="sort-arrow">@_perfSort.Arrow("Regime")</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in _perfSort.Apply(perf, _perfCols).Take(50))
+                    {
+                        <tr>
+                            <td>@p.Time.ToString("yyyy-MM-dd")</td>
+                            <td>@GetLabel(p.Strategy)
+                                <HelpTooltip Title="@GetLabel(p.Strategy)"
+                                             Description="@GetStrategyDesc(p.Strategy)" />
+                            </td>
+                            <td class="@(p.DailyReturn >= 0 ? "text-green" : "text-red")" style="text-align:right">
+                                @(p.DailyReturn.ToString("P2"))
+                            </td>
+                            <td style="text-align:right">@(p.Allocation.ToString("P0"))</td>
+                            <td style="text-align:right">@p.SignalCount</td>
+                            <td class="regime-@p.Regime">@p.Regime</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted">성과 데이터가 없습니다. 파이프라인을 먼저 실행하세요.</p>
+    }
+</div>
+
+} @* end else _loading *@
+
+@code {
+    private bool _loading = true;
+    private List<SignalRecord> allSignals = new();
+    private List<SignalRecord> filteredSignals = new();
+    private List<StrategyPerf> perf = new();
+    private Dictionary<string, string> exchangeMap = new();
+
+    private readonly SortState _sigSort = new();
+    private static readonly Dictionary<string, Func<SignalRecord, object>> _sigCols = new()
+    {
+        ["Time"] = x => x.Time,
+        ["Symbol"] = x => x.Symbol,
+        ["Strategy"] = x => x.Strategy,
+        ["Direction"] = x => x.Direction,
+        ["Strength"] = x => x.Strength,
+        ["Regime"] = x => x.Regime,
+    };
+
+    private readonly SortState _perfSort = new();
+    private static readonly Dictionary<string, Func<StrategyPerf, object>> _perfCols = new()
+    {
+        ["Date"] = x => x.Time,
+        ["Strategy"] = x => x.Strategy,
+        ["Return"] = x => x.DailyReturn,
+        ["Allocation"] = x => x.Allocation,
+        ["Signals"] = x => x.SignalCount,
+        ["Regime"] = x => x.Regime,
+    };
+
+    private string filterStrategy = "";
+    private string filterDirection = "";
+    private string filterSymbol = "";
+    private string activeTab = "24h";
+    private bool chartRendered = false;
+
+    private static readonly List<(string Key, string Name, string Desc, string Color)> strategyInfo = new()
+    {
+        ("lowvol_quality", "LV+Quality", "Low volatility + ROE/FCF quality", "#00c896"),
+        ("vol_momentum", "V-Mom", "12-1 momentum / realized vol", "#6366f1"),
+        ("pairs_trading", "Pairs", "Cointegrated pairs mean-reversion", "#a78bfa"),
+        ("vol_targeting", "VolTgt", "Volatility targeting overlay", "#22d3ee"),
+        ("sentiment", "Sent", "FinBERT sentiment overlay", "#ffa502"),
+    };
+
+    private static readonly List<(string Key, string Label, int Hours)> periodTabs = new()
+    {
+        ("1h", "1h", 1), ("3h", "3h", 3), ("6h", "6h", 6), ("12h", "12h", 12),
+        ("24h", "24h", 24), ("3d", "3d", 72), ("7d", "7d", 168),
+        ("15d", "15d", 360), ("30d", "30d", 720), ("3M", "3M", 2160),
+    };
+
+    private static readonly Dictionary<string, string> _labels = new()
+    {
+        ["lowvol_quality"] = "LV+Q",
+        ["vol_momentum"] = "V-Mom",
+        ["pairs_trading"] = "Pairs",
+        ["vol_targeting"] = "VolTgt",
+        ["sentiment"] = "Sent",
+    };
+
+    private static readonly Dictionary<string, string> _descriptions = new()
+    {
+        ["lowvol_quality"] = "저변동성 + 고품질(ROE, FCF) 종목 선별. 하락장에서 방어력이 뛰어나며, Bear 레짐 시 35%까지 배분 확대. 안정적 수익 추구.",
+        ["vol_momentum"] = "12개월-1개월 모멘텀을 실현변동성으로 나눈 위험조정 모멘텀. Bull 레짐 시 30%로 공격적 배분. 추세 추종 전략.",
+        ["pairs_trading"] = "공적분(Cointegration) 검정을 통해 페어를 선별하고, Z-Score 기반 평균회귀 매매. Sideways 레짐 시 25%로 최적 배분. 시장 중립 전략.",
+        ["vol_targeting"] = "포트폴리오 전체의 실현변동성을 목표치(15%)에 맞추는 오버레이. 변동성 급등 시 레버리지 축소, 안정기에는 확대. 리스크 관리 보조 전략.",
+        ["sentiment"] = "FinBERT 모델로 뉴스 헤드라인 감성을 분석하여 매매 시그널 보정. 극단적 낙관/비관 시 역방향 오버레이 적용. 행동재무학 기반 보조 전략.",
+    };
+
+    private string GetLabel(string s) => _labels.GetValueOrDefault(s, s);
+
+    private string GetStrategyDesc(string s) => _descriptions.GetValueOrDefault(s, "전략 설명 없음");
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var sigTask = Db.GetRecentSignalsAsync(500);
+            var perfTask = Db.GetStrategyPerfAsync(30);
+            var exTask = Db.GetSymbolExchangeMapAsync();
+
+            await Task.WhenAll(sigTask, perfTask, exTask);
+
+            allSignals = sigTask.Result;
+            perf = perfTask.Result;
+            exchangeMap = exTask.Result;
+            ApplyFilterLogic();
+        }
+        catch { }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender || !chartRendered)
+        {
+            await RenderChart();
+            chartRendered = true;
+        }
+    }
+
+    private void ApplyFilter()
+    {
+        ApplyFilterLogic();
+        chartRendered = false;
+        StateHasChanged();
+    }
+
+    private void SetFilter(string strategy, string direction)
+    {
+        filterStrategy = strategy;
+        filterDirection = direction;
+        ApplyFilterLogic();
+        chartRendered = false;
+        StateHasChanged();
+    }
+
+    private void ApplyFilterLogic()
+    {
+        filteredSignals = allSignals
+            .Where(s =>
+                (string.IsNullOrEmpty(filterStrategy) || s.Strategy == filterStrategy) &&
+                (string.IsNullOrEmpty(filterDirection) || s.Direction == filterDirection) &&
+                (string.IsNullOrEmpty(filterSymbol) || s.Symbol.Contains(filterSymbol, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    private async Task SwitchTab(string tab)
+    {
+        activeTab = tab;
+        await RenderChart();
+    }
+
+    private async Task RenderChart()
+    {
+        var hours = periodTabs.FirstOrDefault(t => t.Key == activeTab).Hours;
+        if (hours == 0) hours = 24;
+
+        var cutoff = DateTime.UtcNow.AddHours(-hours);
+        var data = filteredSignals.Where(s => s.Time >= cutoff).ToList();
+
+        var strategies = data.Select(s => s.Strategy).Distinct().ToList();
+        var timeGroups = data.GroupBy(s => s.Time.ToString("MM-dd HH:mm"))
+                             .OrderBy(g => g.Key)
+                             .ToList();
+
+        var labels = timeGroups.Select(g => g.Key).ToArray();
+        var datasets = new List<object>();
+        var colors = new Dictionary<string, string>
+        {
+            ["lowvol_quality"] = "#00c896",
+            ["vol_momentum"] = "#6366f1",
+            ["pairs_trading"] = "#a78bfa",
+            ["vol_targeting"] = "#22d3ee",
+            ["sentiment"] = "#ffa502",
+        };
+
+        foreach (var strat in strategies)
+        {
+            var values = timeGroups.Select(g =>
+                g.Where(s => s.Strategy == strat).Sum(s => s.Strength)
+            ).ToArray();
+
+            datasets.Add(new
+            {
+                label = GetLabel(strat),
+                data = values,
+                borderColor = colors.GetValueOrDefault(strat, "#9ca3c0"),
+                backgroundColor = "transparent",
+                borderWidth = 2,
+                tension = 0.3,
+                pointRadius = 1,
+            });
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("chartHelper.createLine", "strategyChart", labels, datasets, (object?)null);
+        }
+        catch { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("chartHelper.destroy", "strategyChart"); } catch { }
+    }
+}

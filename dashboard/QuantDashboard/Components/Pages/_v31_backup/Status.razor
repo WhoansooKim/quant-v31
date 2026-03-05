@@ -5,9 +5,15 @@
 @using System.Text.Json
 @inject PostgresService Db
 @inject ILogger<Status> Logger
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IDisposable
 
-<PageTitle>System Status - Quant V3.1</PageTitle>
+<PageTitle>시스템 현황 - Quant V3.1</PageTitle>
 
+<PageLoadingOverlay Visible="@_pageLoading" />
+
+@if (!_pageLoading)
+{
 <div class="status-page">
 
     @* ═══ GO/STOP Banner ═══ *@
@@ -17,7 +23,7 @@
                          Description="실거래 진입 여부 최종 판단. 모든 검증 기준 충족 시 GO" />
         </span>
         <div class="go-stop-decision">@(_goStop?.Decision ?? "NO DECISION")</div>
-        <div class="go-stop-notes">@(_goStop?.Notes ?? "No backtest evaluation yet")</div>
+        <div class="go-stop-notes">@(_goStop?.Notes ?? "백테스트 평가가 아직 없습니다")</div>
         <div class="go-stop-meta">
             @if (_goStop != null)
             {
@@ -27,25 +33,25 @@
     </div>
 
     @* ═══ System Health Row ═══ *@
-    <div class="section-title">SYSTEM HEALTH
+    <div class="section-title">시스템 상태
         <HelpTooltip Title="System Health"
                      Description="DB, 엔진, 레짐, Kill Switch 등 시스템 구성요소 상태" />
     </div>
     <div class="stat-grid cols-6">
         <div class="stat-card">
-            <div class="stat-label">DATABASE</div>
+            <div class="stat-label">데이터베이스</div>
             <div class="stat-value @(_sys?.DbConnected == true ? "val-go" : "val-stop")">
                 @(_sys?.DbConnected == true ? "ONLINE" : "OFFLINE")
             </div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">ENGINE API</div>
+            <div class="stat-label">엔진 API</div>
             <div class="stat-value @(_engineOk ? "val-go" : "val-stop")">
                 @(_engineOk ? "ONLINE" : "OFFLINE")
             </div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">REGIME</div>
+            <div class="stat-label">레짐</div>
             <div class="stat-value regime-@(_sys?.LatestRegime ?? "unknown")">
                 @((_sys?.LatestRegime ?? "—").ToUpper())
             </div>
@@ -57,17 +63,17 @@
             </div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">SNAPSHOTS</div>
+            <div class="stat-label">스냅샷</div>
             <div class="stat-value">@(_sys?.SnapshotCount ?? 0)</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">BACKTEST RUNS</div>
+            <div class="stat-label">백테스트 실행</div>
             <div class="stat-value">@(_sys?.BacktestRunCount ?? 0)</div>
         </div>
     </div>
 
     @* ═══ GO/STOP Criteria Detail ═══ *@
-    <div class="section-title">GO/STOP CRITERIA
+    <div class="section-title">GO/STOP 기준
         <HelpTooltip Title="GO/STOP Criteria"
                      Description="실거래 진입 기준별 통과/미달 현황" />
     </div>
@@ -105,11 +111,11 @@
     }
     else
     {
-        <div class="empty-state">No GO/STOP evaluation. Run backtests first.</div>
+        <div class="empty-state">GO/STOP 평가가 없습니다. 백테스트를 먼저 실행하세요.</div>
     }
 
     @* ═══ Backtest Results Summary ═══ *@
-    <div class="section-title">BACKTEST RESULTS
+    <div class="section-title">백테스트 결과
         <HelpTooltip Title="Backtest Results"
                      Description="백테스트 핵심 지표 요약 (MC Sharpe, CAGR, DSR 등)" />
     </div>
@@ -117,17 +123,17 @@
         @if (_mc != null)
         {
             <div class="stat-card">
-                <div class="stat-label">MC MEDIAN SHARPE</div>
+                <div class="stat-label">MC 중앙값 Sharpe</div>
                 <div class="stat-value">@_mc.MedianSharpe.ToString("F3")</div>
                 <div class="stat-sub">p5: @_mc.P5Sharpe.ToString("F2") | p95: @_mc.P95Sharpe.ToString("F2")</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">MC MEDIAN CAGR</div>
+                <div class="stat-label">MC 중앙값 CAGR</div>
                 <div class="stat-value">@_mc.MedianCagr.ToString("P1")</div>
                 <div class="stat-sub">p5: @_mc.P5Cagr.ToString("P1") | p95: @_mc.P95Cagr.ToString("P1")</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">MC P(LOSS)</div>
+                <div class="stat-label">MC 손실확률</div>
                 <div class="stat-value @(_mc.ProbNegative > 0.3 ? "val-stop" : "val-go")">@_mc.ProbNegative.ToString("P1")</div>
                 <div class="stat-sub">MDD>20%: @_mc.ProbMddOver20.ToString("P1")</div>
             </div>
@@ -150,23 +156,29 @@
     @* ═══ Walk-Forward Table ═══ *@
     @if (_wfFolds.Count > 0)
     {
-        <div class="section-title">WALK-FORWARD VALIDATION (@_wfFolds.Count FOLDS)</div>
+        <div class="section-title">워크포워드 검증 (@_wfFolds.Count 폴드)</div>
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>#</th>
-                        <th>Train Period</th>
-                        <th>Test Period</th>
-                        <th>IS Sharpe</th>
-                        <th>OOS Sharpe</th>
-                        <th>OOS CAGR</th>
-                        <th>OOS MDD</th>
-                        <th>Calmar</th>
+                        <th class="sortable" @onclick="@(() => _wfSort.Toggle("#"))">
+                            #<span class="sort-arrow">@_wfSort.Arrow("#")</span></th>
+                        <th>훈련 기간</th>
+                        <th>테스트 기간</th>
+                        <th class="sortable" @onclick="@(() => _wfSort.Toggle("IS Sharpe"))">
+                            IS Sharpe<span class="sort-arrow">@_wfSort.Arrow("IS Sharpe")</span></th>
+                        <th class="sortable" @onclick="@(() => _wfSort.Toggle("OOS Sharpe"))">
+                            OOS Sharpe<span class="sort-arrow">@_wfSort.Arrow("OOS Sharpe")</span></th>
+                        <th class="sortable" @onclick="@(() => _wfSort.Toggle("OOS CAGR"))">
+                            OOS CAGR<span class="sort-arrow">@_wfSort.Arrow("OOS CAGR")</span></th>
+                        <th class="sortable" @onclick="@(() => _wfSort.Toggle("OOS MDD"))">
+                            OOS MDD<span class="sort-arrow">@_wfSort.Arrow("OOS MDD")</span></th>
+                        <th class="sortable" @onclick="@(() => _wfSort.Toggle("Calmar"))">
+                            Calmar<span class="sort-arrow">@_wfSort.Arrow("Calmar")</span></th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var f in _wfFolds)
+                    @foreach (var f in _wfSort.Apply(_wfFolds, _wfColsMap))
                     {
                         <tr>
                             <td>@f.FoldNum</td>
@@ -189,25 +201,33 @@
     @* ═══ Stress Test Table ═══ *@
     @if (_stress.Count > 0)
     {
-        <div class="section-title">REGIME STRESS TEST</div>
+        <div class="section-title">레짐 스트레스 테스트</div>
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Scenario</th>
-                        <th>Period</th>
-                        <th>Return</th>
-                        <th>MDD</th>
-                        <th>Sharpe</th>
-                        <th>Accuracy</th>
-                        <th>FPR</th>
-                        <th>Kill Level</th>
-                        <th>Lag</th>
-                        <th>Result</th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("Scenario"))">
+                            시나리오<span class="sort-arrow">@_stressSort.Arrow("Scenario")</span></th>
+                        <th>기간</th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("Return"))">
+                            수익률<span class="sort-arrow">@_stressSort.Arrow("Return")</span></th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("MDD"))">
+                            MDD<span class="sort-arrow">@_stressSort.Arrow("MDD")</span></th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("Sharpe"))">
+                            Sharpe<span class="sort-arrow">@_stressSort.Arrow("Sharpe")</span></th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("Accuracy"))">
+                            정확도<span class="sort-arrow">@_stressSort.Arrow("Accuracy")</span></th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("FPR"))">
+                            FPR<span class="sort-arrow">@_stressSort.Arrow("FPR")</span></th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("Kill Level"))">
+                            Kill Level<span class="sort-arrow">@_stressSort.Arrow("Kill Level")</span></th>
+                        <th class="sortable" @onclick="@(() => _stressSort.Toggle("Lag"))">
+                            Lag<span class="sort-arrow">@_stressSort.Arrow("Lag")</span></th>
+                        <th>결과</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var s in _stress)
+                    @foreach (var s in _stressSort.Apply(_stress, _stressColsMap))
                     {
                         var passed = s.RegimeAccuracy >= 0.5 && s.FalsePositiveRate < 0.25 && s.MaxDrawdown > -0.30;
                         <tr>
@@ -229,27 +249,27 @@
     }
 
     @* ═══ Portfolio Snapshots ═══ *@
-    <div class="section-title">PORTFOLIO SNAPSHOTS (RECENT)</div>
+    <div class="section-title">포트폴리오 스냅샷 (최근)</div>
     @if (_snapshots.Count > 0)
     {
         <div class="stat-grid cols-4">
             <div class="stat-card">
-                <div class="stat-label">LATEST VALUE</div>
+                <div class="stat-label">최신 자산</div>
                 <div class="stat-value">$@_snapshots[0].TotalValue.ToString("N0")</div>
                 <div class="stat-sub">@_snapshots[0].Time.ToString("yyyy-MM-dd HH:mm")</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">DAILY RETURN</div>
+                <div class="stat-label">일일 수익률</div>
                 <div class="stat-value @((_snapshots[0].DailyReturn ?? 0) >= 0 ? "val-go" : "val-stop")">
                     @((_snapshots[0].DailyReturn ?? 0).ToString("P2"))
                 </div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">CUMULATIVE RETURN</div>
+                <div class="stat-label">누적 수익률</div>
                 <div class="stat-value">@((_snapshots[0].CumulativeReturn ?? 0).ToString("P2"))</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">REGIME / KILL</div>
+                <div class="stat-label">레짐 / Kill</div>
                 <div class="stat-value regime-@_snapshots[0].Regime">@_snapshots[0].Regime.ToUpper()</div>
                 <div class="stat-sub">Kill: @_snapshots[0].KillLevel</div>
             </div>
@@ -259,17 +279,24 @@
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Time</th>
-                        <th>Total Value</th>
-                        <th>Cash</th>
-                        <th>Daily Ret</th>
-                        <th>Cumul Ret</th>
-                        <th>Regime</th>
-                        <th>Kill Level</th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Time"))">
+                            시간<span class="sort-arrow">@_snapSort.Arrow("Time")</span></th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Total Value"))">
+                            총 자산<span class="sort-arrow">@_snapSort.Arrow("Total Value")</span></th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Cash"))">
+                            현금<span class="sort-arrow">@_snapSort.Arrow("Cash")</span></th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Daily Ret"))">
+                            일일 수익<span class="sort-arrow">@_snapSort.Arrow("Daily Ret")</span></th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Cumul Ret"))">
+                            누적 수익<span class="sort-arrow">@_snapSort.Arrow("Cumul Ret")</span></th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Regime"))">
+                            레짐<span class="sort-arrow">@_snapSort.Arrow("Regime")</span></th>
+                        <th class="sortable" @onclick="@(() => _snapSort.Toggle("Kill Level"))">
+                            Kill Level<span class="sort-arrow">@_snapSort.Arrow("Kill Level")</span></th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var s in _snapshots.Take(20))
+                    @foreach (var s in _snapSort.Apply(_snapshots, _snapColsMap).Take(20))
                     {
                         <tr>
                             <td>@s.Time.ToString("MM/dd HH:mm")</td>
@@ -289,25 +316,29 @@
     }
     else
     {
-        <div class="empty-state">No portfolio snapshots. Start Paper Trading or trigger POST /paper/snapshot.</div>
+        <div class="empty-state">포트폴리오 스냅샷이 없습니다. Paper Trading을 시작하거나 POST /paper/snapshot을 호출하세요.</div>
     }
 
     @* ═══ GO/STOP History ═══ *@
     @if (_goStopHistory.Count > 0)
     {
-        <div class="section-title">GO/STOP DECISION HISTORY</div>
+        <div class="section-title">GO/STOP 판정 이력</div>
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Time</th>
-                        <th>Decision</th>
-                        <th>Notes</th>
-                        <th>By</th>
+                        <th class="sortable" @onclick="@(() => _goSort.Toggle("Time"))">
+                            시간<span class="sort-arrow">@_goSort.Arrow("Time")</span></th>
+                        <th class="sortable" @onclick="@(() => _goSort.Toggle("Decision"))">
+                            판정<span class="sort-arrow">@_goSort.Arrow("Decision")</span></th>
+                        <th class="sortable" @onclick="@(() => _goSort.Toggle("Notes"))">
+                            비고<span class="sort-arrow">@_goSort.Arrow("Notes")</span></th>
+                        <th class="sortable" @onclick="@(() => _goSort.Toggle("By"))">
+                            판정자<span class="sort-arrow">@_goSort.Arrow("By")</span></th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var g in _goStopHistory)
+                    @foreach (var g in _goSort.Apply(_goStopHistory, _goColsMap))
                     {
                         <tr>
                             <td>@g.DecidedAt.ToString("yyyy-MM-dd HH:mm")</td>
@@ -326,21 +357,27 @@
     @* ═══ Backtest Run History ═══ *@
     @if (_runs.Count > 0)
     {
-        <div class="section-title">BACKTEST RUN HISTORY</div>
+        <div class="section-title">백테스트 실행 이력</div>
         <div class="table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Started</th>
-                        <th>Finished</th>
+                        <th class="sortable" @onclick="@(() => _runSort.Toggle("ID"))">
+                            ID<span class="sort-arrow">@_runSort.Arrow("ID")</span></th>
+                        <th class="sortable" @onclick="@(() => _runSort.Toggle("Name"))">
+                            이름<span class="sort-arrow">@_runSort.Arrow("Name")</span></th>
+                        <th class="sortable" @onclick="@(() => _runSort.Toggle("Type"))">
+                            유형<span class="sort-arrow">@_runSort.Arrow("Type")</span></th>
+                        <th class="sortable" @onclick="@(() => _runSort.Toggle("Status"))">
+                            상태<span class="sort-arrow">@_runSort.Arrow("Status")</span></th>
+                        <th class="sortable" @onclick="@(() => _runSort.Toggle("Started"))">
+                            시작<span class="sort-arrow">@_runSort.Arrow("Started")</span></th>
+                        <th class="sortable" @onclick="@(() => _runSort.Toggle("Finished"))">
+                            완료<span class="sort-arrow">@_runSort.Arrow("Finished")</span></th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var r in _runs)
+                    @foreach (var r in _runSort.Apply(_runs, _runColsMap))
                     {
                         <tr>
                             <td>@r.RunId</td>
@@ -350,7 +387,7 @@
                                 @r.Status
                             </td>
                             <td>@r.StartedAt.ToString("MM/dd HH:mm")</td>
-                            <td>@(r.FinishedAt?.ToString("MM/dd HH:mm") ?? "running...")</td>
+                            <td>@(r.FinishedAt?.ToString("MM/dd HH:mm") ?? "실행 중...")</td>
                         </tr>
                     }
                 </tbody>
@@ -359,12 +396,14 @@
     }
 
     <div class="refresh-note">
-        Auto-refresh every 30s | Last: @DateTime.Now.ToString("HH:mm:ss") |
-        <button class="btn-refresh" @onclick="LoadData">Refresh Now</button>
+        30초마다 자동 새로고침 | 마지막: @DateTime.Now.ToString("HH:mm:ss") |
+        <button class="btn-refresh" @onclick="LoadData">새로고침</button>
     </div>
 </div>
+} @* end !_pageLoading *@
 
 @code {
+    private bool _pageLoading = true;
     private SystemStatus? _sys;
     private GoStopDecision? _goStop;
     private List<GoStopDecision> _goStopHistory = new();
@@ -378,9 +417,67 @@
     private bool _engineOk;
     private System.Threading.Timer? _timer;
 
+    // ── Sort States ──
+    private readonly SortState _wfSort = new();
+    private static readonly Dictionary<string, Func<WalkForwardFoldResult, object>> _wfColsMap = new()
+    {
+        ["#"] = x => x.FoldNum,
+        ["IS Sharpe"] = x => x.IsSharpe,
+        ["OOS Sharpe"] = x => x.OosSharpe,
+        ["OOS CAGR"] = x => x.OosCagr,
+        ["OOS MDD"] = x => x.OosMdd,
+        ["Calmar"] = x => x.OosCalmar,
+    };
+
+    private readonly SortState _stressSort = new();
+    private static readonly Dictionary<string, Func<StressTestResultRow, object>> _stressColsMap = new()
+    {
+        ["Scenario"] = x => x.Scenario,
+        ["Return"] = x => x.TotalReturn,
+        ["MDD"] = x => x.MaxDrawdown,
+        ["Sharpe"] = x => x.Sharpe,
+        ["Accuracy"] = x => x.RegimeAccuracy,
+        ["FPR"] = x => x.FalsePositiveRate,
+        ["Kill Level"] = x => x.KillLevelReached,
+        ["Lag"] = x => x.DetectionLagDays,
+    };
+
+    private readonly SortState _snapSort = new();
+    private static readonly Dictionary<string, Func<DailySnapshot, object>> _snapColsMap = new()
+    {
+        ["Time"] = x => x.Time,
+        ["Total Value"] = x => x.TotalValue,
+        ["Cash"] = x => x.CashValue ?? 0m,
+        ["Daily Ret"] = x => x.DailyReturn ?? 0.0,
+        ["Cumul Ret"] = x => x.CumulativeReturn ?? 0.0,
+        ["Regime"] = x => x.Regime,
+        ["Kill Level"] = x => x.KillLevel,
+    };
+
+    private readonly SortState _goSort = new();
+    private static readonly Dictionary<string, Func<GoStopDecision, object>> _goColsMap = new()
+    {
+        ["Time"] = x => x.DecidedAt,
+        ["Decision"] = x => x.Decision,
+        ["Notes"] = x => x.Notes ?? "",
+        ["By"] = x => x.DecidedBy ?? "",
+    };
+
+    private readonly SortState _runSort = new();
+    private static readonly Dictionary<string, Func<BacktestRun, object>> _runColsMap = new()
+    {
+        ["ID"] = x => x.RunId,
+        ["Name"] = x => x.Name,
+        ["Type"] = x => x.RunType,
+        ["Status"] = x => x.Status,
+        ["Started"] = x => x.StartedAt,
+        ["Finished"] = x => x.FinishedAt ?? DateTime.MinValue,
+    };
+
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
+        _pageLoading = false;
         _timer = new System.Threading.Timer(async _ =>
         {
             await LoadData();
@@ -388,19 +485,42 @@
         }, null, 30000, 30000);
     }
 
+    private bool _loading = false;
+
     private async Task LoadData()
     {
+        if (_loading) return;
+        _loading = true;
+
         try
         {
-            _sys = await Db.GetSystemStatusAsync();
-            _goStop = await Db.GetLatestGoStopAsync();
-            _goStopHistory = await Db.GetGoStopHistoryAsync(10);
-            _mc = await Db.GetLatestMonteCarloAsync();
-            _dsr = await Db.GetLatestDsrAsync();
-            _wfFolds = await Db.GetLatestWalkForwardAsync();
-            _stress = await Db.GetLatestStressTestAsync();
-            _snapshots = await Db.GetPerformanceAsync(30);
-            _runs = await Db.GetBacktestRunsAsync(15);
+            // Run all independent queries in parallel
+            var sysTask = Db.GetSystemStatusAsync();
+            var goStopTask = Db.GetLatestGoStopAsync();
+            var historyTask = Db.GetGoStopHistoryAsync(10);
+            var mcTask = Db.GetLatestMonteCarloAsync();
+            var dsrTask = Db.GetLatestDsrAsync();
+            var wfTask = Db.GetLatestWalkForwardAsync();
+            var stressTask = Db.GetLatestStressTestAsync();
+            var snapshotTask = Db.GetPerformanceAsync(30);
+            var runsTask = Db.GetBacktestRunsAsync(15);
+
+            // Engine health with 3s timeout
+            var engineTask = CheckEngineHealthAsync();
+
+            await Task.WhenAll(sysTask, goStopTask, historyTask, mcTask, dsrTask,
+                               wfTask, stressTask, snapshotTask, runsTask, engineTask);
+
+            _sys = sysTask.Result;
+            _goStop = goStopTask.Result;
+            _goStopHistory = historyTask.Result;
+            _mc = mcTask.Result;
+            _dsr = dsrTask.Result;
+            _wfFolds = wfTask.Result;
+            _stress = stressTask.Result;
+            _snapshots = snapshotTask.Result;
+            _runs = runsTask.Result;
+            _engineOk = engineTask.Result;
 
             // Parse criteria JSON
             if (_goStop?.Criteria != null)
@@ -416,20 +536,26 @@
                 }
                 catch { _criteria = null; }
             }
-
-            // Check engine health
-            try
-            {
-                using var http = new HttpClient();
-                var resp = await http.GetAsync("http://localhost:8000/health");
-                _engineOk = resp.IsSuccessStatusCode;
-            }
-            catch { _engineOk = false; }
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Status page data load failed");
         }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static async Task<bool> CheckEngineHealthAsync()
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var resp = await http.GetAsync("http://localhost:8000/health");
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
     }
 
     public void Dispose() => _timer?.Dispose();
