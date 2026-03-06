@@ -77,7 +77,7 @@ public class SwingService
         await using var cmd = new NpgsqlCommand(@"
             UPDATE swing_signals
             SET status = 'pending', approved_at = NULL, executed_at = NULL
-            WHERE signal_id = @id AND status = 'approved'", conn);
+            WHERE signal_id = @id AND status IN ('approved', 'rejected')", conn);
         cmd.Parameters.AddWithValue("@id", signalId);
         return await cmd.ExecuteNonQueryAsync() > 0;
     }

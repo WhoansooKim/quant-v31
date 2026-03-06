@@ -97,7 +97,7 @@
                                         Reject
                                     </button>
                                 }
-                                else if (s.Status == "approved")
+                                else if (s.Status == "approved" || s.Status == "rejected")
                                 {
                                     <button class="btn-sm btn-revert"
                                             @onclick="() => RevertToPending(s.SignalId)"
