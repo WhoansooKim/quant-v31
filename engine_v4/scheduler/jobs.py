@@ -26,6 +26,8 @@ from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
 from engine_v4.strategy.swing import SwingStrategy
 
+DEFAULT_INITIAL_CAPITAL = 2200.0
+
 logger = logging.getLogger(__name__)
 
 KST = pytz.timezone("Asia/Seoul")
@@ -167,6 +169,9 @@ class SwingScheduler:
             if entries or exits:
                 asyncio.run(self.notifier.notify_signals(entries, exits))
 
+            # Step 4: 스냅샷 생성
+            self.generate_snapshot()
+
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("scheduled_pipeline", "completed", elapsed, {
                 "symbols": len(symbols),
@@ -210,6 +215,9 @@ class SwingScheduler:
             if exits:
                 asyncio.run(self.notifier.notify_signals([], exits))
 
+            # 스냅샷 생성 (현재가 반영)
+            self.generate_snapshot()
+
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("exit_check", "completed", elapsed, {
                 "positions": len(positions),
@@ -251,3 +259,102 @@ class SwingScheduler:
                 })
         except Exception as e:
             logger.error(f"Expire signals failed: {e}")
+
+    def generate_snapshot(self) -> dict | None:
+        """포트폴리오 스냅샷 생성 — 현재가 조회 + DB 저장."""
+        import yfinance as yf
+
+        try:
+            INITIAL_CAPITAL = float(
+                self.pg.get_config_value("initial_capital",
+                                         str(DEFAULT_INITIAL_CAPITAL)))
+
+            positions = self.pg.get_open_positions()
+            open_count = len(positions)
+
+            # 현재가 조회
+            current_prices: dict[str, float] = {}
+            if positions:
+                symbols = list(set(p["symbol"] for p in positions))
+                try:
+                    data = yf.download(symbols, period="1d", progress=False)
+                    if len(symbols) == 1:
+                        current_prices[symbols[0]] = float(data["Close"].iloc[-1])
+                    else:
+                        for sym in symbols:
+                            try:
+                                current_prices[sym] = float(
+                                    data["Close"][sym].dropna().iloc[-1])
+                            except (KeyError, IndexError):
+                                pass
+                except Exception as e:
+                    logger.warning(f"yfinance fetch for snapshot: {e}")
+
+            # 포지션 현재가 업데이트 + 투자액/원가 계산
+            invested_usd = 0.0
+            entry_cost = 0.0
+            for p in positions:
+                qty = float(p.get("qty") or 1)
+                ep = float(p["entry_price"])
+                entry_cost += qty * ep
+                cp = current_prices.get(p["symbol"])
+                if cp:
+                    self.pg.update_position_price(p["position_id"], cp)
+                    invested_usd += qty * cp
+                else:
+                    invested_usd += qty * ep
+
+            # 실현손익
+            closed = self.pg.get_closed_positions(limit=9999)
+            realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
+
+            # 포트폴리오 계산
+            cash_usd = INITIAL_CAPITAL + realized_pnl - entry_cost
+            total_value = cash_usd + invested_usd
+
+            prev = self.pg.get_latest_snapshot()
+            prev_total = (float(prev["total_value_usd"])
+                          if prev and prev.get("total_value_usd")
+                          else INITIAL_CAPITAL)
+            daily_pnl = total_value - prev_total
+            daily_return = daily_pnl / prev_total if prev_total > 0 else 0
+            cumulative_return = (total_value / INITIAL_CAPITAL) - 1
+
+            # Max drawdown
+            all_snaps = self.pg.get_snapshots(days=9999)
+            peak = INITIAL_CAPITAL
+            worst_dd = 0.0
+            for s in all_snaps:
+                val = float(s.get("total_value_usd") or 0)
+                if val > peak:
+                    peak = val
+                dd = (val - peak) / peak if peak > 0 else 0
+                if dd < worst_dd:
+                    worst_dd = dd
+            if total_value > peak:
+                peak = total_value
+            curr_dd = (total_value - peak) / peak if peak > 0 else 0
+            if curr_dd < worst_dd:
+                worst_dd = curr_dd
+
+            snap = {
+                "total_value_usd": round(total_value, 2),
+                "total_value_krw": None,
+                "cash_usd": round(cash_usd, 2),
+                "invested_usd": round(invested_usd, 2),
+                "daily_pnl_usd": round(daily_pnl, 2),
+                "daily_return": round(daily_return, 6),
+                "cumulative_return": round(cumulative_return, 6),
+                "max_drawdown": round(worst_dd, 6),
+                "open_positions": open_count,
+                "exchange_rate": None,
+            }
+            self.pg.insert_snapshot(snap)
+            self.cache.set_snapshot(snap)
+            logger.info(f"Snapshot: total=${total_value:.2f}, "
+                        f"positions={open_count}, daily_pnl=${daily_pnl:.2f}")
+            return snap
+
+        except Exception as e:
+            logger.error(f"Snapshot generation failed: {e}", exc_info=True)
+            return None

@@ -9,7 +9,15 @@
 
 <div class="page-header">
     <h3>Performance</h3>
+    <button class="btn-action" @onclick="GenerateSnapshot" disabled="@snapshotLoading">
+        @(snapshotLoading ? "Updating..." : "Update Snapshot")
+    </button>
 </div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
+}
 
 <!-- Period Selector -->
 <div class="tab-bar">
@@ -148,6 +156,8 @@
     private double maxDD;
     private bool showBtSection = true;
     private bool _btChartRendered;
+    private bool snapshotLoading;
+    private string? statusMsg;
 
     protected override async Task OnInitializedAsync()
     {
@@ -373,5 +383,41 @@
             await JS.InvokeVoidAsync("chartHelper.createLine", "perfBtDDChart", labels, ddDs, (object?)null);
         }
         catch { }
+    }
+
+    private async Task GenerateSnapshot()
+    {
+        snapshotLoading = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/snapshot/generate", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var total = json.TryGetProperty("total_value_usd", out var tv) ? tv.GetDouble() : 0;
+                var positions = json.TryGetProperty("open_positions", out var op) ? op.GetInt32() : 0;
+                var pnl = json.TryGetProperty("daily_pnl_usd", out var dp) ? dp.GetDouble() : 0;
+                statusMsg = $"Snapshot updated: ${total:N2} ({positions} positions, daily P&L: {(pnl >= 0 ? "+" : "")}${pnl:N2})";
+                await LoadData();
+                await RenderCharts();
+                StateHasChanged();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Snapshot failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            snapshotLoading = false;
+        }
     }
 }

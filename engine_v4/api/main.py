@@ -472,6 +472,127 @@ def _run_pipeline():
 
 
 # ═══════════════════════════════════════════════════════════
+# Snapshot Generation
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/snapshot/generate")
+async def generate_snapshot():
+    """포트폴리오 스냅샷 수동 생성."""
+    try:
+        result = _generate_snapshot()
+        return {"status": "ok", **result}
+    except Exception as e:
+        logger.error(f"Snapshot generation failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+def _generate_snapshot() -> dict:
+    """현재 포트폴리오 상태로 스냅샷 생성.
+
+    계산:
+      cash = initial_capital + sum(realized_pnl) - sum(qty * entry_price)
+      invested = sum(qty * current_price)
+      total = cash + invested
+    """
+    import yfinance as yf
+
+    INITIAL_CAPITAL = float(pg.get_config_value("initial_capital", "2200"))
+
+    # 1) 오픈 포지션 + 현재가 조회
+    positions = pg.get_open_positions()
+    open_count = len(positions)
+
+    current_prices = {}
+    if positions:
+        symbols = list(set(p["symbol"] for p in positions))
+        try:
+            data = yf.download(symbols, period="1d", progress=False)
+            if len(symbols) == 1:
+                price = float(data["Close"].iloc[-1])
+                current_prices[symbols[0]] = price
+            else:
+                for sym in symbols:
+                    try:
+                        price = float(data["Close"][sym].dropna().iloc[-1])
+                        current_prices[sym] = price
+                    except (KeyError, IndexError):
+                        pass
+        except Exception as e:
+            logger.warning(f"yfinance fetch failed: {e}")
+
+    # 2) 포지션별 현재가 업데이트
+    invested_usd = 0.0
+    entry_cost = 0.0
+    for p in positions:
+        sym = p["symbol"]
+        qty = float(p.get("qty") or 1)
+        ep = float(p["entry_price"])
+        entry_cost += qty * ep
+
+        cp = current_prices.get(sym)
+        if cp:
+            pg.update_position_price(p["position_id"], cp)
+            invested_usd += qty * cp
+        else:
+            invested_usd += qty * ep  # fallback to entry price
+
+    # 3) 실현손익 합산 (closed positions)
+    closed = pg.get_closed_positions(limit=9999)
+    realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
+
+    # 4) 포트폴리오 계산
+    cash_usd = INITIAL_CAPITAL + realized_pnl - entry_cost
+    total_value = cash_usd + invested_usd
+
+    # 5) 일간/누적 수익률, 최대 낙폭
+    prev = pg.get_latest_snapshot()
+    prev_total = float(prev["total_value_usd"]) if prev and prev.get("total_value_usd") else INITIAL_CAPITAL
+    daily_pnl = total_value - prev_total
+    daily_return = daily_pnl / prev_total if prev_total > 0 else 0
+    cumulative_return = (total_value / INITIAL_CAPITAL) - 1
+
+    # Max drawdown: worst from all snapshots + current
+    all_snaps = pg.get_snapshots(days=9999)
+    peak = INITIAL_CAPITAL
+    worst_dd = 0.0
+    for s in all_snaps:
+        val = float(s.get("total_value_usd") or 0)
+        if val > peak:
+            peak = val
+        dd = (val - peak) / peak if peak > 0 else 0
+        if dd < worst_dd:
+            worst_dd = dd
+    # Include current
+    if total_value > peak:
+        peak = total_value
+    curr_dd = (total_value - peak) / peak if peak > 0 else 0
+    if curr_dd < worst_dd:
+        worst_dd = curr_dd
+
+    # 6) 스냅샷 저장
+    snap = {
+        "total_value_usd": round(total_value, 2),
+        "total_value_krw": None,
+        "cash_usd": round(cash_usd, 2),
+        "invested_usd": round(invested_usd, 2),
+        "daily_pnl_usd": round(daily_pnl, 2),
+        "daily_return": round(daily_return, 6),
+        "cumulative_return": round(cumulative_return, 6),
+        "max_drawdown": round(worst_dd, 6),
+        "open_positions": open_count,
+        "exchange_rate": None,
+    }
+    pg.insert_snapshot(snap)
+    cache.set_snapshot(snap)
+
+    logger.info(f"Snapshot: total=${total_value:.2f}, cash=${cash_usd:.2f}, "
+                f"invested=${invested_usd:.2f}, positions={open_count}, "
+                f"daily_pnl=${daily_pnl:.2f}")
+
+    return snap
+
+
+# ═══════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════
 
