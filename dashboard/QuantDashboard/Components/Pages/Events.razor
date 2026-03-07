@@ -1,0 +1,183 @@
+@page "/events"
+@attribute [Authorize]
+@inject IHttpClientFactory HttpFactory
+@inject IJSRuntime JS
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Events</PageTitle>
+
+<div class="page-header">
+    <h3>Event Monitor</h3>
+    <div style="display:flex; gap:0.5rem">
+        <button class="btn-action" @onclick="ScanEvents" disabled="@scanning">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">radar</span>
+            @(scanning ? "Scanning..." : "Scan Events")
+        </button>
+        <button class="btn-action btn-outline" @onclick="LoadEvents">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">refresh</span>
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
+}
+
+<!-- Filter Tabs -->
+<div class="tab-bar">
+    @foreach (var tab in new[] { "all", "critical", "warning", "info" })
+    {
+        <button class="tab-btn @(activeFilter == tab ? "active" : "")"
+                @onclick="() => SetFilter(tab)">
+            @tab.ToUpper()
+        </button>
+    }
+</div>
+
+<!-- Events Table -->
+<div class="section-card" style="margin-top:0.5rem">
+    @if (events.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width:140px">Time</th>
+                        <th>Severity</th>
+                        <th>Type</th>
+                        <th>Symbol</th>
+                        <th>Title</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var e in events)
+                    {
+                        var severity = e.GetValueOrDefault("severity", "info")?.ToString() ?? "info";
+                        var evType = e.GetValueOrDefault("event_type", "")?.ToString() ?? "";
+                        <tr class="@(severity == "critical" ? "row-critical" : severity == "warning" ? "row-warning" : "")">
+                            <td class="text-muted">
+                                @{
+                                    var created = e.GetValueOrDefault("created_at");
+                                    if (created is DateTime dt)
+                                    {
+                                        @dt.ToString("MM/dd HH:mm")
+                                    }
+                                    else if (created != null)
+                                    {
+                                        @created.ToString()!.Substring(5, 11)
+                                    }
+                                }
+                            </td>
+                            <td>
+                                <span class="severity-chip severity-@severity">@severity</span>
+                            </td>
+                            <td class="text-muted">@evType.Replace("_", " ")</td>
+                            <td style="font-weight:600">@(e.GetValueOrDefault("symbol") ?? "")</td>
+                            <td>@(e.GetValueOrDefault("title") ?? "")</td>
+                            <td>
+                                @{
+                                    var action = e.GetValueOrDefault("action_taken")?.ToString();
+                                    if (!string.IsNullOrEmpty(action))
+                                    {
+                                        <span class="action-chip">@action</span>
+                                    }
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p class="text-muted" style="padding:1rem">No events found. Click "Scan Events" to check for new events.</p>
+    }
+</div>
+
+@code {
+    private List<Dictionary<string, object?>> events = new();
+    private string activeFilter = "all";
+    private bool scanning;
+    private string? statusMsg;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadEvents();
+    }
+
+    private async Task LoadEvents()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var severity = activeFilter == "all" ? "" : $"&severity={activeFilter}";
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+                $"/events?limit=100{severity}");
+            events.Clear();
+            if (resp.TryGetProperty("events", out var arr))
+            {
+                foreach (var item in arr.EnumerateArray())
+                {
+                    var dict = new Dictionary<string, object?>();
+                    foreach (var prop in item.EnumerateObject())
+                    {
+                        dict[prop.Name] = prop.Value.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
+                            System.Text.Json.JsonValueKind.Number => prop.Value.GetDouble(),
+                            System.Text.Json.JsonValueKind.True => true,
+                            System.Text.Json.JsonValueKind.False => false,
+                            _ => prop.Value.ToString()
+                        };
+                    }
+                    events.Add(dict);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Load error: {ex.Message}";
+        }
+    }
+
+    private async Task ScanEvents()
+    {
+        scanning = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/events/scan", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var found = json.TryGetProperty("events_found", out var f) ? f.GetInt32() : 0;
+                statusMsg = $"Scan completed: {found} events detected";
+                await LoadEvents();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Scan failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            scanning = false;
+        }
+    }
+
+    private async Task SetFilter(string filter)
+    {
+        activeFilter = filter;
+        await LoadEvents();
+    }
+}

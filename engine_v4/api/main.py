@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from engine_v4.ai.data_feeds import FinnhubClient
 from engine_v4.ai.multi_factor import MultiFactorScorer
+from engine_v4.ai.optimizer import StrategyOptimizer
 from engine_v4.ai.sentiment import SentimentAnalyzer
 from engine_v4.backtest.runner import BacktestParams, BacktestRunner
 from engine_v4.broker.kis_client import KisClient
@@ -20,6 +21,8 @@ from engine_v4.config.settings import get_config
 from engine_v4.data.collector import DataCollector, UniverseManager
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
+from engine_v4.events.collector import EventCollector
+from engine_v4.events.processor import EventProcessor
 from engine_v4.risk.exit_manager import ExitManager
 from engine_v4.risk.position_manager import PositionManager
 from engine_v4.scheduler.jobs import SwingScheduler
@@ -47,6 +50,9 @@ notifier = TelegramNotifier(config)
 sentiment = SentimentAnalyzer(pg, config.anthropic_key)
 finnhub = FinnhubClient(config.finnhub_api_key)
 scorer = MultiFactorScorer(pg, finnhub, config.anthropic_key)
+optimizer = StrategyOptimizer(pg, backtester, config.anthropic_key)
+event_collector = EventCollector(pg, finnhub)
+event_processor = EventProcessor(pg)
 swing_scheduler = SwingScheduler(
     pg, cache, config, universe_mgr, collector, strategy, notifier)
 
@@ -92,6 +98,13 @@ class BacktestRequest(BaseModel):
     take_profit_pct: float = 0.10
     max_positions: int = 4
     position_pct: float = 0.05
+
+
+class OptimizeRequest(BaseModel):
+    start_date: date = date(2022, 1, 1)
+    end_date: date = date(2025, 12, 31)
+    initial_capital: float = 10000.0
+    rounds: int = 1
 
 
 class ConfigUpdate(BaseModel):
@@ -464,6 +477,91 @@ async def backtest_detail(run_id: int):
     if not run:
         raise HTTPException(404, "Backtest run not found")
     return run
+
+
+# ═══════════════════════════════════════════════════════════
+# Strategy Optimization (Phase D)
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/optimize/run")
+async def run_optimization(req: OptimizeRequest, bg: BackgroundTasks):
+    """LLM 기반 전략 최적화 (백그라운드)."""
+    bg.add_task(_run_optimization, req)
+    return {"status": "running",
+            "message": f"Optimization started: {req.start_date}~{req.end_date}, "
+                       f"${req.initial_capital:,.0f}, {req.rounds} round(s)"}
+
+
+def _run_optimization(req: OptimizeRequest):
+    try:
+        result = optimizer.optimize(
+            rounds=req.rounds,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            initial_capital=req.initial_capital,
+        )
+        cache.set_json("optimize_latest", result, ttl=86400)
+        logger.info(f"Optimization completed: {result.get('total_variations')} variants")
+    except Exception as e:
+        logger.error(f"Optimization failed: {e}", exc_info=True)
+        cache.set_json("optimize_latest", {"status": "failed", "error": str(e)}, ttl=3600)
+
+
+@app.get("/optimize/results")
+async def get_optimization_results():
+    """최적화 결과 조회 (캐시)."""
+    result = cache.get_json("optimize_latest")
+    if not result:
+        return {"status": "no_results", "message": "Run POST /optimize/run first"}
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
+# Events (Phase E)
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/events/scan")
+async def scan_events():
+    """보유 종목 이벤트 스캔 (Finnhub + yfinance)."""
+    try:
+        events = event_collector.scan_events()
+        results = event_processor.process_batch(events)
+        return {
+            "status": "ok",
+            "events_found": len(events),
+            "processed": len(results),
+            "results": results,
+        }
+    except Exception as e:
+        logger.error(f"Event scan failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/events")
+async def list_events(limit: int = 50,
+                      event_type: str | None = None,
+                      symbol: str | None = None,
+                      severity: str | None = None):
+    """이벤트 목록 조회."""
+    events = event_processor.get_events(
+        limit=limit, event_type=event_type,
+        symbol=symbol, severity=severity)
+    return {"events": events, "count": len(events)}
+
+
+@app.post("/webhook/tradingview")
+async def tradingview_webhook(payload: dict):
+    """TradingView 웹훅 수신."""
+    from engine_v4.events.models import Event
+    event = Event(
+        event_type="tradingview_alert",
+        symbol=payload.get("symbol"),
+        severity=payload.get("severity", "info"),
+        title=payload.get("title", "TradingView Alert"),
+        detail=payload,
+    )
+    result = event_processor.process(event)
+    return {"status": "received", **result}
 
 
 # ═══════════════════════════════════════════════════════════
