@@ -10,6 +10,10 @@
 <div class="page-header">
     <h3>Trade Signals</h3>
     <div style="display:flex; gap:0.5rem">
+        <button class="btn-action" style="background:var(--accent-blue, #60a5fa)" @onclick="ScoreAll" disabled="@scoring">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">analytics</span>
+            @(scoring ? "Scoring..." : "Factor Score")
+        </button>
         <button class="btn-action" style="background:var(--accent-purple, #a78bfa)" @onclick="AnalyzeAll" disabled="@analyzing">
             <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">psychology</span>
             @(analyzing ? "Analyzing..." : "AI Analyze")
@@ -59,6 +63,7 @@
                         <th title="5d Breakout">Break</th>
                         <th title="Volume Surge">Vol</th>
                         <th class="sortable" title="AI Sentiment Score" @onclick='() => sigSort.Toggle("ai")'>AI@(sigSort.Arrow("ai"))</th>
+                        <th class="sortable" title="Multi-Factor Composite Score (T40+S30+F30)" @onclick='() => sigSort.Toggle("composite")'>Score@(sigSort.Arrow("composite"))</th>
                         <th class="sortable" @onclick='() => sigSort.Toggle("status")'>Status@(sigSort.Arrow("status"))</th>
                         <th>Actions</th>
                     </tr>
@@ -102,6 +107,25 @@
                                             @onclick="() => AnalyzeSingle(s.SignalId)"
                                             disabled="@analyzing">
                                         <span class="material-symbols-outlined" style="font-size:14px">psychology</span>
+                                    </button>
+                                }
+                            </td>
+                            <td>
+                                @if (s.CompositeScore != null)
+                                {
+                                    <span class="composite-score composite-@GetCompositeClass(s.CompositeScore.Value)"
+                                          title="T:@(s.TechnicalScore?.ToString("F0") ?? "-") S:@(s.SentimentScore?.ToString("F0") ?? "-") F:@(s.FlowScore?.ToString("F0") ?? "-")"
+                                          style="cursor:pointer"
+                                          @onclick="() => ShowFactorDetail(s)">
+                                        @(s.CompositeScore?.ToString("F0"))
+                                    </span>
+                                }
+                                else
+                                {
+                                    <button class="btn-sm btn-score" title="Run Factor Scoring"
+                                            @onclick="() => ScoreSingle(s.SignalId)"
+                                            disabled="@scoring">
+                                        <span class="material-symbols-outlined" style="font-size:14px">analytics</span>
                                     </button>
                                 }
                             </td>
@@ -195,6 +219,91 @@
     </div>
 }
 
+<!-- Factor Score Detail Popup -->
+@if (factorDetailVisible && factorDetailSignal != null)
+{
+    <div class="modal-overlay" @onclick="CloseFactorDetail">
+        <div class="modal-panel" style="max-width:520px" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h4>Factor Score — @factorDetailSignal.Symbol</h4>
+                <button class="btn-close" @onclick="CloseFactorDetail">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem">
+                    <span class="composite-score-large composite-@GetCompositeClass(factorDetailSignal.CompositeScore ?? 0)">
+                        @(factorDetailSignal.CompositeScore?.ToString("F0") ?? "—")
+                    </span>
+                    <div>
+                        <div class="text-muted" style="font-size:0.75rem">Composite Score</div>
+                        <div style="font-size:0.85rem">@GetCompositeLabel(factorDetailSignal.CompositeScore ?? 0)</div>
+                    </div>
+                </div>
+                <!-- Factor Bars -->
+                <div class="factor-bars">
+                    <div class="factor-row">
+                        <span class="factor-label">Technical (40%)</span>
+                        <div class="factor-bar-bg">
+                            <div class="factor-bar factor-bar-tech" style="width:@(factorDetailSignal.TechnicalScore ?? 0)%"></div>
+                        </div>
+                        <span class="factor-val">@(factorDetailSignal.TechnicalScore?.ToString("F0") ?? "-")</span>
+                    </div>
+                    <div class="factor-row">
+                        <span class="factor-label">Sentiment (30%)</span>
+                        <div class="factor-bar-bg">
+                            <div class="factor-bar factor-bar-sent" style="width:@(factorDetailSignal.SentimentScore ?? 0)%"></div>
+                        </div>
+                        <span class="factor-val">@(factorDetailSignal.SentimentScore?.ToString("F0") ?? "-")</span>
+                    </div>
+                    <div class="factor-row">
+                        <span class="factor-label">Flow (30%)</span>
+                        <div class="factor-bar-bg">
+                            <div class="factor-bar factor-bar-flow" style="width:@(factorDetailSignal.FlowScore ?? 0)%"></div>
+                        </div>
+                        <span class="factor-val">@(factorDetailSignal.FlowScore?.ToString("F0") ?? "-")</span>
+                    </div>
+                </div>
+                @if (factorParsed != null)
+                {
+                    @if (factorParsed.TryGetValue("sentiment", out var sentObj) && sentObj is System.Text.Json.JsonElement sentEl)
+                    {
+                        <div class="ai-section" style="margin-top:0.75rem">
+                            <div class="ai-section-label">Sentiment Detail</div>
+                            <div class="ai-section-text">
+                                @(sentEl.TryGetProperty("summary", out var sum) ? sum.GetString() : "N/A")
+                                <span class="text-muted"> (@(sentEl.TryGetProperty("news_count", out var nc) ? nc.GetInt32().ToString() : "0") articles, @(sentEl.TryGetProperty("source", out var src) ? src.GetString() : ""))</span>
+                            </div>
+                        </div>
+                    }
+                    @if (factorParsed.TryGetValue("flow", out var flowObj) && flowObj is System.Text.Json.JsonElement flowEl)
+                    {
+                        <div class="ai-section">
+                            <div class="ai-section-label">Flow Detail</div>
+                            <div class="ai-section-text">
+                                @if (flowEl.TryGetProperty("insider", out var ins))
+                                {
+                                    <span>Insider: Buy @(ins.TryGetProperty("buys", out var b) ? b.ToString() : "0") / Sell @(ins.TryGetProperty("sells", out var sl) ? sl.ToString() : "0")</span>
+                                }
+                                @if (flowEl.TryGetProperty("recommendations", out var rec))
+                                {
+                                    <span> | Analyst: Buy @(rec.TryGetProperty("buy", out var rb) ? rb.ToString() : "0") Hold @(rec.TryGetProperty("hold", out var rh) ? rh.ToString() : "0") Sell @(rec.TryGetProperty("sell", out var rs) ? rs.ToString() : "0")</span>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+                <div class="text-muted" style="font-size:0.7rem; margin-top:0.5rem">
+                    @if (factorDetailSignal.FactorScoredAt != null)
+                    {
+                        <span>Scored: @factorDetailSignal.FactorScoredAt.Value.ToString("MM/dd HH:mm")</span>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 <SymbolDetailModal Visible="@modalVisible" Symbol="@modalSymbol" OnClose="CloseModal" />
 
 @code {
@@ -204,12 +313,18 @@
     private bool scanning;
     private bool processing;
     private bool analyzing;
+    private bool scoring;
     private string? statusMsg;
 
     // AI Detail popup
     private bool aiDetailVisible;
     private SwingSignal? aiDetailSignal;
     private Dictionary<string, string>? aiParsed;
+
+    // Factor Detail popup
+    private bool factorDetailVisible;
+    private SwingSignal? factorDetailSignal;
+    private Dictionary<string, object>? factorParsed;
 
     // Sort state
     private SortState sigSort = new();
@@ -222,6 +337,7 @@
         ["price"] = s => (double)(s.EntryPrice ?? 0),
         ["rank"] = s => s.Return20dRank ?? 0,
         ["ai"] = s => s.LlmScore ?? 0,
+        ["composite"] = s => s.CompositeScore ?? 0,
         ["status"] = s => s.Status,
     };
 
@@ -445,6 +561,96 @@
     }
 
     private void CloseAiDetail() { aiDetailVisible = false; }
+
+    // ─── Factor Scoring Methods ────────────────────
+
+    private async Task ScoreSingle(long signalId)
+    {
+        scoring = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync($"/signals/{signalId}/score", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var composite = json.TryGetProperty("composite_score", out var cs) ? cs.GetDouble() : 0;
+                statusMsg = $"Factor Score for #{signalId}: {composite:F0}/100";
+                await LoadSignals();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Scoring failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            scoring = false;
+        }
+    }
+
+    private async Task ScoreAll()
+    {
+        scoring = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/signals/score-pending", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var count = json.TryGetProperty("scored", out var cnt) ? cnt.GetInt32() : 0;
+                statusMsg = $"Factor scoring completed: {count} signals scored";
+                await LoadSignals();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Scoring failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            scoring = false;
+        }
+    }
+
+    private void ShowFactorDetail(SwingSignal signal)
+    {
+        factorDetailSignal = signal;
+        factorParsed = null;
+        if (!string.IsNullOrEmpty(signal.FactorDetail))
+        {
+            try
+            {
+                factorParsed = System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, object>>(signal.FactorDetail);
+            }
+            catch { }
+        }
+        factorDetailVisible = true;
+    }
+
+    private void CloseFactorDetail() { factorDetailVisible = false; }
+
+    private static string GetCompositeClass(double score)
+        => score >= 70 ? "high" : score >= 50 ? "mid" : "low";
+
+    private static string GetCompositeLabel(double score)
+        => score >= 70 ? "Strong Signal" : score >= 50 ? "Moderate" : "Weak";
 
     private static string GetAiScoreClass(int score)
         => score >= 8 ? "high" : score >= 5 ? "mid" : "low";

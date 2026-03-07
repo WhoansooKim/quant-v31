@@ -33,14 +33,18 @@ public class SwingService
                        stop_loss, take_profit, return_20d_rank, trend_aligned,
                        breakout_5d, volume_surge, exit_reason, position_id,
                        status, approved_at, executed_at,
-                       llm_score, llm_analysis, llm_analyzed_at
+                       llm_score, llm_analysis, llm_analyzed_at,
+                       technical_score, sentiment_score, flow_score,
+                       composite_score, factor_detail, factor_scored_at
                 FROM swing_signals WHERE status = @status
                 ORDER BY time DESC LIMIT @limit"
             : @"SELECT signal_id, time, symbol, signal_type, entry_price,
                        stop_loss, take_profit, return_20d_rank, trend_aligned,
                        breakout_5d, volume_surge, exit_reason, position_id,
                        status, approved_at, executed_at,
-                       llm_score, llm_analysis, llm_analyzed_at
+                       llm_score, llm_analysis, llm_analyzed_at,
+                       technical_score, sentiment_score, flow_score,
+                       composite_score, factor_detail, factor_scored_at
                 FROM swing_signals ORDER BY time DESC LIMIT @limit";
 
         await using var cmd = new NpgsqlCommand(sql, conn);
@@ -69,7 +73,13 @@ public class SwingService
                 ExecutedAt: r.IsDBNull(15) ? null : r.GetDateTime(15),
                 LlmScore: r.IsDBNull(16) ? null : r.GetInt32(16),
                 LlmAnalysis: r.IsDBNull(17) ? null : r.GetString(17),
-                LlmAnalyzedAt: r.IsDBNull(18) ? null : r.GetDateTime(18)
+                LlmAnalyzedAt: r.IsDBNull(18) ? null : r.GetDateTime(18),
+                TechnicalScore: r.IsDBNull(19) ? null : r.GetDouble(19),
+                SentimentScore: r.IsDBNull(20) ? null : r.GetDouble(20),
+                FlowScore: r.IsDBNull(21) ? null : r.GetDouble(21),
+                CompositeScore: r.IsDBNull(22) ? null : r.GetDouble(22),
+                FactorDetail: r.IsDBNull(23) ? null : r.GetString(23),
+                FactorScoredAt: r.IsDBNull(24) ? null : r.GetDateTime(24)
             ));
         }
         return signals;
@@ -579,7 +589,9 @@ public class SwingService
                    stop_loss, take_profit, return_20d_rank, trend_aligned,
                    breakout_5d, volume_surge, exit_reason, position_id,
                    status, approved_at, executed_at,
-                   llm_score, llm_analysis, llm_analyzed_at
+                   llm_score, llm_analysis, llm_analyzed_at,
+                   technical_score, sentiment_score, flow_score,
+                   composite_score, factor_detail, factor_scored_at
             FROM swing_signals WHERE symbol = @sym
             ORDER BY time DESC LIMIT 1", conn);
         cmd3.Parameters.AddWithValue("@sym", symbol);
@@ -609,7 +621,13 @@ public class SwingService
                         ExecutedAt: r3.IsDBNull(15) ? null : r3.GetDateTime(15),
                         LlmScore: r3.IsDBNull(16) ? null : r3.GetInt32(16),
                         LlmAnalysis: r3.IsDBNull(17) ? null : r3.GetString(17),
-                        LlmAnalyzedAt: r3.IsDBNull(18) ? null : r3.GetDateTime(18)
+                        LlmAnalyzedAt: r3.IsDBNull(18) ? null : r3.GetDateTime(18),
+                        TechnicalScore: r3.IsDBNull(19) ? null : r3.GetDouble(19),
+                        SentimentScore: r3.IsDBNull(20) ? null : r3.GetDouble(20),
+                        FlowScore: r3.IsDBNull(21) ? null : r3.GetDouble(21),
+                        CompositeScore: r3.IsDBNull(22) ? null : r3.GetDouble(22),
+                        FactorDetail: r3.IsDBNull(23) ? null : r3.GetString(23),
+                        FactorScoredAt: r3.IsDBNull(24) ? null : r3.GetDateTime(24)
                     )
                 };
             }

@@ -11,6 +11,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from engine_v4.ai.data_feeds import FinnhubClient
+from engine_v4.ai.multi_factor import MultiFactorScorer
 from engine_v4.ai.sentiment import SentimentAnalyzer
 from engine_v4.backtest.runner import BacktestParams, BacktestRunner
 from engine_v4.broker.kis_client import KisClient
@@ -43,6 +45,8 @@ backtester = BacktestRunner(pg)
 kis = KisClient(config)
 notifier = TelegramNotifier(config)
 sentiment = SentimentAnalyzer(pg, config.anthropic_key)
+finnhub = FinnhubClient(config.finnhub_api_key)
+scorer = MultiFactorScorer(pg, finnhub, config.anthropic_key)
 swing_scheduler = SwingScheduler(
     pg, cache, config, universe_mgr, collector, strategy, notifier)
 
@@ -293,6 +297,41 @@ async def analyze_pending_signals():
 
 
 # ═══════════════════════════════════════════════════════════
+# Multi-Factor Scoring
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/signals/{signal_id}/score")
+async def score_signal(signal_id: int):
+    """단일 시그널 멀티팩터 스코어링."""
+    sig = pg.get_signal(signal_id)
+    if not sig:
+        raise HTTPException(404, "Signal not found")
+    try:
+        result = scorer.score_signal(signal_id)
+        return result
+    except Exception as e:
+        logger.error(f"Factor scoring failed for signal {signal_id}: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/signals/score-pending")
+async def score_pending_signals():
+    """모든 pending 시그널 멀티팩터 스코어링."""
+    try:
+        results = scorer.score_pending_signals()
+        return {
+            "status": "ok",
+            "scored": len(results),
+            "finnhub": finnhub.is_available,
+            "claude": scorer._claude is not None,
+            "results": results,
+        }
+    except Exception as e:
+        logger.error(f"Batch factor scoring failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════
 # Step 4: Positions
 # ═══════════════════════════════════════════════════════════
 
@@ -482,6 +521,14 @@ def _run_pipeline():
         # Step 2: Scan
         entries = strategy.scan_entries()
         exits = strategy.scan_exits()
+
+        # Step 2.5: Multi-Factor Scoring (entries only)
+        if entries and config.factor_scoring_enabled:
+            try:
+                scored = scorer.score_pending_signals()
+                logger.info(f"Factor scoring: {len(scored)} signals scored")
+            except Exception as e:
+                logger.warning(f"Factor scoring failed (non-fatal): {e}")
 
         # Step 3: Notify
         if entries or exits:

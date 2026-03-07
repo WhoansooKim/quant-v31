@@ -20,7 +20,13 @@ public record SwingSignal(
     DateTime? ExecutedAt,
     int? LlmScore,          // AI score 1-10
     string? LlmAnalysis,   // AI analysis JSON
-    DateTime? LlmAnalyzedAt
+    DateTime? LlmAnalyzedAt,
+    double? TechnicalScore,   // Multi-factor: technical (0-100)
+    double? SentimentScore,   // Multi-factor: sentiment (0-100)
+    double? FlowScore,        // Multi-factor: flow (0-100)
+    double? CompositeScore,   // Multi-factor: composite (0-100)
+    string? FactorDetail,     // Factor breakdown JSON
+    DateTime? FactorScoredAt
 );
 
 // ─── 스윙 포지션 ───
