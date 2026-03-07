@@ -9,9 +9,15 @@
 
 <div class="page-header">
     <h3>Trade Signals</h3>
-    <button class="btn-action" @onclick="ScanSignals" disabled="@scanning">
-        @(scanning ? "Scanning..." : "Scan Now")
-    </button>
+    <div style="display:flex; gap:0.5rem">
+        <button class="btn-action" style="background:var(--accent-purple, #a78bfa)" @onclick="AnalyzeAll" disabled="@analyzing">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">psychology</span>
+            @(analyzing ? "Analyzing..." : "AI Analyze")
+        </button>
+        <button class="btn-action" @onclick="ScanSignals" disabled="@scanning">
+            @(scanning ? "Scanning..." : "Scan Now")
+        </button>
+    </div>
 </div>
 
 <!-- Status Tabs -->
@@ -52,6 +58,7 @@
                         <th title="Trend Aligned">Trend</th>
                         <th title="5d Breakout">Break</th>
                         <th title="Volume Surge">Vol</th>
+                        <th class="sortable" title="AI Sentiment Score" @onclick='() => sigSort.Toggle("ai")'>AI@(sigSort.Arrow("ai"))</th>
                         <th class="sortable" @onclick='() => sigSort.Toggle("status")'>Status@(sigSort.Arrow("status"))</th>
                         <th>Actions</th>
                     </tr>
@@ -79,6 +86,24 @@
                             </td>
                             <td class="@(s.VolumeSurge ? "text-green" : "text-red")">
                                 <span class="material-symbols-outlined" style="font-size:16px">@(s.VolumeSurge ? "check_circle" : "cancel")</span>
+                            </td>
+                            <td>
+                                @if (s.LlmScore != null)
+                                {
+                                    <span class="ai-score ai-score-@GetAiScoreClass(s.LlmScore.Value)"
+                                          title="@GetAiTooltip(s)" style="cursor:pointer"
+                                          @onclick="() => ShowAiDetail(s)">
+                                        @s.LlmScore
+                                    </span>
+                                }
+                                else
+                                {
+                                    <button class="btn-sm btn-ai" title="Run AI Analysis"
+                                            @onclick="() => AnalyzeSingle(s.SignalId)"
+                                            disabled="@analyzing">
+                                        <span class="material-symbols-outlined" style="font-size:14px">psychology</span>
+                                    </button>
+                                }
                             </td>
                             <td>
                                 <span class="status-chip status-@s.Status">@s.Status</span>
@@ -122,6 +147,54 @@
     }
 </div>
 
+<!-- AI Analysis Detail Popup -->
+@if (aiDetailVisible && aiDetailSignal != null)
+{
+    <div class="modal-overlay" @onclick="CloseAiDetail">
+        <div class="modal-panel" style="max-width:500px" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h4>AI Analysis — @aiDetailSignal.Symbol</h4>
+                <button class="btn-close" @onclick="CloseAiDetail">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem">
+                    <span class="ai-score-large ai-score-@GetAiScoreClass(aiDetailSignal.LlmScore ?? 0)">
+                        @(aiDetailSignal.LlmScore ?? 0)
+                    </span>
+                    <div>
+                        <div class="text-muted" style="font-size:0.75rem">AI Confidence Score</div>
+                        <div style="font-size:0.85rem">@GetAiScoreLabel(aiDetailSignal.LlmScore ?? 0)</div>
+                    </div>
+                </div>
+                @if (aiParsed != null)
+                {
+                    <div class="ai-section">
+                        <div class="ai-section-label">Reasoning</div>
+                        <div class="ai-section-text">@(aiParsed.GetValueOrDefault("reasoning", "N/A"))</div>
+                    </div>
+                    <div class="ai-section">
+                        <div class="ai-section-label">Risk Factors</div>
+                        <div class="ai-section-text text-red">@(aiParsed.GetValueOrDefault("risk_factors", "N/A"))</div>
+                    </div>
+                    <div class="ai-section">
+                        <div class="ai-section-label">News Summary</div>
+                        <div class="ai-section-text">@(aiParsed.GetValueOrDefault("news_summary", "N/A"))</div>
+                    </div>
+                    <div class="text-muted" style="font-size:0.7rem; margin-top:0.5rem">
+                        Model: @(aiParsed.GetValueOrDefault("model", "unknown"))
+                        @if (aiDetailSignal.LlmAnalyzedAt != null)
+                        {
+                            <span> | Analyzed: @aiDetailSignal.LlmAnalyzedAt.Value.ToString("MM/dd HH:mm")</span>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
 <SymbolDetailModal Visible="@modalVisible" Symbol="@modalSymbol" OnClose="CloseModal" />
 
 @code {
@@ -130,7 +203,13 @@
     private int pendingCount;
     private bool scanning;
     private bool processing;
+    private bool analyzing;
     private string? statusMsg;
+
+    // AI Detail popup
+    private bool aiDetailVisible;
+    private SwingSignal? aiDetailSignal;
+    private Dictionary<string, string>? aiParsed;
 
     // Sort state
     private SortState sigSort = new();
@@ -142,6 +221,7 @@
         ["type"] = s => s.SignalType,
         ["price"] = s => (double)(s.EntryPrice ?? 0),
         ["rank"] = s => s.Return20dRank ?? 0,
+        ["ai"] = s => s.LlmScore ?? 0,
         ["status"] = s => s.Status,
     };
 
@@ -278,5 +358,105 @@
         {
             processing = false;
         }
+    }
+
+    // ─── AI Analysis Methods ───────────────────────
+
+    private async Task AnalyzeSingle(long signalId)
+    {
+        analyzing = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync($"/signals/{signalId}/analyze", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var score = json.TryGetProperty("score", out var sc) ? sc.GetInt32() : 0;
+                var mode = json.TryGetProperty("mode", out var md) ? md.GetString() : "unknown";
+                statusMsg = $"AI Score for #{signalId}: {score}/10 ({mode} mode)";
+                await LoadSignals();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"AI analysis failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            analyzing = false;
+        }
+    }
+
+    private async Task AnalyzeAll()
+    {
+        analyzing = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/signals/analyze-pending", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var count = json.TryGetProperty("analyzed", out var cnt) ? cnt.GetInt32() : 0;
+                var mode = json.TryGetProperty("mode", out var md) ? md.GetString() : "unknown";
+                statusMsg = $"AI analysis completed: {count} signals analyzed ({mode} mode)";
+                await LoadSignals();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"AI analysis failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            analyzing = false;
+        }
+    }
+
+    private void ShowAiDetail(SwingSignal signal)
+    {
+        aiDetailSignal = signal;
+        aiParsed = null;
+        if (!string.IsNullOrEmpty(signal.LlmAnalysis))
+        {
+            try
+            {
+                aiParsed = System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, string>>(signal.LlmAnalysis);
+            }
+            catch { }
+        }
+        aiDetailVisible = true;
+    }
+
+    private void CloseAiDetail() { aiDetailVisible = false; }
+
+    private static string GetAiScoreClass(int score)
+        => score >= 8 ? "high" : score >= 5 ? "mid" : "low";
+
+    private static string GetAiScoreLabel(int score)
+        => score >= 8 ? "Strong Buy Signal" : score >= 6 ? "Moderate Buy" : score >= 4 ? "Neutral" : "Weak / Caution";
+
+    private static string GetAiTooltip(SwingSignal s)
+    {
+        if (s.LlmScore == null) return "Not analyzed";
+        var label = GetAiScoreLabel(s.LlmScore.Value);
+        var time = s.LlmAnalyzedAt?.ToString("MM/dd HH:mm") ?? "";
+        return $"AI Score: {s.LlmScore}/10 — {label} ({time})";
     }
 }

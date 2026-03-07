@@ -11,12 +11,14 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from engine_v4.ai.sentiment import SentimentAnalyzer
 from engine_v4.backtest.runner import BacktestParams, BacktestRunner
 from engine_v4.broker.kis_client import KisClient
 from engine_v4.config.settings import get_config
 from engine_v4.data.collector import DataCollector, UniverseManager
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
+from engine_v4.risk.exit_manager import ExitManager
 from engine_v4.risk.position_manager import PositionManager
 from engine_v4.scheduler.jobs import SwingScheduler
 from engine_v4.strategy.swing import SwingStrategy
@@ -36,9 +38,11 @@ universe_mgr = UniverseManager(pg, cache)
 collector = DataCollector(pg, cache, config)
 strategy = SwingStrategy(pg, config)
 pos_mgr = PositionManager(pg, config)
+exit_mgr = ExitManager(pg)
 backtester = BacktestRunner(pg)
 kis = KisClient(config)
 notifier = TelegramNotifier(config)
+sentiment = SentimentAnalyzer(pg, config.anthropic_key)
 swing_scheduler = SwingScheduler(
     pg, cache, config, universe_mgr, collector, strategy, notifier)
 
@@ -256,6 +260,36 @@ async def reject_signal(signal_id: int):
     if not ok:
         raise HTTPException(400, "Cannot reject (not pending)")
     return {"status": "rejected", "signal_id": signal_id}
+
+
+@app.post("/signals/{signal_id}/analyze")
+async def analyze_signal(signal_id: int):
+    """단일 시그널 AI 분석."""
+    sig = pg.get_signal(signal_id)
+    if not sig:
+        raise HTTPException(404, "Signal not found")
+    try:
+        result = sentiment.analyze_signal(signal_id)
+        return result
+    except Exception as e:
+        logger.error(f"AI analysis failed for signal {signal_id}: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/signals/analyze-pending")
+async def analyze_pending_signals():
+    """모든 pending 시그널 일괄 AI 분석."""
+    try:
+        results = sentiment.analyze_pending()
+        return {
+            "status": "ok",
+            "analyzed": len(results),
+            "mode": "live" if sentiment.is_live else "mock",
+            "results": results,
+        }
+    except Exception as e:
+        logger.error(f"Batch AI analysis failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
 
 
 # ═══════════════════════════════════════════════════════════

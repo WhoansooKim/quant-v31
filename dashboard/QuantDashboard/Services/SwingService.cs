@@ -32,13 +32,15 @@ public class SwingService
             ? @"SELECT signal_id, time, symbol, signal_type, entry_price,
                        stop_loss, take_profit, return_20d_rank, trend_aligned,
                        breakout_5d, volume_surge, exit_reason, position_id,
-                       status, approved_at, executed_at
+                       status, approved_at, executed_at,
+                       llm_score, llm_analysis, llm_analyzed_at
                 FROM swing_signals WHERE status = @status
                 ORDER BY time DESC LIMIT @limit"
             : @"SELECT signal_id, time, symbol, signal_type, entry_price,
                        stop_loss, take_profit, return_20d_rank, trend_aligned,
                        breakout_5d, volume_surge, exit_reason, position_id,
-                       status, approved_at, executed_at
+                       status, approved_at, executed_at,
+                       llm_score, llm_analysis, llm_analyzed_at
                 FROM swing_signals ORDER BY time DESC LIMIT @limit";
 
         await using var cmd = new NpgsqlCommand(sql, conn);
@@ -64,7 +66,10 @@ public class SwingService
                 PositionId: r.IsDBNull(12) ? null : r.GetInt64(12),
                 Status: r.GetString(13),
                 ApprovedAt: r.IsDBNull(14) ? null : r.GetDateTime(14),
-                ExecutedAt: r.IsDBNull(15) ? null : r.GetDateTime(15)
+                ExecutedAt: r.IsDBNull(15) ? null : r.GetDateTime(15),
+                LlmScore: r.IsDBNull(16) ? null : r.GetInt32(16),
+                LlmAnalysis: r.IsDBNull(17) ? null : r.GetString(17),
+                LlmAnalyzedAt: r.IsDBNull(18) ? null : r.GetDateTime(18)
             ));
         }
         return signals;
@@ -117,7 +122,8 @@ public class SwingService
             SELECT position_id, symbol, side, qty, entry_price, entry_time,
                    stop_loss, take_profit, current_price, unrealized_pnl,
                    unrealized_pct, status, exit_price, exit_time, exit_reason,
-                   realized_pnl, realized_pct, hold_days, signal_id, is_paper
+                   realized_pnl, realized_pct, hold_days, signal_id, is_paper,
+                   partial_exited, trailing_stop_active, high_water_mark
             FROM swing_positions
             WHERE status = @status
             ORDER BY {orderCol} DESC LIMIT @limit", conn);
@@ -147,7 +153,10 @@ public class SwingService
                 RealizedPct: r.IsDBNull(16) ? null : r.GetDouble(16),
                 HoldDays: r.IsDBNull(17) ? null : r.GetInt32(17),
                 SignalId: r.IsDBNull(18) ? null : r.GetInt64(18),
-                IsPaper: r.GetBoolean(19)
+                IsPaper: r.GetBoolean(19),
+                PartialExited: !r.IsDBNull(20) && r.GetBoolean(20),
+                TrailingStopActive: !r.IsDBNull(21) && r.GetBoolean(21),
+                HighWaterMark: r.IsDBNull(22) ? null : r.GetDecimal(22)
             ));
         }
         return positions;
@@ -569,7 +578,8 @@ public class SwingService
             SELECT signal_id, time, symbol, signal_type, entry_price,
                    stop_loss, take_profit, return_20d_rank, trend_aligned,
                    breakout_5d, volume_surge, exit_reason, position_id,
-                   status, approved_at, executed_at
+                   status, approved_at, executed_at,
+                   llm_score, llm_analysis, llm_analyzed_at
             FROM swing_signals WHERE symbol = @sym
             ORDER BY time DESC LIMIT 1", conn);
         cmd3.Parameters.AddWithValue("@sym", symbol);
@@ -596,7 +606,10 @@ public class SwingService
                         PositionId: r3.IsDBNull(12) ? null : r3.GetInt64(12),
                         Status: r3.GetString(13),
                         ApprovedAt: r3.IsDBNull(14) ? null : r3.GetDateTime(14),
-                        ExecutedAt: r3.IsDBNull(15) ? null : r3.GetDateTime(15)
+                        ExecutedAt: r3.IsDBNull(15) ? null : r3.GetDateTime(15),
+                        LlmScore: r3.IsDBNull(16) ? null : r3.GetInt32(16),
+                        LlmAnalysis: r3.IsDBNull(17) ? null : r3.GetString(17),
+                        LlmAnalyzedAt: r3.IsDBNull(18) ? null : r3.GetDateTime(18)
                     )
                 };
             }
@@ -607,7 +620,8 @@ public class SwingService
             SELECT position_id, symbol, side, qty, entry_price, entry_time,
                    stop_loss, take_profit, current_price, unrealized_pnl,
                    unrealized_pct, status, exit_price, exit_time, exit_reason,
-                   realized_pnl, realized_pct, hold_days, signal_id, is_paper
+                   realized_pnl, realized_pct, hold_days, signal_id, is_paper,
+                   partial_exited, trailing_stop_active, high_water_mark
             FROM swing_positions
             WHERE symbol = @sym AND status = 'open'
             ORDER BY entry_time DESC LIMIT 1", conn);
@@ -639,7 +653,10 @@ public class SwingService
                         RealizedPct: r4.IsDBNull(16) ? null : r4.GetDouble(16),
                         HoldDays: r4.IsDBNull(17) ? null : r4.GetInt32(17),
                         SignalId: r4.IsDBNull(18) ? null : r4.GetInt64(18),
-                        IsPaper: r4.GetBoolean(19)
+                        IsPaper: r4.GetBoolean(19),
+                        PartialExited: !r4.IsDBNull(20) && r4.GetBoolean(20),
+                        TrailingStopActive: !r4.IsDBNull(21) && r4.GetBoolean(21),
+                        HighWaterMark: r4.IsDBNull(22) ? null : r4.GetDecimal(22)
                     )
                 };
             }

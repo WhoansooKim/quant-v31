@@ -17,7 +17,10 @@ public record SwingSignal(
     long? PositionId,
     string Status,          // pending / approved / executed / rejected / expired
     DateTime? ApprovedAt,
-    DateTime? ExecutedAt
+    DateTime? ExecutedAt,
+    int? LlmScore,          // AI score 1-10
+    string? LlmAnalysis,   // AI analysis JSON
+    DateTime? LlmAnalyzedAt
 );
 
 // ─── 스윙 포지션 ───
@@ -41,7 +44,10 @@ public record SwingPosition(
     double? RealizedPct,
     int? HoldDays,
     long? SignalId,
-    bool IsPaper
+    bool IsPaper,
+    bool PartialExited = false,
+    bool TrailingStopActive = false,
+    decimal? HighWaterMark = null
 );
 
 // ─── 스윙 거래 ───

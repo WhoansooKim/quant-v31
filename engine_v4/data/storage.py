@@ -336,6 +336,62 @@ class PostgresStore:
             """, (current_price, current_price, current_price, position_id))
             conn.commit()
 
+    def update_position_stop_loss(self, position_id: int, new_sl: float) -> None:
+        """포지션 stop_loss 업데이트 (trailing stop용)."""
+        with self.get_conn() as conn:
+            conn.execute("""
+                UPDATE swing_positions SET stop_loss = %s
+                WHERE position_id = %s AND status = 'open'
+            """, (new_sl, position_id))
+            conn.commit()
+
+    def update_high_water_mark(self, position_id: int, hwm: float) -> None:
+        """포지션 high water mark 업데이트."""
+        with self.get_conn() as conn:
+            conn.execute("""
+                UPDATE swing_positions SET high_water_mark = %s
+                WHERE position_id = %s AND status = 'open'
+            """, (hwm, position_id))
+            conn.commit()
+
+    def activate_trailing_stop(self, position_id: int) -> None:
+        """Trailing stop 활성화 플래그 설정."""
+        with self.get_conn() as conn:
+            conn.execute("""
+                UPDATE swing_positions SET trailing_stop_active = true
+                WHERE position_id = %s AND status = 'open'
+            """, (position_id,))
+            conn.commit()
+
+    def partial_close_position(self, position_id: int, exit_qty: float,
+                               exit_price: float) -> bool:
+        """분할 청산: qty 감소 + partial_exited=true + 실현손익 기록.
+
+        실현손익 계산: (exit_price - entry_price) * exit_qty
+        남은 수량: original_qty - exit_qty
+        """
+        with self.get_conn() as conn:
+            pos = conn.execute("""
+                SELECT entry_price, qty FROM swing_positions
+                WHERE position_id = %s AND status = 'open'
+            """, (position_id,)).fetchone()
+            if not pos:
+                return False
+
+            entry = float(pos["entry_price"])
+            partial_pnl = (exit_price - entry) * exit_qty
+            new_qty = float(pos["qty"]) - exit_qty
+
+            conn.execute("""
+                UPDATE swing_positions SET
+                    qty = %s,
+                    partial_exited = true,
+                    realized_pnl = COALESCE(realized_pnl, 0) + %s
+                WHERE position_id = %s AND status = 'open'
+            """, (max(new_qty, 0), partial_pnl, position_id))
+            conn.commit()
+            return True
+
     def get_open_position_count(self) -> int:
         with self.get_conn() as conn:
             row = conn.execute("""

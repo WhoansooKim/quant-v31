@@ -13,3 +13,4 @@ apscheduler>=3.10.0
 python-kis>=2.1.0
 python-dotenv>=1.0.0
 pytz>=2024.1
+anthropic>=0.40.0

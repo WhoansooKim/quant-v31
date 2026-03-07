@@ -39,8 +39,7 @@
                             <th class="sortable" @onclick='() => openSort.Toggle("pnlPct")'>P&L (%)@(openSort.Arrow("pnlPct"))</th>
                             <th>Stop Loss</th>
                             <th>Take Profit</th>
-                            <th>SL Distance</th>
-                            <th>TP Distance</th>
+                            <th>Flags</th>
                             <th class="sortable" @onclick='() => openSort.Toggle("holdDays")'>Hold Days@(openSort.Arrow("holdDays"))</th>
                         </tr>
                     </thead>
@@ -49,9 +48,6 @@
                         {
                             var pnlClass = (p.UnrealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
                             var holdDays = (DateTime.Now - p.EntryTime).Days;
-                            var current = p.CurrentPrice ?? p.EntryPrice;
-                            var slDist = p.StopLoss != null ? (double)((current - p.StopLoss.Value) / current * 100) : 0;
-                            var tpDist = p.TakeProfit != null ? (double)((p.TakeProfit.Value - current) / current * 100) : 0;
                             <tr>
                                 <td><SymbolLink Symbol="@p.Symbol" OnSymbolClick="OpenModal" /></td>
                                 <td>@p.Side</td>
@@ -64,19 +60,27 @@
                                 <td class="@pnlClass">
                                     @(p.UnrealizedPct != null ? $"{(p.UnrealizedPct >= 0 ? "+" : "")}{p.UnrealizedPct * 100:F2}%" : "--")
                                 </td>
-                                <td class="text-red">@(p.StopLoss != null ? $"${p.StopLoss:F2}" : "--")</td>
+                                <td class="text-red">
+                                    @(p.StopLoss != null ? $"${p.StopLoss:F2}" : "--")
+                                    @if (p.TrailingStopActive)
+                                    {
+                                        <span class="badge badge-trail" title="Trailing Stop Active (HWM: $@(p.HighWaterMark?.ToString("F2") ?? "--"))">TRAIL</span>
+                                    }
+                                </td>
                                 <td class="text-green">@(p.TakeProfit != null ? $"${p.TakeProfit:F2}" : "--")</td>
                                 <td>
-                                    <div class="progress-bar-mini">
-                                        <div class="progress-fill bg-red" style="width:@Math.Min(Math.Max(100 - slDist * 10, 0), 100)%"></div>
-                                    </div>
-                                    <span class="text-muted" style="font-size:0.65rem">@($"{slDist:F1}")%</span>
-                                </td>
-                                <td>
-                                    <div class="progress-bar-mini">
-                                        <div class="progress-fill bg-green" style="width:@Math.Min(Math.Max(100 - tpDist * 10, 0), 100)%"></div>
-                                    </div>
-                                    <span class="text-muted" style="font-size:0.65rem">@($"{tpDist:F1}")%</span>
+                                    @if (p.TrailingStopActive)
+                                    {
+                                        <span class="exit-flag flag-trail" title="Trailing stop active">
+                                            <span class="material-symbols-outlined" style="font-size:14px">trending_up</span>
+                                        </span>
+                                    }
+                                    @if (p.PartialExited)
+                                    {
+                                        <span class="exit-flag flag-partial" title="Partial exit executed (50%)">
+                                            <span class="material-symbols-outlined" style="font-size:14px">pie_chart</span>
+                                        </span>
+                                    }
                                 </td>
                                 <td>@holdDays</td>
                             </tr>
@@ -206,6 +210,8 @@
         "stop_loss" => "exit-sl",
         "take_profit" => "exit-tp",
         "trend_break" => "exit-trend",
+        "partial_exit" => "exit-partial",
+        "trailing_stop" => "exit-trail",
         _ => ""
     };
 }

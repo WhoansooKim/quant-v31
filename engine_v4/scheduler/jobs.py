@@ -24,6 +24,7 @@ from engine_v4.config.settings import SwingSettings
 from engine_v4.data.collector import DataCollector, UniverseManager
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
+from engine_v4.risk.exit_manager import ExitManager
 from engine_v4.strategy.swing import SwingStrategy
 
 DEFAULT_INITIAL_CAPITAL = 2200.0
@@ -53,6 +54,7 @@ class SwingScheduler:
         self.collector = collector
         self.strategy = strategy
         self.notifier = notifier
+        self.exit_mgr = ExitManager(pg)
         self.scheduler = BackgroundScheduler(timezone=KST)
         self._setup_jobs()
 
@@ -191,12 +193,13 @@ class SwingScheduler:
             asyncio.run(self.notifier.notify_error("daily_pipeline", str(e)))
 
     def _job_exit_check(self):
-        """오픈 포지션 청산 조건 체크."""
+        """오픈 포지션 청산 조건 체크 (Trailing Stop + Partial Exit + 기존 Exit)."""
+        import yfinance as yf
+
         start = time.time()
         self.pg.insert_pipeline_log("exit_check", "started")
 
         try:
-            # 포지션별 최신 가격 갱신 (yfinance)
             positions = self.pg.get_open_positions()
             if not positions:
                 self.pg.insert_pipeline_log("exit_check", "completed",
@@ -205,26 +208,84 @@ class SwingScheduler:
                 return
 
             symbols = list(set(p["symbol"] for p in positions))
-            # 가격 업데이트를 위해 짧은 기간 수집
+
+            # 현재가 조회 (yfinance)
+            current_prices: dict[str, float] = {}
+            try:
+                data = yf.download(symbols, period="1d", progress=False)
+                if len(symbols) == 1:
+                    current_prices[symbols[0]] = float(data["Close"].iloc[-1])
+                else:
+                    for sym in symbols:
+                        try:
+                            current_prices[sym] = float(
+                                data["Close"][sym].dropna().iloc[-1])
+                        except (KeyError, IndexError):
+                            pass
+            except Exception as e:
+                logger.warning(f"yfinance fetch for exit check: {e}")
+
+            # 포지션별 현재가 업데이트
+            for p in positions:
+                cp = current_prices.get(p["symbol"])
+                if cp:
+                    self.pg.update_position_price(p["position_id"], cp)
+
+            # Step 1: Trailing Stop 업데이트
+            trailing_updated = self.exit_mgr.update_trailing_stops(
+                positions, current_prices)
+
+            # Step 2: Partial Exit 체크
+            partial_actions = self.exit_mgr.check_partial_exits(
+                positions, current_prices)
+            for action in partial_actions:
+                self.pg.partial_close_position(
+                    action.position_id, action.exit_qty, action.current_price)
+                # 분할 청산 trade 기록
+                self.pg.insert_trade({
+                    "position_id": action.position_id,
+                    "symbol": action.symbol,
+                    "side": "SELL",
+                    "qty": action.exit_qty,
+                    "price": action.current_price,
+                    "is_paper": True,
+                })
+                # 시그널 생성
+                sig = {
+                    "symbol": action.symbol,
+                    "signal_type": "EXIT",
+                    "entry_price": action.current_price,
+                    "exit_reason": "partial_exit",
+                    "position_id": action.position_id,
+                    "status": "executed",
+                }
+                self.pg.insert_signal(sig)
+                logger.info(f"PARTIAL EXIT executed: {action.symbol} "
+                            f"sold {action.exit_qty} @ ${action.current_price:.2f} "
+                            f"(gain={action.gain_pct:+.1%})")
+
+            # Step 3: 가격/지표 업데이트 + 기존 청산 스캔
             self.collector.collect_prices(symbols, days=5)
             self.collector.compute_indicators(symbols)
-
-            # 청산 스캔
             exits = self.strategy.scan_exits()
 
             if exits:
                 asyncio.run(self.notifier.notify_signals([], exits))
 
-            # 스냅샷 생성 (현재가 반영)
+            # 스냅샷 생성
             self.generate_snapshot()
 
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("exit_check", "completed", elapsed, {
                 "positions": len(positions),
                 "exits": len(exits),
+                "trailing_updated": trailing_updated,
+                "partial_exits": len(partial_actions),
             })
-            logger.info(f"Exit check: {len(exits)} signals from "
-                        f"{len(positions)} positions in {elapsed:.1f}s")
+            logger.info(f"Exit check: {len(exits)} exit signals, "
+                        f"{trailing_updated} trailing updates, "
+                        f"{len(partial_actions)} partial exits "
+                        f"from {len(positions)} positions in {elapsed:.1f}s")
 
         except Exception as e:
             self.pg.insert_pipeline_log("exit_check", "failed",
