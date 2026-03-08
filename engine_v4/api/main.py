@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from engine_v4.ai.data_feeds import FinnhubClient
@@ -22,6 +25,7 @@ from engine_v4.data.collector import DataCollector, UniverseManager
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
 from engine_v4.events.collector import EventCollector
+from engine_v4.events.edgar import EdgarRssMonitor
 from engine_v4.events.processor import EventProcessor
 from engine_v4.risk.exit_manager import ExitManager
 from engine_v4.risk.position_manager import PositionManager
@@ -53,8 +57,25 @@ scorer = MultiFactorScorer(pg, finnhub, config.anthropic_key)
 optimizer = StrategyOptimizer(pg, backtester, config.anthropic_key)
 event_collector = EventCollector(pg, finnhub)
 event_processor = EventProcessor(pg)
+edgar = EdgarRssMonitor()
 swing_scheduler = SwingScheduler(
     pg, cache, config, universe_mgr, collector, strategy, notifier)
+
+# ── SSE (Server-Sent Events) ──
+_sse_subscribers: list[asyncio.Queue] = []
+
+
+def _sse_broadcast(data: dict):
+    """SSE 구독자 전체에게 이벤트 브로드캐스트."""
+    msg = json.dumps(data, default=str)
+    dead = []
+    for q in _sse_subscribers:
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        _sse_subscribers.remove(q)
 
 
 # ── Lifespan ──
@@ -267,6 +288,14 @@ async def approve_signal(signal_id: int):
         })
     else:
         raise HTTPException(400, f"Unknown signal type: {sig['signal_type']}")
+
+    # SSE broadcast
+    _sse_broadcast({
+        "type": "trade_executed",
+        "symbol": sig["symbol"],
+        "side": sig["signal_type"],
+        "signal_id": signal_id,
+    })
 
     return {"status": "executed", "result": result}
 
@@ -526,6 +555,21 @@ async def scan_events():
     try:
         events = event_collector.scan_events()
         results = event_processor.process_batch(events)
+
+        # Telegram: critical/warning 이벤트 알림
+        if notifier.is_enabled:
+            sent = await notifier.notify_events_batch(results)
+            if sent:
+                logger.info(f"Telegram: {sent} event alerts sent")
+
+        # SSE broadcast
+        _sse_broadcast({
+            "type": "events_scanned",
+            "count": len(results),
+            "critical": sum(1 for r in results if r.get("severity") == "critical"),
+            "warning": sum(1 for r in results if r.get("severity") == "warning"),
+        })
+
         return {
             "status": "ok",
             "events_found": len(events),
@@ -562,6 +606,144 @@ async def tradingview_webhook(payload: dict):
     )
     result = event_processor.process(event)
     return {"status": "received", **result}
+
+
+# ═══════════════════════════════════════════════════════════
+# SSE (Server-Sent Events)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/events/stream")
+async def event_stream(request: Request):
+    """SSE 스트림 — 대시보드 실시간 알림."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=50)
+    _sse_subscribers.append(q)
+
+    async def generate():
+        try:
+            # 연결 확인 heartbeat
+            yield f"data: {json.dumps({'type': 'connected'})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=30)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            if q in _sse_subscribers:
+                _sse_subscribers.remove(q)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# Trading Mode (Paper/Live Toggle)
+# ═══════════════════════════════════════════════════════════
+
+class TradingModeRequest(BaseModel):
+    mode: str  # "paper" or "live"
+    confirm: bool = False
+
+
+@app.post("/config/trading-mode")
+async def change_trading_mode(req: TradingModeRequest):
+    """트레이딩 모드 변경 (paper ↔ live)."""
+    if req.mode not in ("paper", "live"):
+        raise HTTPException(400, "Mode must be 'paper' or 'live'")
+
+    old_mode = pg.get_config_value("trading_mode", "paper")
+    if old_mode == req.mode:
+        return {"status": "unchanged", "mode": req.mode}
+
+    # Live 모드 전환 시 확인 필요
+    if req.mode == "live" and not req.confirm:
+        raise HTTPException(400,
+            "Live trading requires confirmation. "
+            "Set confirm=true to proceed. "
+            "WARNING: Real money will be used for trades!")
+
+    # Live 전환 시 KIS 키 확인
+    if req.mode == "live":
+        if not config.kis_app_key or config.kis_app_key == "":
+            raise HTTPException(400, "KIS API keys not configured. Set KIS_APP_KEY in .env")
+
+    # DB 업데이트
+    pg.update_config("trading_mode", req.mode)
+
+    # KIS 클라이언트 재초기화
+    kis._initialized = False
+    if req.mode == "live":
+        config.kis_is_paper = False
+    else:
+        config.kis_is_paper = True
+    kis.settings = config
+    kis._init_client()
+
+    # Telegram 알림
+    if notifier.is_enabled:
+        await notifier.notify_mode_change(old_mode, req.mode)
+
+    # SSE broadcast
+    _sse_broadcast({
+        "type": "mode_changed",
+        "old_mode": old_mode,
+        "new_mode": req.mode,
+    })
+
+    logger.warning(f"Trading mode changed: {old_mode} → {req.mode}")
+    return {
+        "status": "changed",
+        "old_mode": old_mode,
+        "new_mode": req.mode,
+        "kis_connected": kis.is_connected,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# SEC EDGAR RSS
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/events/edgar-scan")
+async def scan_edgar():
+    """SEC EDGAR RSS 스캔 — 보유 종목 공시 확인."""
+    try:
+        positions = pg.get_open_positions()
+        if not positions:
+            return {"status": "ok", "events_found": 0, "message": "No open positions"}
+
+        symbols = list(set(p["symbol"] for p in positions))
+        events = edgar.scan_filings(symbols)
+        results = event_processor.process_batch(events)
+
+        # Telegram: critical/warning 알림
+        if notifier.is_enabled:
+            await notifier.notify_events_batch(results)
+
+        # SSE broadcast
+        if results:
+            _sse_broadcast({
+                "type": "edgar_scanned",
+                "count": len(results),
+            })
+
+        return {
+            "status": "ok",
+            "events_found": len(events),
+            "processed": len(results),
+            "results": results,
+        }
+    except Exception as e:
+        logger.error(f"EDGAR scan failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
 
 
 # ═══════════════════════════════════════════════════════════

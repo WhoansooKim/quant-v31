@@ -155,6 +155,48 @@ class TelegramNotifier:
         )
         return await self.send(text)
 
+    # ─── 이벤트 알림 ─────────────────────────────────
+
+    async def notify_event(self, event: dict) -> bool:
+        """이벤트 알림 (critical/warning만)."""
+        severity = event.get("severity", "info")
+        if severity not in ("critical", "warning"):
+            return False
+
+        emoji = "🔴" if severity == "critical" else "🟡"
+        action = event.get("action", "")
+        action_text = f"\nAction: <code>{action}</code>" if action else ""
+
+        text = (
+            f"{emoji} <b>Event Alert [{severity.upper()}]</b>\n\n"
+            f"Type: <code>{event.get('type', event.get('event_type', '?'))}</code>\n"
+            f"Symbol: <b>{event.get('symbol', '?')}</b>\n"
+            f"Title: {event.get('title', 'N/A')}"
+            f"{action_text}\n"
+            f"⏰ {datetime.now().strftime('%H:%M KST')}"
+        )
+        return await self.send(text)
+
+    async def notify_events_batch(self, results: list[dict]) -> int:
+        """이벤트 배치 알림 — critical/warning만 전송."""
+        sent = 0
+        for r in results:
+            if r.get("severity") in ("critical", "warning"):
+                if await self.notify_event(r):
+                    sent += 1
+        return sent
+
+    async def notify_mode_change(self, old_mode: str, new_mode: str) -> bool:
+        """트레이딩 모드 변경 알림."""
+        emoji = "🔴 LIVE" if new_mode == "live" else "🟢 PAPER"
+        text = (
+            f"<b>⚙️ Trading Mode Changed</b>\n\n"
+            f"From: <code>{old_mode}</code>\n"
+            f"To: <b>{emoji}</b>\n\n"
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M KST')}"
+        )
+        return await self.send(text)
+
     # ─── 에러 알림 ─────────────────────────────────
 
     async def notify_error(self, step: str, error: str) -> bool:

@@ -146,7 +146,7 @@
                                         Reject
                                     </button>
                                 }
-                                else if (s.Status == "approved" || s.Status == "rejected")
+                                else if (s.Status == "approved" || s.Status == "rejected" || s.Status == "executed")
                                 {
                                     <button class="btn-sm btn-revert"
                                             @onclick="() => RevertToPending(s.SignalId)"
@@ -441,7 +441,7 @@
             var ok = await Db.RevertToPendingAsync(signalId);
             statusMsg = ok
                 ? $"Signal #{signalId} reverted to pending"
-                : $"Signal #{signalId} could not be reverted (not in approved status)";
+                : $"Signal #{signalId} could not be reverted";
             await LoadSignals();
         }
         catch (Exception ex)

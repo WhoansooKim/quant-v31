@@ -13,6 +13,10 @@
             <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">radar</span>
             @(scanning ? "Scanning..." : "Scan Events")
         </button>
+        <button class="btn-action" style="background:var(--accent-purple, #a78bfa)" @onclick="ScanEdgar" disabled="@scanningEdgar">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">description</span>
+            @(scanningEdgar ? "Scanning..." : "SEC Filings")
+        </button>
         <button class="btn-action btn-outline" @onclick="LoadEvents">
             <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">refresh</span>
         </button>
@@ -101,6 +105,7 @@
     private List<Dictionary<string, object?>> events = new();
     private string activeFilter = "all";
     private bool scanning;
+    private bool scanningEdgar;
     private string? statusMsg;
 
     protected override async Task OnInitializedAsync()
@@ -172,6 +177,38 @@
         finally
         {
             scanning = false;
+        }
+    }
+
+    private async Task ScanEdgar()
+    {
+        scanningEdgar = true;
+        statusMsg = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/events/edgar-scan", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                var found = json.TryGetProperty("events_found", out var f) ? f.GetInt32() : 0;
+                statusMsg = $"EDGAR scan: {found} SEC filings detected";
+                await LoadEvents();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"EDGAR scan failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            scanningEdgar = false;
         }
     }
 

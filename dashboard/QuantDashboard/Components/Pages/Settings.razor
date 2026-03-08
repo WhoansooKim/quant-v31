@@ -61,6 +61,65 @@
     </div>
 }
 
+<!-- Trading Mode Toggle -->
+<div class="section-card" style="margin-bottom:1rem">
+    <h4 class="section-title">TRADING MODE</h4>
+    <div class="trading-mode-box">
+        <div class="trading-mode-current">
+            <span class="trading-mode-icon @(tradingMode == "live" ? "mode-live" : "mode-paper")">
+                <span class="material-symbols-outlined">@(tradingMode == "live" ? "currency_exchange" : "science")</span>
+            </span>
+            <div>
+                <div class="trading-mode-label">Current Mode</div>
+                <div class="trading-mode-value @(tradingMode == "live" ? "text-red" : "text-green")">
+                    @(tradingMode == "live" ? "LIVE TRADING" : "PAPER TRADING")
+                </div>
+                <div class="text-muted" style="font-size:0.75rem">
+                    @(tradingMode == "live"
+                        ? "Real money is being used for trades via KIS"
+                        : "Simulated trades — no real money involved")
+                </div>
+            </div>
+        </div>
+
+        @if (!showModeConfirm)
+        {
+            <button class="btn-action @(tradingMode == "live" ? "btn-mode-paper" : "btn-mode-live")"
+                    @onclick="StartModeChange"
+                    disabled="@modeChanging">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">swap_horiz</span>
+                Switch to @(tradingMode == "live" ? "Paper" : "Live")
+            </button>
+        }
+        else
+        {
+            <div class="mode-confirm-box">
+                @if (targetMode == "live")
+                {
+                    <div class="mode-warning">
+                        <span class="material-symbols-outlined">warning</span>
+                        <strong>WARNING: Switching to LIVE mode will use REAL MONEY.</strong>
+                        All future trade approvals will execute real orders via KIS.
+                    </div>
+                }
+                else
+                {
+                    <div class="mode-info">
+                        <span class="material-symbols-outlined">info</span>
+                        Switching to Paper mode. Trades will be simulated.
+                    </div>
+                }
+                <div style="display:flex; gap:0.5rem; margin-top:0.5rem">
+                    <button class="btn-sm btn-approve" @onclick="ConfirmModeChange" disabled="@modeChanging">
+                        @(modeChanging ? "Changing..." : "Confirm")
+                    </button>
+                    <button class="btn-sm btn-reject" @onclick="CancelModeChange">Cancel</button>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
 <!-- Engine Status -->
 <div class="section-card">
     <h4 class="section-title">Engine Status</h4>
@@ -78,8 +137,10 @@
             </span>
         </div>
         <div class="stat-card">
-            <span class="stat-label">Mode</span>
-            <span class="stat-value">@tradingMode</span>
+            <span class="stat-label">KIS Broker</span>
+            <span class="stat-value @(kisConnected ? "text-green" : "text-muted")">
+                @(kisConnected ? "Connected" : "Not Connected")
+            </span>
         </div>
     </div>
 
@@ -124,7 +185,13 @@
     private string? statusMsg;
     private bool engineOk;
     private bool dbOk;
+    private bool kisConnected;
     private string tradingMode = "paper";
+
+    // Trading Mode toggle
+    private bool showModeConfirm;
+    private bool modeChanging;
+    private string targetMode = "";
 
     protected override async Task OnInitializedAsync()
     {
@@ -151,12 +218,58 @@
         try
         {
             var client = HttpFactory.CreateClient("Engine");
-            var resp = await client.GetAsync("/health");
-            engineOk = resp.IsSuccessStatusCode;
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/health");
+            engineOk = true;
+            kisConnected = resp.TryGetProperty("kis", out var k) && k.GetBoolean();
         }
         catch
         {
             engineOk = false;
+        }
+    }
+
+    private void StartModeChange()
+    {
+        targetMode = tradingMode == "live" ? "paper" : "live";
+        showModeConfirm = true;
+    }
+
+    private void CancelModeChange()
+    {
+        showModeConfirm = false;
+    }
+
+    private async Task ConfirmModeChange()
+    {
+        modeChanging = true;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var payload = new { mode = targetMode, confirm = true };
+            var resp = await client.PostAsJsonAsync("/config/trading-mode", payload);
+            if (resp.IsSuccessStatusCode)
+            {
+                tradingMode = targetMode;
+                statusMsg = $"Trading mode changed to {targetMode.ToUpper()}";
+                // Refresh config list
+                configs = await Db.GetAllConfigAsync();
+                await CheckEngineHealth();
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Mode change failed: {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            modeChanging = false;
+            showModeConfirm = false;
         }
     }
 
@@ -165,11 +278,13 @@
         if (!editValues.ContainsKey(key)) return;
         try
         {
-            // Direct DB update via SwingService
             await Db.UpdateConfigAsync(key, editValues[key]);
             statusMsg = $"Updated '{key}' = '{editValues[key]}'";
             editValues.Remove(key);
             configs = await Db.GetAllConfigAsync();
+
+            if (key == "trading_mode")
+                tradingMode = editValues.GetValueOrDefault(key, "paper");
         }
         catch (Exception ex)
         {

@@ -1,0 +1,258 @@
+@page "/help"
+@attribute [Authorize]
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Help</PageTitle>
+
+<div class="page-header">
+    <h3>Help &amp; Guide</h3>
+</div>
+
+<div class="help-page">
+
+    <!-- Daily Operation -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">schedule</span>
+            Daily Operation (Auto Schedule)
+        </h4>
+        <p class="text-muted">The system runs automatically via systemd + scheduler. You only need to review signals.</p>
+        <table class="data-table help-table">
+            <thead>
+                <tr>
+                    <th>Time (KST)</th>
+                    <th>Job</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="help-time">07:00</span></td>
+                    <td>daily_pipeline</td>
+                    <td>Universe refresh → Price collect → Signal scan → Snapshot</td>
+                </tr>
+                <tr>
+                    <td><span class="help-time">09:30 / 12:00 / 15:30</span></td>
+                    <td>exit_check</td>
+                    <td>Stop Loss / Take Profit check on open positions</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="help-tip">
+            <span class="material-symbols-outlined">info</span>
+            Normally you don't need to do anything. Just check the dashboard in the morning.
+        </div>
+    </div>
+
+    <!-- Pages Guide -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">menu_book</span>
+            Page Guide
+        </h4>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">dashboard</span>
+                <strong>Dashboard</strong> <span class="text-muted">/</span>
+            </div>
+            <p>Portfolio overview — total value, return %, position summary at a glance.</p>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">conversion_path</span>
+                <strong>Pipeline</strong> <span class="text-muted">/pipeline</span>
+            </div>
+            <p>Manual pipeline execution. Run steps in order:</p>
+            <ol class="help-steps">
+                <li><code>Universe Refresh</code> — Update S&amp;P 500 stock list</li>
+                <li><code>Collect Prices</code> — Download price data (~90 sec)</li>
+                <li><code>Scan Signals</code> — Generate entry signals from indicators</li>
+            </ol>
+            <div class="help-tip">
+                <span class="material-symbols-outlined">info</span>
+                The daily scheduler does this automatically at 07:00 KST. Manual run is for testing.
+            </div>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">notifications_active</span>
+                <strong>Signals</strong> <span class="text-muted">/signals</span>
+                <span class="badge badge-green" style="margin-left:0.5rem">Most Important</span>
+            </div>
+            <p>Review and approve/reject trade signals. This is where you make trading decisions.</p>
+            <div class="help-workflow">
+                <div class="help-wf-step">
+                    <span class="help-wf-num">1</span>
+                    <div>
+                        <strong>PENDING tab</strong> — New buy signals appear here
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">2</span>
+                    <div>
+                        <strong>Factor Score</strong> — Click to score all pending signals (Technical 40% + Sentiment 30% + Flow 30%)
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">3</span>
+                    <div>
+                        <strong>AI Analyze</strong> — Claude AI analyzes each signal (score 1-10)
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">4</span>
+                    <div>
+                        <strong>Approve / Reject</strong> — Approve to execute a paper trade, Reject to skip
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">5</span>
+                    <div>
+                        <strong>Revert</strong> — Move executed/approved/rejected signals back to pending
+                    </div>
+                </div>
+            </div>
+            <div class="help-tip">
+                <span class="material-symbols-outlined">lightbulb</span>
+                Click any Score/AI badge to see detailed breakdown. Higher is better.
+            </div>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">monitoring</span>
+                <strong>Performance</strong> <span class="text-muted">/performance</span>
+            </div>
+            <p>Portfolio performance tracking — daily snapshots, cumulative return chart, drawdown.</p>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">account_balance_wallet</span>
+                <strong>Positions</strong> <span class="text-muted">/positions</span>
+            </div>
+            <p>Current open positions — real-time P&amp;L, Stop Loss / Take Profit levels, entry price.</p>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">query_stats</span>
+                <strong>Backtest</strong> <span class="text-muted">/backtest</span>
+            </div>
+            <p>Strategy backtesting — simulate past performance with historical data. Set date range and initial capital.</p>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">bolt</span>
+                <strong>Events</strong> <span class="text-muted">/events</span>
+            </div>
+            <p>Real-time event monitor for open positions.</p>
+            <ul class="help-list">
+                <li><span class="severity-chip severity-critical">critical</span> — Urgent: large price drop, massive insider selling</li>
+                <li><span class="severity-chip severity-warning">warning</span> — Attention: price surge, earnings approaching, moderate insider activity</li>
+                <li><span class="severity-chip severity-info">info</span> — Informational: news articles, minor insider trades</li>
+            </ul>
+            <p style="margin-top:0.5rem"><strong>Scan Events</strong> — Finnhub (news, insider, earnings, price changes)</p>
+            <p><strong>SEC Filings</strong> — SEC EDGAR RSS (8-K material events, Form 4 insider, 13F holdings)</p>
+            <div class="help-tip">
+                <span class="material-symbols-outlined">warning</span>
+                If you see <span class="action-chip">exit_review</span>, review that position for possible exit.
+            </div>
+        </div>
+
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">settings</span>
+                <strong>Settings</strong> <span class="text-muted">/settings</span>
+            </div>
+            <p>Adjust strategy parameters — SMA periods, stop loss / take profit %, max positions, price range, etc.</p>
+            <p style="margin-top:0.5rem"><strong>Trading Mode Toggle</strong> — Switch between Paper (simulated) and Live (real money via KIS) modes. Live mode requires confirmation and KIS API keys.</p>
+        </div>
+    </div>
+
+    <!-- Quick Test Checklist -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">checklist</span>
+            Quick Test Checklist
+        </h4>
+        <div class="help-checklist">
+            <div class="help-check-group">
+                <h5>Pipeline Test</h5>
+                <div class="help-check-item">Pipeline → Universe Refresh → wait for completion</div>
+                <div class="help-check-item">Pipeline → Collect Prices → wait (~90 sec)</div>
+                <div class="help-check-item">Pipeline → Scan Signals → check pending signals</div>
+            </div>
+            <div class="help-check-group">
+                <h5>Signal Flow Test</h5>
+                <div class="help-check-item">Signals → PENDING tab → Factor Score</div>
+                <div class="help-check-item">Signals → AI Analyze → check scores</div>
+                <div class="help-check-item">Signals → Approve a high-score signal</div>
+                <div class="help-check-item">Signals → EXECUTED tab → verify execution</div>
+                <div class="help-check-item">Positions → verify new position appeared</div>
+            </div>
+            <div class="help-check-group">
+                <h5>Monitoring Test</h5>
+                <div class="help-check-item">Events → Scan Events → check for warnings</div>
+                <div class="help-check-item">Performance → check snapshot chart</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Important Notes -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">priority_high</span>
+            Important Notes
+        </h4>
+        <div class="help-notes">
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4b5;</span>
+                <div>
+                    <strong>Paper Trading Mode</strong> — No real money is used. All trades are simulated.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4ca;</span>
+                <div>
+                    <strong>Max 4 signals/day</strong> — Daily entry limit. <strong>Max 5 positions</strong> — Simultaneous holding limit.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f916;</span>
+                <div>
+                    <strong>AI Scoring</strong> — Claude Haiku 4.5 for sentiment. Finnhub for news/insider/earnings data.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x26a0;&#xfe0f;</span>
+                <div>
+                    <strong>exit_review events</strong> — When you see this action in Events, manually check if you should close that position.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f514;</span>
+                <div>
+                    <strong>Telegram Alerts</strong> — Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env. You'll receive alerts for signals, trades, events, and errors.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x26a1;</span>
+                <div>
+                    <strong>Real-time Notifications</strong> — Toast alerts appear automatically when trades execute, events are scanned, or modes change (SSE).
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f504;</span>
+                <div>
+                    <strong>Auto Recovery</strong> — If engine or dashboard crashes, systemd auto-restarts within ~12 seconds.
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
