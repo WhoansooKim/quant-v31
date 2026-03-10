@@ -13,6 +13,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+// ─── SignalR Circuit (연결 유지 설정 — 장시간 비활성 시에도 끊기지 않도록) ───
+builder.Services.AddServerSideBlazor(options =>
+{
+    options.DetailedErrors = true;
+    options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromHours(12);
+    options.DisconnectedCircuitMaxRetained = 5;
+});
+
 // ─── PostgreSQL 서비스 (Npgsql 직접) ───
 var connStr = builder.Configuration.GetConnectionString("Default")!;
 
@@ -36,8 +44,13 @@ builder.Services.AddHttpClient("Engine", client =>
     client.Timeout = TimeSpan.FromSeconds(30);
 });
 
-// ─── SignalR Hub (실시간 푸시) ───
-builder.Services.AddSignalR();
+// ─── SignalR Hub (실시간 푸시 — 장시간 연결 유지) ───
+builder.Services.AddSignalR(o =>
+{
+    o.ClientTimeoutInterval = TimeSpan.FromHours(12);
+    o.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    o.HandshakeTimeout = TimeSpan.FromSeconds(30);
+});
 
 // ─── Cookie Authentication ───
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)

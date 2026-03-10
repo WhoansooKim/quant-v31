@@ -1,12 +1,10 @@
 @inherits LayoutComponentBase
 @inject SwingService SwingSvc
-@inject IJSRuntime JS
-@implements IDisposable
-@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IHttpClientFactory HttpFactory
 
-<div class="page dark-theme">
+<div class="page dark-theme @(sidebarCollapsed ? "sidebar-collapsed" : "")">
     <div class="sidebar">
-        <NavMenu />
+        <NavMenu Collapsed="@sidebarCollapsed" CollapsedChanged="@(v => { sidebarCollapsed = v; StateHasChanged(); })" />
     </div>
 
     <main>
@@ -27,12 +25,18 @@
             }
             else
             {
-                <span class="text-muted" style="font-size:0.72rem">SPY -- | QQQ -- | AAPL -- | MSFT -- | NVDA --</span>
+                <span class="text-muted" style="font-size:0.72rem">No open positions to track</span>
             }
         </div>
 
         <article class="content">
-            @Body
+            <ErrorBoundary @ref="errorBoundary">
+                <ChildContent>@Body</ChildContent>
+                <ErrorContent Context="_">
+                    @{ RecoverSilently(); }
+                    @Body
+                </ErrorContent>
+            </ErrorBoundary>
         </article>
 
         <footer class="app-footer">
@@ -41,172 +45,45 @@
     </main>
 </div>
 
-<!-- SSE Toast Notifications -->
-<div class="toast-container">
-    @foreach (var toast in _toasts)
-    {
-        <div class="toast-item toast-@toast.Level @(toast.Fading ? "toast-fade" : "")">
-            <span class="material-symbols-outlined toast-icon">@toast.Icon</span>
-            <div class="toast-body">
-                <div class="toast-title">@toast.Title</div>
-                <div class="toast-msg">@toast.Message</div>
-            </div>
-            <button class="toast-close" @onclick="() => RemoveToast(toast)">
-                <span class="material-symbols-outlined" style="font-size:14px">close</span>
-            </button>
-        </div>
-    }
-</div>
+<!-- SSE Toast Notifications (Interactive Component) -->
+<SseToastPanel />
 
-<div id="blazor-error-ui">
-    An unhandled error has occurred.
-    <a href="" class="reload">Reload</a>
-    <a class="dismiss">X</a>
-</div>
+<!-- Silent reconnect/error handlers (화면에 표시되지 않음) -->
+<div id="blazor-reconnect-modal" style="display:none"></div>
+<div id="blazor-error-ui" style="display:none"></div>
 
 @code {
     private List<TickerBarItem> tickerData = new();
-    private List<ToastItem> _toasts = new();
-    private CancellationTokenSource? _sseCts;
-    private int _toastId;
+    private bool sidebarCollapsed;
+    private ErrorBoundary? errorBoundary;
+
+    private void RecoverSilently()
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            await InvokeAsync(() => errorBoundary?.Recover());
+        });
+    }
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
-            tickerData = await SwingSvc.GetTickerBarDataAsync();
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/ticker");
+            if (resp.TryGetProperty("tickers", out var arr))
+            {
+                tickerData = arr.EnumerateArray().Select(t => new TickerBarItem(
+                    Symbol: t.GetProperty("symbol").GetString() ?? "",
+                    Price: t.GetProperty("price").GetDouble(),
+                    ChangePercent: t.GetProperty("change_pct").GetDouble()
+                )).ToList();
+            }
         }
         catch
         {
             tickerData = new();
         }
-    }
-
-    protected override Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (firstRender)
-        {
-            _sseCts = new CancellationTokenSource();
-            _ = ListenSseAsync(_sseCts.Token);
-        }
-        return Task.CompletedTask;
-    }
-
-    private async Task ListenSseAsync(CancellationToken ct)
-    {
-        try
-        {
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-            using var stream = await httpClient.GetStreamAsync(
-                "http://localhost:8001/events/stream", ct);
-            using var reader = new System.IO.StreamReader(stream);
-
-            while (!ct.IsCancellationRequested)
-            {
-                var line = await reader.ReadLineAsync(ct);
-                if (line == null) break;
-                if (!line.StartsWith("data: ")) continue;
-
-                var json = line[6..];
-                try
-                {
-                    var doc = System.Text.Json.JsonDocument.Parse(json);
-                    var root = doc.RootElement;
-                    var type = root.TryGetProperty("type", out var t) ? t.GetString() : "";
-
-                    switch (type)
-                    {
-                        case "trade_executed":
-                            var sym = root.TryGetProperty("symbol", out var s) ? s.GetString() : "?";
-                            var side = root.TryGetProperty("side", out var sd) ? sd.GetString() : "?";
-                            AddToast("Trade Executed", $"{side} {sym}", "success", "check_circle");
-                            break;
-
-                        case "events_scanned":
-                            var crit = root.TryGetProperty("critical", out var cr) ? cr.GetInt32() : 0;
-                            var warn = root.TryGetProperty("warning", out var wr) ? wr.GetInt32() : 0;
-                            var cnt = root.TryGetProperty("count", out var cn) ? cn.GetInt32() : 0;
-                            if (crit > 0)
-                                AddToast("Critical Events", $"{crit} critical, {warn} warning out of {cnt}", "error", "error");
-                            else if (warn > 0)
-                                AddToast("Events Detected", $"{warn} warnings out of {cnt} events", "warning", "warning");
-                            else if (cnt > 0)
-                                AddToast("Events Scanned", $"{cnt} events found", "info", "bolt");
-                            break;
-
-                        case "edgar_scanned":
-                            var ec = root.TryGetProperty("count", out var ecc) ? ecc.GetInt32() : 0;
-                            if (ec > 0)
-                                AddToast("SEC Filings", $"{ec} new SEC filings detected", "warning", "description");
-                            break;
-
-                        case "mode_changed":
-                            var newMode = root.TryGetProperty("new_mode", out var nm) ? nm.GetString() : "?";
-                            var level = newMode == "live" ? "error" : "success";
-                            AddToast("Mode Changed", $"Trading mode: {newMode?.ToUpper()}", level, "swap_horiz");
-                            break;
-                    }
-                }
-                catch { }
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"SSE error: {ex.Message}");
-            // Auto-reconnect after 5s
-            if (!ct.IsCancellationRequested)
-            {
-                await Task.Delay(5000, ct);
-                _ = ListenSseAsync(ct);
-            }
-        }
-    }
-
-    private void AddToast(string title, string message, string level, string icon)
-    {
-        var toast = new ToastItem
-        {
-            Id = ++_toastId,
-            Title = title,
-            Message = message,
-            Level = level,
-            Icon = icon,
-        };
-        _toasts.Add(toast);
-        InvokeAsync(StateHasChanged);
-
-        // Auto-remove after 6s
-        _ = Task.Delay(5000).ContinueWith(_ =>
-        {
-            toast.Fading = true;
-            InvokeAsync(StateHasChanged);
-            Task.Delay(1000).ContinueWith(_ =>
-            {
-                _toasts.Remove(toast);
-                InvokeAsync(StateHasChanged);
-            });
-        });
-    }
-
-    private void RemoveToast(ToastItem toast)
-    {
-        _toasts.Remove(toast);
-    }
-
-    public void Dispose()
-    {
-        _sseCts?.Cancel();
-        _sseCts?.Dispose();
-    }
-
-    private class ToastItem
-    {
-        public int Id { get; set; }
-        public string Title { get; set; } = "";
-        public string Message { get; set; } = "";
-        public string Level { get; set; } = "info";
-        public string Icon { get; set; } = "info";
-        public bool Fading { get; set; }
     }
 }

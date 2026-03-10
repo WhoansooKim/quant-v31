@@ -132,6 +132,20 @@ class ConfigUpdate(BaseModel):
     value: str
 
 
+class CapitalEventRequest(BaseModel):
+    event_type: str  # "deposit" or "withdraw"
+    amount: float
+    note: str = ""
+
+
+class WatchlistAddRequest(BaseModel):
+    symbol: str
+    company_name: str = ""
+    avg_cost: float = 0
+    qty: float = 0
+    notes: str = ""
+
+
 # ═══════════════════════════════════════════════════════════
 # Health
 # ═══════════════════════════════════════════════════════════
@@ -902,31 +916,42 @@ def _generate_snapshot() -> dict:
     realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
 
     # 4) 포트폴리오 계산
-    cash_usd = INITIAL_CAPITAL + realized_pnl - entry_cost
+    capital_adj = pg.get_total_capital_adjustments()
+    cash_usd = INITIAL_CAPITAL + capital_adj + realized_pnl - entry_cost
     total_value = cash_usd + invested_usd
 
-    # 5) 일간/누적 수익률, 최대 낙폭
-    prev = pg.get_latest_snapshot()
-    prev_total = float(prev["total_value_usd"]) if prev and prev.get("total_value_usd") else INITIAL_CAPITAL
-    daily_pnl = total_value - prev_total
-    daily_return = daily_pnl / prev_total if prev_total > 0 else 0
-    cumulative_return = (total_value / INITIAL_CAPITAL) - 1
+    # 5) 순수 트레이딩 손익 (입출금 제외)
+    unrealized_pnl = invested_usd - entry_cost
+    trading_pnl = realized_pnl + unrealized_pnl
 
-    # Max drawdown: worst from all snapshots + current
+    total_invested = INITIAL_CAPITAL + capital_adj
+    cumulative_return = trading_pnl / total_invested if total_invested > 0 else 0
+
+    # Daily P&L: 순수 트레이딩 손익 변동분 (입출금 제외)
+    prev = pg.get_latest_snapshot()
+    if prev and prev.get("trading_pnl") is not None:
+        prev_trading_pnl = float(prev["trading_pnl"])
+    elif prev and prev.get("total_value_usd") is not None:
+        prev_trading_pnl = float(prev["total_value_usd"]) - total_invested
+    else:
+        prev_trading_pnl = 0
+    daily_pnl = trading_pnl - prev_trading_pnl
+    daily_return = daily_pnl / total_invested if total_invested > 0 else 0
+
+    # Max drawdown (TWR 기반 — 입출금 무관)
     all_snaps = pg.get_snapshots(days=9999)
-    peak = INITIAL_CAPITAL
+    peak_return = 0.0
     worst_dd = 0.0
     for s in all_snaps:
-        val = float(s.get("total_value_usd") or 0)
-        if val > peak:
-            peak = val
-        dd = (val - peak) / peak if peak > 0 else 0
+        cr = float(s.get("cumulative_return") or 0)
+        if cr > peak_return:
+            peak_return = cr
+        dd = cr - peak_return
         if dd < worst_dd:
             worst_dd = dd
-    # Include current
-    if total_value > peak:
-        peak = total_value
-    curr_dd = (total_value - peak) / peak if peak > 0 else 0
+    if cumulative_return > peak_return:
+        peak_return = cumulative_return
+    curr_dd = cumulative_return - peak_return
     if curr_dd < worst_dd:
         worst_dd = curr_dd
 
@@ -942,6 +967,7 @@ def _generate_snapshot() -> dict:
         "max_drawdown": round(worst_dd, 6),
         "open_positions": open_count,
         "exchange_rate": None,
+        "trading_pnl": round(trading_pnl, 2),
     }
     pg.insert_snapshot(snap)
     cache.set_snapshot(snap)
@@ -951,6 +977,751 @@ def _generate_snapshot() -> dict:
                 f"daily_pnl=${daily_pnl:.2f}")
 
     return snap
+
+
+# ═══════════════════════════════════════════════════════════
+# Capital Events
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/capital/event")
+async def add_capital_event(req: CapitalEventRequest):
+    """자금 투입/출금 기록."""
+    if req.event_type not in ("deposit", "withdraw"):
+        raise HTTPException(400, "event_type must be 'deposit' or 'withdraw'")
+    if req.amount <= 0:
+        raise HTTPException(400, "amount must be positive")
+
+    event_id = pg.insert_capital_event(req.event_type, req.amount, req.note)
+
+    # Telegram 알림
+    emoji = "\U0001f4b0" if req.event_type == "deposit" else "\U0001f4b8"
+    await notifier.send(
+        f"<b>{emoji} Capital {req.event_type.title()}</b>\n\n"
+        f"Amount: <b>${req.amount:,.2f}</b>\n"
+        f"Note: {req.note or 'N/A'}\n"
+        f"\u23f0 {datetime.now().strftime('%H:%M KST')}"
+    )
+
+    # SSE broadcast
+    _sse_broadcast({
+        "type": "capital_event",
+        "event_type": req.event_type,
+        "amount": req.amount,
+    })
+
+    return {"status": "ok", "event_id": event_id, "event_type": req.event_type, "amount": req.amount}
+
+
+@app.get("/capital/events")
+async def list_capital_events():
+    events = pg.get_capital_events()
+    total = pg.get_total_capital_adjustments()
+    return {"events": events, "count": len(events), "net_adjustment": total}
+
+
+# ═══════════════════════════════════════════════════════════
+# Watchlist
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/watchlist")
+async def add_watchlist(req: WatchlistAddRequest):
+    wid = pg.upsert_watchlist(req.symbol, req.company_name, req.avg_cost, req.qty, req.notes)
+    return {"status": "ok", "watchlist_id": wid, "symbol": req.symbol.upper()}
+
+
+@app.get("/watchlist")
+async def get_watchlist():
+    items = pg.get_watchlist()
+    return {"watchlist": items, "count": len(items)}
+
+
+@app.delete("/watchlist/{symbol}")
+async def remove_watchlist(symbol: str):
+    ok = pg.delete_watchlist(symbol)
+    if not ok:
+        raise HTTPException(404, f"{symbol} not in watchlist")
+    return {"status": "removed", "symbol": symbol.upper()}
+
+
+@app.get("/watchlist/alerts")
+async def get_watchlist_alerts(symbol: str = None, limit: int = 50):
+    alerts = pg.get_watchlist_alerts(symbol=symbol, limit=limit)
+    return {"alerts": alerts, "count": len(alerts)}
+
+
+def _ema(data, period):
+    """Calculate EMA of last value."""
+    import numpy as np
+    if len(data) < period:
+        return float(np.mean(data))
+    multiplier = 2 / (period + 1)
+    ema = float(data[0])
+    for price in data[1:]:
+        ema = (float(price) - ema) * multiplier + ema
+    return ema
+
+
+def _ema_from_arr(arr, period):
+    """EMA of array, return last value."""
+    import numpy as np
+    if len(arr) < period:
+        return float(np.mean(arr))
+    multiplier = 2 / (period + 1)
+    ema = float(arr[0])
+    for v in arr[1:]:
+        ema = (float(v) - ema) * multiplier + ema
+    return ema
+
+
+@app.post("/watchlist/analyze")
+async def analyze_watchlist(bg: BackgroundTasks):
+    """워치리스트 종목 매수/매도 분석 (백그라운드)."""
+    bg.add_task(_analyze_watchlist)
+    return {"status": "running", "message": "Watchlist analysis started"}
+
+
+def _analyze_watchlist():
+    """워치리스트 전체 분석 — Investing.com 스타일 12개 기술지표 기반 매수/매도 추천."""
+    import yfinance as yf
+    import numpy as np
+
+    items = pg.get_watchlist()
+    if not items:
+        cache.set_json("watchlist_analysis", {"status": "done", "results": []}, ttl=86400)
+        return
+
+    results = []
+    symbols = [w["symbol"] for w in items]
+
+    try:
+        data = yf.download(symbols, period="1y", progress=False)
+    except Exception as e:
+        logger.error(f"Watchlist yfinance failed: {e}")
+        cache.set_json("watchlist_analysis", {"status": "failed", "error": str(e)}, ttl=3600)
+        return
+
+    def _get_col(col, sym):
+        if len(symbols) == 1:
+            return data[col].dropna().values
+        return data[col][sym].dropna().values
+
+    def _ema_arr(arr, period):
+        """Return full EMA array."""
+        out = np.empty_like(arr, dtype=float)
+        out[0] = float(arr[0])
+        m = 2.0 / (period + 1)
+        for i in range(1, len(arr)):
+            out[i] = (float(arr[i]) - out[i - 1]) * m + out[i - 1]
+        return out
+
+    def _sma_arr(arr, period):
+        """Return rolling SMA array (NaN-padded)."""
+        out = np.full(len(arr), np.nan)
+        for i in range(period - 1, len(arr)):
+            out[i] = np.mean(arr[i - period + 1:i + 1])
+        return out
+
+    def _rsi_series(arr, period=14):
+        """Return RSI array."""
+        d = np.diff(arr)
+        g = np.where(d > 0, d, 0.0)
+        l = np.where(d < 0, -d, 0.0)
+        avg_g = np.empty(len(d))
+        avg_l = np.empty(len(d))
+        avg_g[0] = g[0]
+        avg_l[0] = max(l[0], 1e-10)
+        for i in range(1, len(d)):
+            avg_g[i] = (avg_g[i - 1] * (period - 1) + g[i]) / period
+            avg_l[i] = (avg_l[i - 1] * (period - 1) + l[i]) / period
+        rs = avg_g / np.maximum(avg_l, 1e-10)
+        return 100.0 - 100.0 / (1.0 + rs)
+
+    def _stoch(high, low, close, k_period=14, d_period=3):
+        """Stochastic %K, %D."""
+        k_arr = np.full(len(close), np.nan)
+        for i in range(k_period - 1, len(close)):
+            hh = np.max(high[i - k_period + 1:i + 1])
+            ll = np.min(low[i - k_period + 1:i + 1])
+            k_arr[i] = ((close[i] - ll) / max(hh - ll, 1e-10)) * 100
+        d_arr = _sma_arr(k_arr, d_period)
+        return k_arr, d_arr
+
+    def _williams_r(high, low, close, period=14):
+        """Williams %R."""
+        out = np.full(len(close), np.nan)
+        for i in range(period - 1, len(close)):
+            hh = np.max(high[i - period + 1:i + 1])
+            ll = np.min(low[i - period + 1:i + 1])
+            out[i] = ((hh - close[i]) / max(hh - ll, 1e-10)) * -100
+        return out
+
+    def _cci(high, low, close, period=20):
+        """CCI."""
+        tp = (high + low + close) / 3.0
+        out = np.full(len(close), np.nan)
+        for i in range(period - 1, len(close)):
+            window = tp[i - period + 1:i + 1]
+            sma = np.mean(window)
+            md = np.mean(np.abs(window - sma))
+            out[i] = (tp[i] - sma) / max(md * 0.015, 1e-10)
+        return out
+
+    def _adx(high, low, close, period=14):
+        """ADX."""
+        n = len(close)
+        if n < period * 2:
+            return np.full(n, np.nan)
+        tr = np.maximum(high[1:] - low[1:],
+                        np.maximum(np.abs(high[1:] - close[:-1]),
+                                   np.abs(low[1:] - close[:-1])))
+        up = high[1:] - high[:-1]
+        dn = low[:-1] - low[1:]
+        pdm = np.where((up > dn) & (up > 0), up, 0.0)
+        ndm = np.where((dn > up) & (dn > 0), dn, 0.0)
+        atr_s = _ema_arr(tr, period)
+        pdm_s = _ema_arr(pdm, period)
+        ndm_s = _ema_arr(ndm, period)
+        pdi = 100 * pdm_s / np.maximum(atr_s, 1e-10)
+        ndi = 100 * ndm_s / np.maximum(atr_s, 1e-10)
+        dx = 100 * np.abs(pdi - ndi) / np.maximum(pdi + ndi, 1e-10)
+        adx_arr = _ema_arr(dx, period)
+        out = np.full(n, np.nan)
+        out[1:] = adx_arr
+        return out
+
+    def _ultimate_osc(high, low, close, p1=7, p2=14, p3=28):
+        """Ultimate Oscillator."""
+        bp = close[1:] - np.minimum(low[1:], close[:-1])
+        tr = np.maximum(high[1:] - low[1:],
+                        np.maximum(np.abs(high[1:] - close[:-1]),
+                                   np.abs(low[1:] - close[:-1])))
+        n = len(bp)
+        out = np.full(len(close), np.nan)
+        for i in range(max(p1, p2, p3) - 1, n):
+            a1 = np.sum(bp[i - p1 + 1:i + 1]) / max(np.sum(tr[i - p1 + 1:i + 1]), 1e-10)
+            a2 = np.sum(bp[i - p2 + 1:i + 1]) / max(np.sum(tr[i - p2 + 1:i + 1]), 1e-10)
+            a3 = np.sum(bp[i - p3 + 1:i + 1]) / max(np.sum(tr[i - p3 + 1:i + 1]), 1e-10)
+            out[i + 1] = 100 * (4 * a1 + 2 * a2 + a3) / 7.0
+        return out
+
+    def _roc(close, period=12):
+        """Rate of Change."""
+        out = np.full(len(close), np.nan)
+        for i in range(period, len(close)):
+            out[i] = ((close[i] - close[i - period]) / max(abs(close[i - period]), 1e-10)) * 100
+        return out
+
+    def _bull_bear_power(high, low, close, period=13):
+        """Bull/Bear Power (Elder)."""
+        ema_s = _ema_arr(close, period)
+        bull = high - ema_s
+        bear = low - ema_s
+        return bull, bear
+
+    for item in items:
+        sym = item["symbol"]
+        try:
+            close_arr = _get_col("Close", sym)
+            high_arr = _get_col("High", sym)
+            low_arr = _get_col("Low", sym)
+            vol_arr = _get_col("Volume", sym)
+
+            n = len(close_arr)
+            if n < 50:
+                continue
+
+            current_price = float(close_arr[-1])
+
+            # ── Calculate all 12 indicators ──
+            # 1) RSI(14)
+            rsi_arr = _rsi_series(close_arr, 14)
+            rsi_val = float(rsi_arr[-1])
+
+            # 2) Stochastic(14,3,3)
+            stoch_k, stoch_d = _stoch(high_arr, low_arr, close_arr, 14, 3)
+            stoch_k_val = float(stoch_k[-1]) if not np.isnan(stoch_k[-1]) else 50
+            stoch_d_val = float(stoch_d[-1]) if not np.isnan(stoch_d[-1]) else 50
+
+            # 3) StochRSI(14)
+            rsi_for_stoch = rsi_arr[-14:] if len(rsi_arr) >= 14 else rsi_arr
+            rsi_high = np.max(rsi_for_stoch)
+            rsi_low = np.min(rsi_for_stoch)
+            stoch_rsi = ((rsi_val - rsi_low) / max(rsi_high - rsi_low, 1e-10)) * 100
+
+            # 4) MACD(12,26,9)
+            ema12 = _ema_arr(close_arr, 12)
+            ema26 = _ema_arr(close_arr, 26)
+            macd_line_arr = ema12 - ema26
+            signal_arr = _ema_arr(macd_line_arr, 9)
+            macd_val = float(macd_line_arr[-1])
+            macd_signal = float(signal_arr[-1])
+            macd_hist = macd_val - macd_signal
+
+            # 5) ADX(14)
+            adx_arr = _adx(high_arr, low_arr, close_arr, 14)
+            adx_val = float(adx_arr[-1]) if not np.isnan(adx_arr[-1]) else 25
+
+            # 6) Williams %R(14)
+            wr_arr = _williams_r(high_arr, low_arr, close_arr, 14)
+            wr_val = float(wr_arr[-1]) if not np.isnan(wr_arr[-1]) else -50
+
+            # 7) CCI(20)
+            cci_arr = _cci(high_arr, low_arr, close_arr, 20)
+            cci_val = float(cci_arr[-1]) if not np.isnan(cci_arr[-1]) else 0
+
+            # 8) ATR(14)
+            tr_arr = np.maximum(high_arr[1:] - low_arr[1:],
+                                np.maximum(np.abs(high_arr[1:] - close_arr[:-1]),
+                                           np.abs(low_arr[1:] - close_arr[:-1])))
+            atr_val = float(np.mean(tr_arr[-14:])) if len(tr_arr) >= 14 else float(np.mean(tr_arr))
+
+            # 9) Highs/Lows (14-day)
+            high_14 = float(np.max(high_arr[-14:]))
+            low_14 = float(np.min(low_arr[-14:]))
+            hl_mid = (high_14 + low_14) / 2
+
+            # 10) Ultimate Oscillator(7,14,28)
+            uo_arr = _ultimate_osc(high_arr, low_arr, close_arr)
+            uo_val = float(uo_arr[-1]) if not np.isnan(uo_arr[-1]) else 50
+
+            # 11) ROC(12)
+            roc_arr = _roc(close_arr, 12)
+            roc_val = float(roc_arr[-1]) if not np.isnan(roc_arr[-1]) else 0
+
+            # 12) Bull/Bear Power(13)
+            bull_arr, bear_arr = _bull_bear_power(high_arr, low_arr, close_arr, 13)
+            bull_val = float(bull_arr[-1])
+            bear_val = float(bear_arr[-1])
+            bp_val = bull_val + bear_val
+
+            # ── Per-indicator signal judgment ──
+            ind_list = []
+
+            # 1) RSI
+            if rsi_val < 30:
+                ind_list.append({"name": "RSI(14)", "value": round(rsi_val, 1), "signal": "BUY"})
+            elif rsi_val > 70:
+                ind_list.append({"name": "RSI(14)", "value": round(rsi_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "RSI(14)", "value": round(rsi_val, 1), "signal": "NEUTRAL"})
+
+            # 2) Stochastic
+            if stoch_k_val < 20:
+                ind_list.append({"name": "STOCH(14,3)", "value": round(stoch_k_val, 1), "signal": "BUY"})
+            elif stoch_k_val > 80:
+                ind_list.append({"name": "STOCH(14,3)", "value": round(stoch_k_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "STOCH(14,3)", "value": round(stoch_k_val, 1), "signal": "NEUTRAL"})
+
+            # 3) StochRSI
+            if stoch_rsi < 20:
+                ind_list.append({"name": "StochRSI", "value": round(stoch_rsi, 1), "signal": "BUY"})
+            elif stoch_rsi > 80:
+                ind_list.append({"name": "StochRSI", "value": round(stoch_rsi, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "StochRSI", "value": round(stoch_rsi, 1), "signal": "NEUTRAL"})
+
+            # 4) MACD
+            if macd_hist > 0:
+                ind_list.append({"name": "MACD(12,26)", "value": round(macd_hist, 3), "signal": "BUY"})
+            elif macd_hist < 0:
+                ind_list.append({"name": "MACD(12,26)", "value": round(macd_hist, 3), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "MACD(12,26)", "value": round(macd_hist, 3), "signal": "NEUTRAL"})
+
+            # 5) ADX — trend strength; direction from +DI/-DI proxy
+            if adx_val > 25:
+                # Strong trend — use price vs SMA as proxy for direction
+                sma_20 = float(np.mean(close_arr[-20:]))
+                if current_price > sma_20:
+                    ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": "BUY"})
+                else:
+                    ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": "NEUTRAL"})
+
+            # 6) Williams %R
+            if wr_val < -80:
+                ind_list.append({"name": "W%R(14)", "value": round(wr_val, 1), "signal": "BUY"})
+            elif wr_val > -20:
+                ind_list.append({"name": "W%R(14)", "value": round(wr_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "W%R(14)", "value": round(wr_val, 1), "signal": "NEUTRAL"})
+
+            # 7) CCI
+            if cci_val < -100:
+                ind_list.append({"name": "CCI(20)", "value": round(cci_val, 1), "signal": "BUY"})
+            elif cci_val > 100:
+                ind_list.append({"name": "CCI(20)", "value": round(cci_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "CCI(20)", "value": round(cci_val, 1), "signal": "NEUTRAL"})
+
+            # 8) ATR — volatility, neutral by nature; high vol = caution
+            atr_pct = (atr_val / current_price) * 100
+            ind_list.append({"name": "ATR(14)", "value": round(atr_val, 2), "signal": "NEUTRAL"})
+
+            # 9) Highs/Lows
+            if current_price > hl_mid:
+                ind_list.append({"name": "Highs/Lows", "value": round(current_price - hl_mid, 2), "signal": "BUY"})
+            elif current_price < hl_mid:
+                ind_list.append({"name": "Highs/Lows", "value": round(current_price - hl_mid, 2), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "Highs/Lows", "value": 0, "signal": "NEUTRAL"})
+
+            # 10) Ultimate Oscillator
+            if uo_val < 30:
+                ind_list.append({"name": "UO(7,14,28)", "value": round(uo_val, 1), "signal": "BUY"})
+            elif uo_val > 70:
+                ind_list.append({"name": "UO(7,14,28)", "value": round(uo_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "UO(7,14,28)", "value": round(uo_val, 1), "signal": "NEUTRAL"})
+
+            # 11) ROC
+            if roc_val > 0:
+                ind_list.append({"name": "ROC(12)", "value": round(roc_val, 2), "signal": "BUY"})
+            elif roc_val < 0:
+                ind_list.append({"name": "ROC(12)", "value": round(roc_val, 2), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "ROC(12)", "value": round(roc_val, 2), "signal": "NEUTRAL"})
+
+            # 12) Bull/Bear Power
+            if bp_val > 0:
+                ind_list.append({"name": "Bull/Bear", "value": round(bp_val, 2), "signal": "BUY"})
+            elif bp_val < 0:
+                ind_list.append({"name": "Bull/Bear", "value": round(bp_val, 2), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "Bull/Bear", "value": round(bp_val, 2), "signal": "NEUTRAL"})
+
+            # ── Oscillator aggregate (12 indicators) ──
+            osc_buy = sum(1 for x in ind_list if x["signal"] == "BUY")
+            osc_sell = sum(1 for x in ind_list if x["signal"] == "SELL")
+            osc_neutral = sum(1 for x in ind_list if x["signal"] == "NEUTRAL")
+
+            # ── Moving Averages (SMA & EMA × 6 periods = 12 signals) ──
+            ma_list = []
+            ma_periods = [5, 10, 20, 50, 100, 200]
+            for p in ma_periods:
+                if len(close_arr) >= p:
+                    sma_v = float(np.mean(close_arr[-p:]))
+                    ema_v = float(_ema_arr(close_arr, p)[-1])
+                    sma_sig = "BUY" if current_price > sma_v else "SELL"
+                    ema_sig = "BUY" if current_price > ema_v else "SELL"
+                    ma_list.append({"name": f"SMA({p})", "value": round(sma_v, 2), "signal": sma_sig})
+                    ma_list.append({"name": f"EMA({p})", "value": round(ema_v, 2), "signal": ema_sig})
+
+            ma_buy = sum(1 for x in ma_list if x["signal"] == "BUY")
+            ma_sell = sum(1 for x in ma_list if x["signal"] == "SELL")
+            ma_neutral = 0  # MA is always buy or sell
+
+            # ── Grand Total (oscillators + moving averages) — for display ──
+            total_buy = osc_buy + ma_buy
+            total_sell = osc_sell + ma_sell
+            total_neutral = osc_neutral + ma_neutral
+            total_all = total_buy + total_sell + total_neutral
+
+            # ── Weighted Category Scoring (research-backed) ──
+            # Helper: convert signal list to score [-1, +1]
+            def _sig_score(signals):
+                if not signals:
+                    return 0.0
+                total = sum(1 if s == "BUY" else -1 if s == "SELL" else 0 for s in signals)
+                return total / len(signals)
+
+            # Map indicators to categories by name
+            ind_by_name = {i["name"]: i["signal"] for i in ind_list}
+
+            # Category 1: Trend (MAs + ADX + Highs/Lows)
+            ma_score = (ma_buy - ma_sell) / max(ma_buy + ma_sell, 1)
+            trend_osc = [ind_by_name.get("ADX(14)", "NEUTRAL"), ind_by_name.get("Highs/Lows", "NEUTRAL")]
+            trend_score = 0.6 * ma_score + 0.4 * _sig_score(trend_osc)
+
+            # Category 2: Momentum (RSI, ROC, UO, Bull/Bear)
+            mom_sigs = [ind_by_name.get(n, "NEUTRAL") for n in ["RSI(14)", "ROC(12)", "UO(7,14,28)", "Bull/Bear"]]
+            momentum_score = _sig_score(mom_sigs)
+
+            # Category 3: MACD
+            macd_score = _sig_score([ind_by_name.get("MACD(12,26)", "NEUTRAL")])
+
+            # Category 4: Mean-Reversion (Stoch, StochRSI, W%R, CCI)
+            mr_sigs = [ind_by_name.get(n, "NEUTRAL") for n in ["STOCH(14,3)", "StochRSI", "W%R(14)", "CCI(20)"]]
+            meanrev_score = _sig_score(mr_sigs)
+
+            # Category 5: Volume (regular + pre-market boost)
+            vol_ratio = float(np.mean(vol_arr[-5:])) / max(float(np.mean(vol_arr[-20:])), 1) if len(vol_arr) >= 20 else 1.0
+            vol_score = 1.0 if vol_ratio >= 2.0 else (0.5 if vol_ratio >= 1.5 else (0.0 if vol_ratio >= 1.0 else -0.5))
+
+            # C안: Pre-market volume confirmation boost
+            pre_vol_boost = 0
+            try:
+                import yfinance as yf
+                tkr = yf.Ticker(sym)
+                info = tkr.info
+                pre_price = info.get("preMarketPrice")
+                mkt_state = info.get("marketState", "")
+                if pre_price and mkt_state in ("PRE", "PREPRE"):
+                    # Pre-market gap provides additional signal
+                    prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose") or current_price
+                    pre_gap = ((pre_price - prev_close) / prev_close) if prev_close else 0
+                    if abs(pre_gap) >= 0.01:  # 1%+ gap
+                        pre_vol_boost = 0.3 if pre_gap > 0 else -0.3
+                        vol_score = min(1.0, max(-1.0, vol_score + pre_vol_boost))
+            except Exception:
+                pass  # Pre-market data not available, use regular vol_score
+
+            # ── Regime Detection via ADX ──
+            if adx_val > 25:
+                regime = "TRENDING"
+                w_trend, w_mom, w_macd, w_mr, w_vol = 0.40, 0.25, 0.15, 0.10, 0.10
+            elif adx_val < 20:
+                regime = "SIDEWAYS"
+                w_trend, w_mom, w_macd, w_mr, w_vol = 0.15, 0.20, 0.20, 0.30, 0.15
+            else:
+                regime = "MIXED"
+                w_trend, w_mom, w_macd, w_mr, w_vol = 0.30, 0.25, 0.20, 0.15, 0.10
+
+            # Weighted composite score [-1, +1]
+            weighted_raw = (
+                w_trend * trend_score +
+                w_mom * momentum_score +
+                w_macd * macd_score +
+                w_mr * meanrev_score +
+                w_vol * vol_score
+            )
+
+            # Volume confirmation: dampen signal if volume is low
+            vol_factor = 1.0 if vol_ratio >= 1.5 else 0.5
+            weighted_final = weighted_raw * vol_factor
+
+            # Direction from weighted score
+            if weighted_final >= 0.35:
+                direction = "STRONG_BUY"
+            elif weighted_final >= 0.12:
+                direction = "BUY"
+            elif weighted_final <= -0.35:
+                direction = "STRONG_SELL"
+            elif weighted_final <= -0.12:
+                direction = "SELL"
+            else:
+                direction = "NEUTRAL"
+
+            # Confidence: scale weighted_final to 0-100
+            confidence = min(99, max(1, int(abs(weighted_final) * 100 + 50)))
+
+            # P&L vs avg cost
+            avg_cost = float(item.get("avg_cost") or 0)
+            pnl_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost > 0 else None
+
+            # Target/Stop (ATR-based)
+            if "BUY" in direction:
+                target_price = round(current_price + 2 * atr_val, 2)
+                stop_price = round(current_price - 1.5 * atr_val, 2)
+            elif "SELL" in direction:
+                target_price = round(current_price - 2 * atr_val, 2)
+                stop_price = round(current_price + 1.5 * atr_val, 2)
+            else:
+                target_price = round(float(np.max(close_arr[-20:])), 2)
+                stop_price = round(float(np.min(close_arr[-20:])), 2)
+
+            result = {
+                "symbol": sym,
+                "company_name": item.get("company_name", ""),
+                "current_price": round(current_price, 2),
+                "avg_cost": avg_cost,
+                "qty": float(item.get("qty") or 0),
+                "pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
+                "direction": direction,
+                "confidence": confidence,
+                # Oscillators (12)
+                "osc_buy": osc_buy,
+                "osc_sell": osc_sell,
+                "osc_neutral": osc_neutral,
+                "indicators": ind_list,
+                # Moving Averages (up to 12)
+                "ma_buy": ma_buy,
+                "ma_sell": ma_sell,
+                "ma_neutral": ma_neutral,
+                "moving_averages": ma_list,
+                # Grand total (for display)
+                "total_buy": total_buy,
+                "total_sell": total_sell,
+                "total_neutral": total_neutral,
+                # Weighted scoring (research-backed)
+                "regime": regime,
+                "vol_factor": vol_factor,
+                "weighted_score": round(weighted_final, 3),
+                "category_scores": {
+                    "trend": round(trend_score, 3),
+                    "momentum": round(momentum_score, 3),
+                    "macd": round(macd_score, 3),
+                    "mean_reversion": round(meanrev_score, 3),
+                    "volume": round(vol_score, 3),
+                },
+                "category_weights": {
+                    "trend": w_trend, "momentum": w_mom,
+                    "macd": w_macd, "mean_reversion": w_mr, "volume": w_vol,
+                },
+                "target_price": target_price,
+                "stop_price": stop_price,
+                "atr": round(atr_val, 2),
+                "vol_ratio": round(vol_ratio, 2),
+                "pre_vol_boost": pre_vol_boost,
+            }
+            results.append(result)
+
+            # Save alert to DB
+            alert = {
+                "symbol": sym,
+                "alert_type": "technical_full",
+                "direction": direction,
+                "confidence": confidence,
+                "reason": f"{direction} (Score {weighted_final:+.2f}, {regime}, Vol×{vol_factor}): T{trend_score:+.2f} M{momentum_score:+.2f} MACD{macd_score:+.1f} MR{meanrev_score:+.2f} V{vol_score:+.1f}",
+                "current_price": current_price,
+                "target_price": target_price,
+                "stop_price": stop_price,
+                "strategy": "weighted_category",
+                "detail": {
+                    "oscillators": {i["name"]: {"value": i["value"], "signal": i["signal"]} for i in ind_list},
+                    "moving_averages": {i["name"]: {"value": i["value"], "signal": i["signal"]} for i in ma_list},
+                    "regime": regime,
+                    "weighted_score": round(weighted_final, 3),
+                    "vol_factor": vol_factor,
+                },
+            }
+            pg.insert_watchlist_alert(alert)
+
+            # Telegram for STRONG signals or high-confidence directional
+            if "STRONG" in direction or (direction != "NEUTRAL" and confidence >= 65):
+                emoji = "\U0001f7e2" if "BUY" in direction else "\U0001f534"
+                label = {"STRONG_BUY": "Strong Buy", "BUY": "Buy", "STRONG_SELL": "Strong Sell", "SELL": "Sell"}.get(direction, direction)
+                vol_lbl = "High" if vol_ratio >= 1.5 else "Low"
+                asyncio.run(notifier.send(
+                    f"<b>{emoji} Watchlist: {label} {sym}</b>\n\n"
+                    f"Price: <b>${current_price:.2f}</b>\n"
+                    f"Score: <b>{weighted_final:+.3f}</b> | Regime: {regime}\n"
+                    f"Volume: ×{vol_ratio:.1f} ({vol_lbl})\n"
+                    f"Trend {trend_score:+.2f} · Mom {momentum_score:+.2f} · MACD {macd_score:+.1f}\n"
+                    f"MeanRev {meanrev_score:+.2f} · Vol {vol_score:+.1f}\n"
+                    f"Target: ${target_price:.2f} / Stop: ${stop_price:.2f}\n"
+                    f"\u23f0 {datetime.now().strftime('%H:%M KST')}"
+                ))
+
+        except Exception as e:
+            logger.warning(f"Watchlist analysis failed for {sym}: {e}")
+            continue
+
+    cache.set_json("watchlist_analysis", {
+        "status": "done",
+        "analyzed_at": datetime.now().isoformat(),
+        "count": len(results),
+        "results": results,
+    }, ttl=86400)
+    logger.info(f"Watchlist analysis done: {len(results)} symbols")
+
+
+@app.get("/watchlist/analysis")
+async def get_watchlist_analysis():
+    """워치리스트 분석 결과 조회 (캐시)."""
+    result = cache.get_json("watchlist_analysis")
+    if not result:
+        return {"status": "no_results", "message": "Run POST /watchlist/analyze first"}
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
+# Ticker
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/ticker")
+async def get_ticker_data():
+    """티커바 데이터 — 오픈 포지션 심볼 현재가."""
+    positions = pg.get_open_positions()
+    if not positions:
+        return {"tickers": []}
+
+    symbols = list(set(p["symbol"] for p in positions))
+    tickers = []
+
+    try:
+        import yfinance as yf
+        data = yf.download(symbols, period="2d", progress=False)
+        for sym in symbols:
+            try:
+                if len(symbols) == 1:
+                    closes = data["Close"].dropna()
+                else:
+                    closes = data["Close"][sym].dropna()
+                if len(closes) >= 2:
+                    current = float(closes.iloc[-1])
+                    prev = float(closes.iloc[-2])
+                    change = ((current - prev) / prev) * 100
+                elif len(closes) == 1:
+                    current = float(closes.iloc[-1])
+                    change = 0
+                else:
+                    continue
+                tickers.append({"symbol": sym, "price": round(current, 2), "change_pct": round(change, 2)})
+            except (KeyError, IndexError):
+                pass
+    except Exception as e:
+        logger.warning(f"Ticker data fetch failed: {e}")
+
+    tickers.sort(key=lambda t: t["symbol"])
+    return {"tickers": tickers}
+
+
+# ═══════════════════════════════════════════════════════════
+# Extended Hours (Pre-market / After-hours)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/extended-hours")
+async def get_extended_hours():
+    """최근 프리마켓/애프터마켓 데이터 조회 (캐시)."""
+    result = cache.get_json("extended_hours")
+    if not result:
+        return {"status": "no_data", "message": "No extended hours data cached yet"}
+    return result
+
+
+@app.post("/extended-hours/check")
+async def check_extended_hours_now():
+    """수동 프리마켓/애프터마켓 체크."""
+    from engine_v4.data.extended_hours import fetch_extended_hours
+
+    positions = pg.get_open_positions()
+    watchlist_items = pg.get_watchlist()
+    pending = pg.get_signals(status="pending")
+
+    syms = set()
+    for p in positions:
+        syms.add(p["symbol"])
+    for w in watchlist_items:
+        syms.add(w["symbol"])
+    for s in pending:
+        syms.add(s["symbol"])
+
+    if not syms:
+        return {"status": "no_symbols", "data": []}
+
+    data = fetch_extended_hours(list(syms))
+
+    # Annotate each symbol with context
+    pos_syms = {p["symbol"] for p in positions}
+    wl_syms = {w["symbol"] for w in watchlist_items}
+    pend_syms = {s["symbol"] for s in pending}
+    for d in data:
+        s = d["symbol"]
+        d["is_position"] = s in pos_syms
+        d["is_watchlist"] = s in wl_syms
+        d["is_pending"] = s in pend_syms
+
+    result = {
+        "session": data[0]["session"] if data else "unknown",
+        "checked_at": datetime.now().isoformat(),
+        "count": len(data),
+        "data": data,
+    }
+    cache.set_json("extended_hours", result, ttl=7200)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════

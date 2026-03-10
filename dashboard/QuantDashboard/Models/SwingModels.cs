@@ -239,3 +239,16 @@ public record SwingSymbolDetail
     public double ScoreVolume { get; init; }
     public double ScoreTotal => ScoreReturn + ScoreTrend + ScoreBreakout + ScoreVolume;
 }
+
+// ─── 워치리스트 ───
+public record WatchlistItem(
+    long WatchlistId,
+    string Symbol,
+    string? CompanyName,
+    decimal AvgCost,
+    decimal Qty,
+    string? Notes,
+    bool IsActive,
+    DateTime AddedAt,
+    DateTime UpdatedAt
+);

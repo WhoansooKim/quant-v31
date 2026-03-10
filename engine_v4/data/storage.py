@@ -225,7 +225,7 @@ class PostgresStore:
         with self.get_conn() as conn:
             cur = conn.execute("""
                 UPDATE swing_signals SET status = 'rejected'
-                WHERE signal_id = %s AND status = 'pending'
+                WHERE signal_id = %s AND status IN ('pending', 'approved')
             """, (signal_id,))
             conn.commit()
             return cur.rowcount > 0
@@ -440,13 +440,14 @@ class PostgresStore:
                 INSERT INTO swing_snapshots
                     (total_value_usd, total_value_krw, cash_usd, invested_usd,
                      daily_pnl_usd, daily_return, cumulative_return,
-                     max_drawdown, open_positions, exchange_rate)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     max_drawdown, open_positions, exchange_rate, trading_pnl)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (snap["total_value_usd"], snap.get("total_value_krw"),
                   snap["cash_usd"], snap["invested_usd"],
                   snap.get("daily_pnl_usd"), snap.get("daily_return"),
                   snap.get("cumulative_return"), snap.get("max_drawdown"),
-                  snap.get("open_positions", 0), snap.get("exchange_rate")))
+                  snap.get("open_positions", 0), snap.get("exchange_rate"),
+                  snap.get("trading_pnl", 0)))
             conn.commit()
 
     def get_snapshots(self, days: int = 30) -> list[dict]:
@@ -547,6 +548,109 @@ class PostgresStore:
                 SELECT * FROM swing_backtest_runs WHERE run_id = %s
             """, (run_id,)).fetchone()
         return dict(row) if row else None
+
+    # ─── Capital Events ────────────────────────────────────
+
+    def insert_capital_event(self, event_type: str, amount: float, note: str = "") -> int:
+        """자금 이벤트 기록 (deposit/withdraw)."""
+        with self.get_conn() as conn:
+            cur = conn.execute("""
+                INSERT INTO swing_capital_events (event_type, amount, note)
+                VALUES (%s, %s, %s) RETURNING event_id
+            """, (event_type, amount, note))
+            conn.commit()
+            row = cur.fetchone()
+            return row["event_id"]
+
+    def get_capital_events(self) -> list[dict]:
+        """전체 자금 이벤트 조회."""
+        with self.get_conn() as conn:
+            rows = conn.execute("""
+                SELECT event_id, event_type, amount, note, created_at
+                FROM swing_capital_events ORDER BY created_at
+            """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_total_capital_adjustments(self) -> float:
+        """총 자금 투입/출금 합계 (deposits - withdrawals)."""
+        with self.get_conn() as conn:
+            row = conn.execute("""
+                SELECT COALESCE(
+                    SUM(CASE WHEN event_type = 'deposit' THEN amount
+                             WHEN event_type = 'withdraw' THEN -amount
+                             ELSE 0 END), 0) as net
+                FROM swing_capital_events
+            """).fetchone()
+        return float(row["net"])
+
+    # ─── Watchlist ─────────────────────────────────────────
+
+    def upsert_watchlist(self, symbol: str, company_name: str = "",
+                         avg_cost: float = 0, qty: float = 0, notes: str = "") -> int:
+        with self.get_conn() as conn:
+            cur = conn.execute("""
+                INSERT INTO swing_watchlist (symbol, company_name, avg_cost, qty, notes)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (symbol) DO UPDATE SET
+                    company_name = EXCLUDED.company_name,
+                    avg_cost = EXCLUDED.avg_cost,
+                    qty = EXCLUDED.qty,
+                    notes = EXCLUDED.notes,
+                    is_active = true,
+                    updated_at = now()
+                RETURNING watchlist_id
+            """, (symbol.upper(), company_name, avg_cost, qty, notes))
+            conn.commit()
+            return cur.fetchone()["watchlist_id"]
+
+    def get_watchlist(self, active_only: bool = True) -> list[dict]:
+        with self.get_conn() as conn:
+            sql = """SELECT watchlist_id, symbol, company_name, avg_cost, qty,
+                            notes, is_active, added_at, updated_at
+                     FROM swing_watchlist"""
+            if active_only:
+                sql += " WHERE is_active = true"
+            sql += " ORDER BY symbol"
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def delete_watchlist(self, symbol: str) -> bool:
+        with self.get_conn() as conn:
+            cur = conn.execute("""
+                UPDATE swing_watchlist SET is_active = false, updated_at = now()
+                WHERE symbol = %s AND is_active = true
+            """, (symbol.upper(),))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def insert_watchlist_alert(self, alert: dict) -> int:
+        with self.get_conn() as conn:
+            cur = conn.execute("""
+                INSERT INTO swing_watchlist_alerts
+                    (symbol, alert_type, direction, confidence, reason,
+                     current_price, target_price, stop_price, strategy, detail)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING alert_id
+            """, (alert["symbol"], alert["alert_type"], alert["direction"],
+                  alert.get("confidence"), alert.get("reason"),
+                  alert.get("current_price"), alert.get("target_price"),
+                  alert.get("stop_price"), alert.get("strategy"),
+                  json.dumps(alert.get("detail", {}))))
+            conn.commit()
+            return cur.fetchone()["alert_id"]
+
+    def get_watchlist_alerts(self, symbol: str = None, limit: int = 50) -> list[dict]:
+        with self.get_conn() as conn:
+            sql = """SELECT alert_id, symbol, alert_type, direction, confidence,
+                            reason, current_price, target_price, stop_price,
+                            strategy, detail, notified, created_at
+                     FROM swing_watchlist_alerts"""
+            params = []
+            if symbol:
+                sql += " WHERE symbol = %s"
+                params.append(symbol.upper())
+            sql += " ORDER BY created_at DESC LIMIT %s"
+            params.append(limit)
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     # ─── Utility ──────────────────────────────────────────
 

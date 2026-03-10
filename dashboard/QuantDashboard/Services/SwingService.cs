@@ -801,6 +801,60 @@ public class SwingService
     }
 
     // ═══════════════════════════════════════
+    // Capital Events
+    // ═══════════════════════════════════════
+
+    public async Task<List<(long EventId, string EventType, decimal Amount, string? Note, DateTime CreatedAt)>>
+        GetCapitalEventsAsync()
+    {
+        var events = new List<(long, string, decimal, string?, DateTime)>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT event_id, event_type, amount, note, created_at
+            FROM swing_capital_events ORDER BY created_at DESC", conn);
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            events.Add((r.GetInt64(0), r.GetString(1), r.GetDecimal(2),
+                         r.IsDBNull(3) ? null : r.GetString(3), r.GetDateTime(4)));
+        }
+        return events;
+    }
+
+    // ═══════════════════════════════════════
+    // Watchlist
+    // ═══════════════════════════════════════
+
+    public async Task<List<WatchlistItem>> GetWatchlistAsync()
+    {
+        var items = new List<WatchlistItem>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT watchlist_id, symbol, company_name, avg_cost, qty,
+                   notes, is_active, added_at, updated_at
+            FROM swing_watchlist WHERE is_active = true
+            ORDER BY symbol", conn);
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            items.Add(new WatchlistItem(
+                WatchlistId: r.GetInt64(0),
+                Symbol: r.GetString(1),
+                CompanyName: r.IsDBNull(2) ? null : r.GetString(2),
+                AvgCost: r.GetDecimal(3),
+                Qty: r.GetDecimal(4),
+                Notes: r.IsDBNull(5) ? null : r.GetString(5),
+                IsActive: r.GetBoolean(6),
+                AddedAt: r.GetDateTime(7),
+                UpdatedAt: r.GetDateTime(8)
+            ));
+        }
+        return items;
+    }
+
+    // ═══════════════════════════════════════
     // Health Check
     // ═══════════════════════════════════════
 

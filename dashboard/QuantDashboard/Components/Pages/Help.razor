@@ -2,254 +2,1167 @@
 @attribute [Authorize]
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
-<PageTitle>Swing V4 - Help</PageTitle>
+<PageTitle>Swing V4 - 도움말</PageTitle>
 
 <div class="page-header">
-    <h3>Help &amp; Guide</h3>
+    <h3>도움말 &amp; 가이드</h3>
 </div>
 
 <div class="help-page">
 
-    <!-- Daily Operation -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 시스템 개요 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">info</span>
+            시스템 개요
+        </h4>
+        <p class="text-muted" style="line-height:1.7">
+            Swing V4는 미국 주식을 위한 <strong>반자동 스윙 트레이딩 시스템</strong>입니다.
+            엔진이 매일 S&amp;P 500 종목을 기술적 지표로 스캔하여 진입/청산 시그널을 생성하고,
+            AI(Claude)와 멀티팩터 분석(Finnhub)으로 점수를 매긴 후, 사용자의 승인을 기다립니다.
+            모든 알림은 텔레그램으로 실시간 전송됩니다.
+        </p>
+        <div style="margin-top:0.75rem; display:flex; flex-wrap:wrap; gap:0.5rem">
+            <span class="help-tag">FastAPI 엔진 (포트 8001)</span>
+            <span class="help-tag">Blazor 대시보드 (포트 5000)</span>
+            <span class="help-tag">PostgreSQL + TimescaleDB</span>
+            <span class="help-tag">Redis 캐시</span>
+            <span class="help-tag">systemd 자동 재시작</span>
+            <span class="help-tag">텔레그램 알림</span>
+            <span class="help-tag">SSE 실시간 푸시</span>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 전체 시나리오: $1,000으로 첫 거래까지 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">rocket_launch</span>
+            전체 시나리오: $1,000으로 첫 거래까지
+        </h4>
+        <p class="text-muted">초기 자본 설정부터 텔레그램 알림 수신까지의 전체 흐름을 단계별로 설명합니다.</p>
+
+        <!-- Phase 0 -->
+        <div class="help-scenario-phase">
+            <div class="help-phase-header">
+                <span class="help-phase-num">0</span>
+                <div>
+                    <strong>초기 설정 (Settings 페이지)</strong>
+                    <span class="text-muted"> — 최초 1회만 설정</span>
+                </div>
+            </div>
+            <div class="help-phase-body">
+                <p><strong>Settings</strong> 페이지에서 $1,000 계좌에 맞게 아래 값을 조정합니다:</p>
+                <table class="data-table help-table">
+                    <thead>
+                        <tr><th>설정 항목</th><th>권장값</th><th>이유</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>initial_capital</code></td>
+                            <td><strong>1000</strong></td>
+                            <td>초기 자본금 (USD)</td>
+                        </tr>
+                        <tr>
+                            <td><code>position_pct</code></td>
+                            <td><strong>0.20</strong></td>
+                            <td>포지션당 20% ($200). 기본 5%=$50은 1주도 못 삼</td>
+                        </tr>
+                        <tr>
+                            <td><code>price_range_min</code></td>
+                            <td><strong>10</strong></td>
+                            <td>$10 이상 종목 포함</td>
+                        </tr>
+                        <tr>
+                            <td><code>price_range_max</code></td>
+                            <td><strong>60</strong></td>
+                            <td>$60 이하여야 $200로 3주 이상 매수 가능</td>
+                        </tr>
+                        <tr>
+                            <td><code>max_positions</code></td>
+                            <td><strong>3</strong></td>
+                            <td>$1000으로 5종목은 과도함 (3종목 권장)</td>
+                        </tr>
+                        <tr>
+                            <td><code>max_daily_entries</code></td>
+                            <td><strong>2</strong></td>
+                            <td>하루 최대 진입 수를 제한하여 과집중 방지</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="help-tip">
+                    <span class="material-symbols-outlined">warning</span>
+                    <strong>주의:</strong> 시그널의 주가가 <code>price_range_max</code>를 초과하면,
+                    승인(Approve)하더라도 체결이 거부됩니다. 항상 가격 범위를 확인하세요.
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 1 -->
+        <div class="help-scenario-phase">
+            <div class="help-phase-header">
+                <span class="help-phase-num">1</span>
+                <div>
+                    <strong>일일 파이프라인 (매일 07:00 KST 자동 실행)</strong>
+                    <span class="text-muted"> — 매일 아침 자동으로 동작</span>
+                </div>
+            </div>
+            <div class="help-phase-body">
+                <div class="help-flow-diagram">
+                    <span class="help-flow-step">유니버스 갱신</span>
+                    <span class="help-flow-arrow">&#x2192;</span>
+                    <span class="help-flow-step">가격 수집 (300일)</span>
+                    <span class="help-flow-arrow">&#x2192;</span>
+                    <span class="help-flow-step">지표 계산</span>
+                    <span class="help-flow-arrow">&#x2192;</span>
+                    <span class="help-flow-step">시그널 스캔</span>
+                    <span class="help-flow-arrow">&#x2192;</span>
+                    <span class="help-flow-step">텔레그램 알림</span>
+                </div>
+                <p style="margin-top:0.75rem"><strong>시그널 진입 조건 (모두 충족 시 생성):</strong></p>
+                <ul class="help-list">
+                    <li><code>현재가 &gt; SMA50 &gt; SMA200</code> — 상승 추세 확인</li>
+                    <li><code>20일 수익률 상위 40%</code> — 강한 모멘텀</li>
+                    <li><code>최근 5일 최고가 돌파</code> — 레인지 브레이크아웃</li>
+                    <li><code>거래량 &ge; 평균의 1.2배</code> — 기관 매수 관심</li>
+                    <li><code>주가 $10 ~ $60</code> — 설정된 가격 범위 내</li>
+                </ul>
+                <p style="margin-top:0.5rem">
+                    시그널 발견 시 텔레그램으로 아래와 같은 메시지가 옵니다:
+                </p>
+                <div class="help-telegram-preview">
+                    <div class="help-tg-header">Quant V4 Alert</div>
+                    <div class="help-tg-body">
+                        <strong>Swing Signal Alert</strong><br/>
+                        <br/>
+                        ENTRY 시그널: 3건<br/>
+                        &bull; <strong>PLTR</strong> @@ $22.50 SL $21.38 / TP $24.75 (rank 95%)<br/>
+                        &bull; <strong>SOFI</strong> @@ $12.80 SL $12.16 / TP $14.08 (rank 88%)<br/>
+                        &bull; <strong>HOOD</strong> @@ $18.40 SL $17.48 / TP $20.24 (rank 82%)<br/>
+                        <br/>
+                        Dashboard에서 승인/거절하세요
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 2 -->
+        <div class="help-scenario-phase">
+            <div class="help-phase-header">
+                <span class="help-phase-num">2</span>
+                <div>
+                    <strong>시그널 검토 &amp; 승인 (대시보드)</strong>
+                    <span class="text-muted"> — 사용자의 매매 결정</span>
+                </div>
+            </div>
+            <div class="help-phase-body">
+                <p>텔레그램 알림을 받은 후 대시보드의 <strong>Signals</strong> 페이지로 이동합니다:</p>
+                <div class="help-workflow">
+                    <div class="help-wf-step">
+                        <span class="help-wf-num">1</span>
+                        <div>
+                            <strong>PENDING 탭</strong> — 새 시그널이 심볼, 가격, SL/TP 정보와 함께 표시됩니다
+                        </div>
+                    </div>
+                    <div class="help-wf-step">
+                        <span class="help-wf-num">2</span>
+                        <div>
+                            <strong>Factor Score</strong> — 모든 대기 시그널에 멀티팩터 분석 실행<br/>
+                            <span class="text-muted">기술적(40%): 추세, 브레이크아웃, 거래량, 모멘텀 순위</span><br/>
+                            <span class="text-muted">심리(30%): Finnhub 뉴스를 Claude가 분석</span><br/>
+                            <span class="text-muted">자금흐름(30%): 내부자 거래, 애널리스트 추천</span><br/>
+                            <span class="text-muted">결과: 종합 점수 0-100. 각 시그널에 색상 배지로 표시.</span>
+                        </div>
+                    </div>
+                    <div class="help-wf-step">
+                        <span class="help-wf-num">3</span>
+                        <div>
+                            <strong>AI Analyze</strong> — Claude Haiku 4.5 심층 분석<br/>
+                            <span class="text-muted">1-10점 + 분석 근거, 리스크 요인, 뉴스 요약 생성.</span><br/>
+                            <span class="text-muted">AI 점수 배지를 클릭하면 전체 분석 텍스트를 볼 수 있습니다.</span>
+                        </div>
+                    </div>
+                    <div class="help-wf-step">
+                        <span class="help-wf-num">4</span>
+                        <div>
+                            <strong>Approve (승인)</strong> — 즉시 매매 체결<br/>
+                            <span class="text-muted">
+                                시스템이 계산: 계좌 $1000 x 20% = $200 목표 &#x2192; 수량 = int($200 / $22.50) = <strong>8주</strong><br/>
+                                포지션 생성, 거래 기록, KIS 주문(Paper/Live), 텔레그램 알림 전송
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <p style="margin-top:0.75rem">승인 후 텔레그램으로 체결 알림이 옵니다:</p>
+                <div class="help-telegram-preview">
+                    <div class="help-tg-header">Quant V4 Alert</div>
+                    <div class="help-tg-body">
+                        <strong>Trade Executed</strong><br/>
+                        <br/>
+                        BUY <strong>PLTR</strong><br/>
+                        수량: 8주<br/>
+                        가격: $22.50<br/>
+                        금액: $180.00<br/>
+                        주문번호: PAPER-xxx<br/>
+                    </div>
+                </div>
+
+                <div class="help-tip" style="margin-top:0.75rem">
+                    <span class="material-symbols-outlined">lightbulb</span>
+                    <strong>판단 기준:</strong> 종합점수 70점 이상 + AI 점수 7점 이상이면 일반적으로 좋은 후보입니다.
+                    항상 AI 점수 배지를 클릭하여 분석 근거를 확인하세요.
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 3 -->
+        <div class="help-scenario-phase">
+            <div class="help-phase-header">
+                <span class="help-phase-num">3</span>
+                <div>
+                    <strong>포지션 모니터링 (자동)</strong>
+                    <span class="text-muted"> — 시스템이 24시간 감시</span>
+                </div>
+            </div>
+            <div class="help-phase-body">
+                <p>포지션을 열면 시스템이 자동으로 모니터링합니다:</p>
+                <table class="data-table help-table">
+                    <thead>
+                        <tr><th>체크 항목</th><th>시간</th><th>동작</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>손절 (Stop Loss)</strong></td>
+                            <td>하루 3회 (23:30, 01:00, 03:00 KST)</td>
+                            <td>진입가 대비 -5% 하락 시 &#x2192; EXIT 시그널 생성</td>
+                        </tr>
+                        <tr>
+                            <td><strong>익절 (Take Profit)</strong></td>
+                            <td>하루 3회</td>
+                            <td>진입가 대비 +10% 상승 시 &#x2192; EXIT 시그널 생성</td>
+                        </tr>
+                        <tr>
+                            <td><strong>추적 손절 (Trailing Stop)</strong></td>
+                            <td>하루 3회</td>
+                            <td>+5% 수익 시 활성화, 고점 대비 -3% 하락 시 청산</td>
+                        </tr>
+                        <tr>
+                            <td><strong>분할 청산 (Partial Exit)</strong></td>
+                            <td>하루 3회</td>
+                            <td>+7% 수익 시 포지션의 50%를 자동 매도하여 이익 확보</td>
+                        </tr>
+                        <tr>
+                            <td><strong>이벤트 스캔</strong></td>
+                            <td>수동 / 스케줄러</td>
+                            <td>Finnhub에서 뉴스, 내부자 거래, 어닝 일정 확인</td>
+                        </tr>
+                        <tr>
+                            <td><strong>SEC 공시</strong></td>
+                            <td>수동</td>
+                            <td>EDGAR에서 8-K, Form 4, 13F 공시 확인</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p style="margin-top:0.75rem"><strong>포트폴리오 스냅샷 예시 (PLTR 8주 @@ $22.50 매수 후):</strong></p>
+                <div class="help-calc-box">
+                    <div class="help-calc-row">
+                        <span>초기 자본금</span>
+                        <span>$1,000.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>매수 원가 (8 x $22.50)</span>
+                        <span>- $180.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>실현 손익</span>
+                        <span>$0.00</span>
+                    </div>
+                    <div class="help-calc-row help-calc-subtotal">
+                        <span>현금</span>
+                        <span>$820.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>투자 중 (8 x $23.10 현재가)</span>
+                        <span>$184.80</span>
+                    </div>
+                    <div class="help-calc-row help-calc-total">
+                        <span>총 포트폴리오</span>
+                        <span>$1,004.80 (+0.48%)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 4 -->
+        <div class="help-scenario-phase">
+            <div class="help-phase-header">
+                <span class="help-phase-num">4</span>
+                <div>
+                    <strong>청산 &amp; 수익 실현</strong>
+                    <span class="text-muted"> — 포지션 종료</span>
+                </div>
+            </div>
+            <div class="help-phase-body">
+                <p>청산 조건 충족 시 (익절, 손절, 또는 추적 손절 발동):</p>
+                <ol class="help-steps">
+                    <li><strong>Signals &gt; PENDING</strong> 탭에 EXIT 시그널 등장</li>
+                    <li><strong>Approve</strong> 클릭하여 매도 실행</li>
+                    <li>포지션 종료, 실현 손익 기록</li>
+                    <li>텔레그램으로 손익 상세 알림 전송</li>
+                </ol>
+
+                <div class="help-telegram-preview" style="margin-top:0.75rem">
+                    <div class="help-tg-header">Quant V4 Alert</div>
+                    <div class="help-tg-body">
+                        <strong>Trade Executed</strong><br/>
+                        <br/>
+                        SELL <strong>PLTR</strong><br/>
+                        수량: 8주 @@ $24.75<br/>
+                        손익: <strong>+$18.00</strong><br/>
+                    </div>
+                </div>
+
+                <div class="help-calc-box" style="margin-top:0.75rem">
+                    <div class="help-calc-row">
+                        <span>초기 자본금</span>
+                        <span>$1,000.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>실현 손익 (PLTR 청산)</span>
+                        <span>+ $18.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>투자 중 원가</span>
+                        <span>$0.00</span>
+                    </div>
+                    <div class="help-calc-row help-calc-total">
+                        <span>총 포트폴리오</span>
+                        <span>$1,018.00 (+1.8%)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Phase 5: 자금 투입 -->
+        <div class="help-scenario-phase">
+            <div class="help-phase-header">
+                <span class="help-phase-num">5</span>
+                <div>
+                    <strong>추가 자금 투입 (Capital Injection)</strong>
+                    <span class="text-muted"> — 입금 / 출금</span>
+                </div>
+            </div>
+            <div class="help-phase-body">
+                <p>운용 중간에 $500를 추가 투입하려면:</p>
+                <ol class="help-steps">
+                    <li><strong>Settings</strong> &#x2192; <strong>Capital Management</strong> 섹션으로 이동</li>
+                    <li><strong>Deposit</strong> 선택, <strong>$500</strong> 입력, <strong>Record</strong> 클릭</li>
+                    <li>시스템이 모든 계산을 자동 조정</li>
+                    <li>텔레그램으로 입금 확인 알림 전송</li>
+                </ol>
+
+                <p style="margin-top:0.75rem"><strong>계산 변경 방식:</strong></p>
+                <div class="help-calc-box">
+                    <div class="help-calc-row">
+                        <span>초기 자본금</span>
+                        <span>$1,000.00</span>
+                    </div>
+                    <div class="help-calc-row" style="color:var(--accent-green, #34d399)">
+                        <span>+ 추가 입금</span>
+                        <span>+ $500.00</span>
+                    </div>
+                    <div class="help-calc-row help-calc-subtotal">
+                        <span>총 투입 자본</span>
+                        <span>$1,500.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>실현 손익</span>
+                        <span>+ $18.00</span>
+                    </div>
+                    <div class="help-calc-row">
+                        <span>현금 = $1500 + $18 - $0 (투자중 없음)</span>
+                        <span>$1,518.00</span>
+                    </div>
+                    <div class="help-calc-row help-calc-total">
+                        <span>누적 수익률 = ($1518 / $1500) - 1</span>
+                        <span>+1.2%</span>
+                    </div>
+                </div>
+                <div class="help-tip" style="margin-top:0.5rem">
+                    <span class="material-symbols-outlined">info</span>
+                    누적 수익률은 <strong>총 투입 자본</strong> (초기 + 입금 - 출금) 대비로 계산되므로,
+                    추가 입금해도 수익률이 부풀려지지 않습니다.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 일일 운영 스케줄 -->
+    <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
         <h4 class="help-title">
             <span class="material-symbols-outlined">schedule</span>
-            Daily Operation (Auto Schedule)
+            일일 운영 (자동 스케줄)
         </h4>
-        <p class="text-muted">The system runs automatically via systemd + scheduler. You only need to review signals.</p>
+        <p class="text-muted">systemd + APScheduler로 자동 실행됩니다. 평소에는 시그널 검토만 하면 됩니다.</p>
         <table class="data-table help-table">
             <thead>
                 <tr>
-                    <th>Time (KST)</th>
-                    <th>Job</th>
-                    <th>Description</th>
+                    <th>시간 (KST)</th>
+                    <th>작업</th>
+                    <th>설명</th>
+                    <th>텔레그램</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td><span class="help-time">07:00</span></td>
-                    <td>daily_pipeline</td>
-                    <td>Universe refresh → Price collect → Signal scan → Snapshot</td>
+                    <td><span class="help-time">06:00</span></td>
+                    <td>만료 시그널 정리</td>
+                    <td>24시간 이상 경과한 시그널 자동 만료 처리</td>
+                    <td class="text-muted">&#x2014;</td>
                 </tr>
                 <tr>
-                    <td><span class="help-time">09:30 / 12:00 / 15:30</span></td>
-                    <td>exit_check</td>
-                    <td>Stop Loss / Take Profit check on open positions</td>
+                    <td><span class="help-time">07:00</span> (월~토)</td>
+                    <td>일일 파이프라인</td>
+                    <td>유니버스 &#x2192; 가격 수집 &#x2192; 지표 &#x2192; 시그널 스캔 &#x2192; 스냅샷</td>
+                    <td>시그널 알림 전송</td>
+                </tr>
+                <tr>
+                    <td><span class="help-time">23:30</span> (월~금)</td>
+                    <td>청산 체크 1</td>
+                    <td>SL/TP + 추적 손절 + 분할 청산 체크 (= 미국 09:30 ET 개장)</td>
+                    <td>청산 시그널 전송</td>
+                </tr>
+                <tr>
+                    <td><span class="help-time">01:00</span> (화~토)</td>
+                    <td>청산 체크 2</td>
+                    <td>동일 체크 (= 미국 11:00 ET)</td>
+                    <td>청산 시그널 전송</td>
+                </tr>
+                <tr>
+                    <td><span class="help-time">03:00</span> (화~토)</td>
+                    <td>청산 체크 3</td>
+                    <td>동일 체크 (= 미국 13:00 ET)</td>
+                    <td>청산 시그널 전송</td>
+                </tr>
+                <tr>
+                    <td><span class="help-time">10:00</span> (토)</td>
+                    <td>유니버스 갱신</td>
+                    <td>주간 S&amp;P 500 종목 목록 업데이트</td>
+                    <td class="text-muted">&#x2014;</td>
                 </tr>
             </tbody>
         </table>
         <div class="help-tip">
             <span class="material-symbols-outlined">info</span>
-            Normally you don't need to do anything. Just check the dashboard in the morning.
+            평소에는 아무것도 할 필요 없습니다. 아침에 텔레그램을 확인하고 대시보드에서 승인/거절만 하면 됩니다.
         </div>
     </div>
 
-    <!-- Pages Guide -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 페이지 가이드 (전체 페이지) -->
+    <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
         <h4 class="help-title">
             <span class="material-symbols-outlined">menu_book</span>
-            Page Guide
+            페이지별 가이드
         </h4>
 
+        <!-- Dashboard -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">dashboard</span>
                 <strong>Dashboard</strong> <span class="text-muted">/</span>
             </div>
-            <p>Portfolio overview — total value, return %, position summary at a glance.</p>
+            <p>포트폴리오 현황을 한눈에 보여주는 메인 화면입니다.</p>
+            <ul class="help-list">
+                <li><strong>총 자산</strong> — 현재 포트폴리오 가치 (현금 + 투자 중)</li>
+                <li><strong>일간 손익</strong> — 전일 스냅샷 대비 오늘의 손익</li>
+                <li><strong>누적 수익률</strong> — 시작 이후 총 수익률 (자금 입금 반영)</li>
+                <li><strong>보유 포지션</strong> — 현재 활성 포지션 수와 미실현 손익</li>
+            </ul>
+            <p style="margin-top:0.5rem">
+                <strong>상단 티커바</strong> — 현재 <strong>보유 중인 포지션 종목</strong>의 실시간 가격과 일간 변동률을 표시합니다.
+                포지션이 없으면 "모니터링 중인 포지션 없음"으로 표시됩니다.
+            </p>
         </div>
 
+        <!-- Pipeline -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">conversion_path</span>
                 <strong>Pipeline</strong> <span class="text-muted">/pipeline</span>
             </div>
-            <p>Manual pipeline execution. Run steps in order:</p>
+            <p>수동으로 파이프라인을 실행합니다. 테스트나 장중 추가 스캔에 사용합니다.</p>
             <ol class="help-steps">
-                <li><code>Universe Refresh</code> — Update S&amp;P 500 stock list</li>
-                <li><code>Collect Prices</code> — Download price data (~90 sec)</li>
-                <li><code>Scan Signals</code> — Generate entry signals from indicators</li>
+                <li><code>Universe Refresh</code> — Wikipedia에서 S&amp;P 500 종목 목록 다운로드 (~5초)</li>
+                <li><code>Collect Prices</code> — yfinance에서 ~500개 종목의 300일 OHLCV 다운로드 (~90초)</li>
+                <li><code>Scan Signals</code> — 기술적 진입/청산 조건 실행, 대기 중 시그널 생성</li>
             </ol>
             <div class="help-tip">
                 <span class="material-symbols-outlined">info</span>
-                The daily scheduler does this automatically at 07:00 KST. Manual run is for testing.
+                일일 스케줄러가 매일 07:00 KST에 자동 실행합니다. 수동 실행은 테스트용이거나 스케줄을 놓쳤을 때 사용합니다.
             </div>
         </div>
 
+        <!-- Signals -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">notifications_active</span>
                 <strong>Signals</strong> <span class="text-muted">/signals</span>
-                <span class="badge badge-green" style="margin-left:0.5rem">Most Important</span>
+                <span class="badge badge-green" style="margin-left:0.5rem">핵심</span>
             </div>
-            <p>Review and approve/reject trade signals. This is where you make trading decisions.</p>
+            <p>매매 결정을 내리는 핵심 페이지입니다. 시그널을 검토, 점수 매기기, 승인/거절합니다.</p>
+
+            <p style="margin-top:0.5rem"><strong>탭 구성:</strong></p>
+            <ul class="help-list">
+                <li><strong>PENDING</strong> — 결정 대기 중인 새 시그널</li>
+                <li><strong>APPROVED</strong> — 승인된 시그널 (정상 시 바로 EXECUTED로 이동)</li>
+                <li><strong>EXECUTED</strong> — 체결 완료된 거래</li>
+                <li><strong>REJECTED</strong> — 거절한 시그널</li>
+                <li><strong>EXPIRED</strong> — 시간 초과로 만료된 시그널 (24시간)</li>
+            </ul>
+
+            <p style="margin-top:0.5rem"><strong>액션 버튼:</strong></p>
             <div class="help-workflow">
                 <div class="help-wf-step">
                     <span class="help-wf-num">1</span>
                     <div>
-                        <strong>PENDING tab</strong> — New buy signals appear here
+                        <strong>Factor Score</strong> — 모든 대기 시그널에 멀티팩터 점수 매기기<br/>
+                        <span class="text-muted">기술적(40%) + 심리(30%) + 자금흐름(30%) = 종합 점수 0-100</span>
                     </div>
                 </div>
                 <div class="help-wf-step">
                     <span class="help-wf-num">2</span>
                     <div>
-                        <strong>Factor Score</strong> — Click to score all pending signals (Technical 40% + Sentiment 30% + Flow 30%)
+                        <strong>AI Analyze</strong> — Claude Haiku 4.5 심층 분석 (1-10점)<br/>
+                        <span class="text-muted">차트 패턴, 뉴스 심리, 리스크 요인 분석. 배지 클릭 시 상세 내용 확인.</span>
                     </div>
                 </div>
                 <div class="help-wf-step">
                     <span class="help-wf-num">3</span>
                     <div>
-                        <strong>AI Analyze</strong> — Claude AI analyzes each signal (score 1-10)
+                        <strong>Approve (승인)</strong> — 매매 즉시 체결<br/>
+                        <span class="text-muted">포지션 사이징, 주문, 텔레그램 알림까지 자동 처리.</span>
                     </div>
                 </div>
                 <div class="help-wf-step">
                     <span class="help-wf-num">4</span>
                     <div>
-                        <strong>Approve / Reject</strong> — Approve to execute a paper trade, Reject to skip
+                        <strong>Reject (거절)</strong> — 이 시그널 건너뛰기<br/>
+                        <span class="text-muted">REJECTED 탭으로 이동. 거래 체결 없음.</span>
                     </div>
                 </div>
                 <div class="help-wf-step">
                     <span class="help-wf-num">5</span>
                     <div>
-                        <strong>Revert</strong> — Move executed/approved/rejected signals back to pending
+                        <strong>Revert (복원)</strong> — 시그널을 PENDING으로 되돌리기<br/>
+                        <span class="text-muted">APPROVED, EXECUTED, REJECTED 탭에서 사용 가능. 재검토 시 활용.</span>
                     </div>
                 </div>
             </div>
             <div class="help-tip">
                 <span class="material-symbols-outlined">lightbulb</span>
-                Click any Score/AI badge to see detailed breakdown. Higher is better.
+                <strong>판단 팁:</strong> 종합점수 70+ / AI점수 7+ 이면 좋은 후보입니다.
+                시그널 가격이 <code>price_range</code> 밖이면 승인해도 체결 실패합니다.
             </div>
         </div>
 
+        <!-- Performance -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">monitoring</span>
                 <strong>Performance</strong> <span class="text-muted">/performance</span>
             </div>
-            <p>Portfolio performance tracking — daily snapshots, cumulative return chart, drawdown.</p>
+            <p>시간에 따른 포트폴리오 성과를 추적합니다. 모든 수익률/손익은 <strong>순수 트레이딩 성과</strong>만 반영하며, 입출금에 의한 자산 변동은 자동으로 제외됩니다.</p>
+
+            <p style="margin-top:0.5rem"><strong>차트 설명:</strong></p>
+            <ul class="help-list">
+                <li><strong>Equity Curve (Trading Return %)</strong> — 순수 트레이딩 누적 수익률을 % 단위로 표시합니다.
+                    입출금과 무관하게 매매 성과만 반영하므로, $1,000을 입금하거나 출금해도 차트가 왜곡되지 않습니다.
+                    예: 초기자본 $1,000에서 +$50 수익이면 +5.0%으로 표시.</li>
+                <li><strong>Drawdown (%)</strong> — 수익률 최고점 대비 현재 하락폭입니다.
+                    예를 들어 +5%까지 올랐다가 현재 +2%이면 drawdown은 -3%입니다.
+                    입출금은 영향을 주지 않으며, 오직 트레이딩 손실만 반영됩니다.</li>
+            </ul>
+
+            <p style="margin-top:0.5rem"><strong>통계 카드:</strong></p>
+            <ul class="help-list">
+                <li><strong>Total Trades</strong> — 청산 완료된 총 거래 수</li>
+                <li><strong>Win Rate</strong> — 수익으로 종료된 거래 비율</li>
+                <li><strong>Total P&amp;L</strong> — 실현 손익 합계 (청산된 거래만)</li>
+                <li><strong>Cum. Return</strong> — 누적 수익률 (실현+미실현, TWR 방식)</li>
+                <li><strong>Max Drawdown</strong> — 수익률 기준 최대 낙폭</li>
+                <li><strong>스냅샷 생성</strong> 버튼 — 현재가 기준으로 수동 스냅샷 생성 (매일 자동 생성됨)</li>
+            </ul>
+
+            <div class="help-tip" style="margin-top:0.75rem">
+                <span class="material-symbols-outlined">info</span>
+                <strong>TWR (시간가중수익률):</strong> 입금/출금이 수익률 계산에 영향을 주지 않는 업계 표준 방식입니다.
+                Settings에서 입금/출금을 기록하면 현금 잔고는 변하지만, 수익률과 Drawdown은 순수 매매 성과만 반영합니다.
+            </div>
         </div>
 
+        <!-- Positions -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">account_balance_wallet</span>
                 <strong>Positions</strong> <span class="text-muted">/positions</span>
             </div>
-            <p>Current open positions — real-time P&amp;L, Stop Loss / Take Profit levels, entry price.</p>
+            <p>모든 보유 중/종료 포지션과 상세 손익을 추적합니다.</p>
+            <ul class="help-list">
+                <li><strong>보유 포지션</strong> — 심볼, 수량, 진입가, 현재가, 미실현 손익%, SL/TP 수준</li>
+                <li><strong>종료 포지션</strong> — 청산가, 실현 손익, 보유일수, 청산 사유</li>
+                <li><strong>심볼 클릭</strong> — 지표, 팩터 점수, 수익률(1M/3M/6M)이 포함된 상세 팝업</li>
+            </ul>
+            <p style="margin-top:0.5rem"><strong>청산 사유 코드:</strong></p>
+            <ul class="help-list">
+                <li><code>take_profit</code> — +10% 목표가 도달</li>
+                <li><code>stop_loss</code> — -5% 손절가 도달</li>
+                <li><code>trailing_stop</code> — +5% 이후 고점 대비 -3% 하락으로 추적 손절 발동</li>
+                <li><code>partial_exit</code> — +7% 수익 시 50% 분할 청산</li>
+                <li><code>manual</code> — 수동 청산</li>
+            </ul>
         </div>
 
+        <!-- Backtest -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">query_stats</span>
                 <strong>Backtest</strong> <span class="text-muted">/backtest</span>
             </div>
-            <p>Strategy backtesting — simulate past performance with historical data. Set date range and initial capital.</p>
+            <p>과거 데이터로 전략을 시뮬레이션하여 성과를 추정합니다.</p>
+            <ul class="help-list">
+                <li><strong>기간 설정</strong> — 시뮬레이션 시작/종료 날짜</li>
+                <li><strong>초기 자본</strong> — 백테스트 시작 금액</li>
+                <li><strong>파라미터</strong> — SL/TP %, 최대 포지션, 포지션 비율</li>
+                <li><strong>결과</strong> — 총 수익률, CAGR, 샤프비율, 최대 낙폭, 승률, 자산 곡선</li>
+                <li><strong>최적화</strong> — Claude AI가 파라미터 변형을 제안, 다수 백테스트 실행, 결과 비교</li>
+            </ul>
+            <div class="help-tip">
+                <span class="material-symbols-outlined">info</span>
+                최적화는 6개 백테스트 (기본 + AI 제안 5개 변형)에 약 4분이 소요됩니다.
+            </div>
         </div>
 
+        <!-- Events -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">bolt</span>
                 <strong>Events</strong> <span class="text-muted">/events</span>
             </div>
-            <p>Real-time event monitor for open positions.</p>
+            <p>보유 포지션의 실시간 이벤트 모니터링. 뉴스, 내부자 활동, SEC 공시를 감지합니다.</p>
+            <p style="margin-top:0.5rem"><strong>심각도 수준:</strong></p>
             <ul class="help-list">
-                <li><span class="severity-chip severity-critical">critical</span> — Urgent: large price drop, massive insider selling</li>
-                <li><span class="severity-chip severity-warning">warning</span> — Attention: price surge, earnings approaching, moderate insider activity</li>
-                <li><span class="severity-chip severity-info">info</span> — Informational: news articles, minor insider trades</li>
+                <li><span class="severity-chip severity-critical">critical</span> — 긴급: 5%+ 급락, 대규모 내부자 매도, 중대 SEC 공시</li>
+                <li><span class="severity-chip severity-warning">warning</span> — 주의: 3%+ 급등, 어닝 임박, 중간 규모 내부자 활동</li>
+                <li><span class="severity-chip severity-info">info</span> — 정보: 뉴스 기사, 소규모 내부자 거래, 일반 공시</li>
             </ul>
-            <p style="margin-top:0.5rem"><strong>Scan Events</strong> — Finnhub (news, insider, earnings, price changes)</p>
-            <p><strong>SEC Filings</strong> — SEC EDGAR RSS (8-K material events, Form 4 insider, 13F holdings)</p>
+            <p style="margin-top:0.5rem"><strong>스캔 버튼:</strong></p>
+            <ul class="help-list">
+                <li><strong>Scan Events</strong> — Finnhub에서 뉴스, 내부자 거래, 어닝 캘린더, 가격 변동 확인</li>
+                <li><strong>SEC Filings</strong> — SEC EDGAR RSS에서 8-K (중요 사건), Form 4 (내부자 거래), SC 13D (5%+ 지분) 확인</li>
+            </ul>
             <div class="help-tip">
                 <span class="material-symbols-outlined">warning</span>
-                If you see <span class="action-chip">exit_review</span>, review that position for possible exit.
+                <strong>critical</strong>과 <strong>warning</strong> 이벤트는 자동으로 텔레그램 전송됩니다.
+                <span class="action-chip">exit_review</span>가 보이면 해당 포지션의 청산 여부를 직접 검토하세요.
             </div>
         </div>
 
+        <!-- Watchlist -->
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">bookmark</span>
+                <strong>Watchlist</strong> <span class="text-muted">/watchlist</span>
+                <span class="badge badge-green" style="margin-left:0.5rem">신규</span>
+            </div>
+            <p>
+                Swing V4 시스템 외부에서 이미 보유 중인 종목을 등록하고,
+                기술적 분석 기반의 <strong>매수/매도/보유 추천</strong>을 받는 독립 페이지입니다.
+            </p>
+
+            <p style="margin-top:0.5rem"><strong>사용 방법:</strong></p>
+            <div class="help-workflow">
+                <div class="help-wf-step">
+                    <span class="help-wf-num">1</span>
+                    <div>
+                        <strong>종목 등록</strong> — 티커(예: AAPL), 회사명, 평균 매수단가, 보유 수량 입력<br/>
+                        <span class="text-muted">평균단가와 수량은 분석 결과에서 손익률 계산에 사용됩니다.</span>
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">2</span>
+                    <div>
+                        <strong>전체 분석 (Analyze All)</strong> — 등록된 모든 종목의 6개월 기술 분석 실행 (~30초)<br/>
+                        <span class="text-muted">6개월 가격 데이터 다운로드 후 6개 기술 지표 계산, 매수/매도/보유 시그널 생성.</span>
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">3</span>
+                    <div>
+                        <strong>결과 확인</strong> — 분석 테이블에 방향, 신뢰도, 지표, 목표가가 표시됩니다
+                    </div>
+                </div>
+            </div>
+
+            <p style="margin-top:0.75rem"><strong>분석에 사용되는 기술 지표:</strong></p>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>지표</th><th>매수 시그널</th><th>매도 시그널</th><th>전략</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>SMA (20/50/200)</strong></td>
+                        <td>현재가 &gt; SMA50 &gt; SMA200</td>
+                        <td>현재가 &lt; SMA50 &lt; SMA200</td>
+                        <td>추세 추종</td>
+                    </tr>
+                    <tr>
+                        <td><strong>RSI (14)</strong></td>
+                        <td>RSI &lt; 30 (과매도)</td>
+                        <td>RSI &gt; 70 (과매수)</td>
+                        <td>평균 회귀</td>
+                    </tr>
+                    <tr>
+                        <td><strong>MACD</strong></td>
+                        <td>히스토그램 &gt; 0, 라인 &gt; 0</td>
+                        <td>히스토그램 &lt; 0, 라인 &lt; 0</td>
+                        <td>모멘텀</td>
+                    </tr>
+                    <tr>
+                        <td><strong>볼린저 밴드</strong></td>
+                        <td>가격이 하단 밴드 근처 (&lt;10%)</td>
+                        <td>가격이 상단 밴드 근처 (&gt;90%)</td>
+                        <td>변동성 반등</td>
+                    </tr>
+                    <tr>
+                        <td><strong>거래량 비율</strong></td>
+                        <td colspan="2">5일 평균 vs 20일 평균 — 급증은 기관 관심 의미</td>
+                        <td>확인 지표</td>
+                    </tr>
+                    <tr>
+                        <td><strong>ATR (14)</strong></td>
+                        <td colspan="2">평균 진폭 — 포지션 사이징과 손절 설정에 사용</td>
+                        <td>리스크 측정</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p style="margin-top:0.75rem"><strong>결과 테이블 컬럼 설명:</strong></p>
+            <ul class="help-list">
+                <li><strong>Signal</strong> — <span class="status-chip status-buy">BUY</span> <span class="status-chip status-sell">SELL</span> <span class="status-chip status-hold">HOLD</span></li>
+                <li><strong>Confidence</strong> — 50~90%, 일치하는 지표 수에 따라 집계</li>
+                <li><strong>RSI</strong> — <span style="color:var(--accent-green)">초록</span> = 과매도(매수 적기), <span style="color:var(--accent-red, #f87171)">빨강</span> = 과매수(매도 고려)</li>
+                <li><strong>MACD</strong> — 히스토그램 값. <span style="color:var(--accent-green)">양수</span> = 상승세, <span style="color:var(--accent-red, #f87171)">음수</span> = 하락세</li>
+                <li><strong>BB%</strong> — 볼린저 밴드 내 위치 (0% = 하단, 100% = 상단)</li>
+                <li><strong>Target</strong> — 제안 목표가 (매수: +10%, 매도: 평균단가로 복귀)</li>
+                <li><strong>Stop</strong> — 제안 손절가 (매수: -5%, 매도: +5%)</li>
+            </ul>
+
+            <div class="help-tip">
+                <span class="material-symbols-outlined">notifications</span>
+                <strong>텔레그램 알림:</strong> 신뢰도 65% 이상의 BUY/SELL 시그널은 텔레그램으로 자동 전송됩니다.
+                HOLD 시그널과 저신뢰도 시그널은 대시보드에서만 표시됩니다.
+            </div>
+        </div>
+
+        <!-- Settings -->
         <div class="help-card">
             <div class="help-card-header">
                 <span class="material-symbols-outlined">settings</span>
                 <strong>Settings</strong> <span class="text-muted">/settings</span>
             </div>
-            <p>Adjust strategy parameters — SMA periods, stop loss / take profit %, max positions, price range, etc.</p>
-            <p style="margin-top:0.5rem"><strong>Trading Mode Toggle</strong> — Switch between Paper (simulated) and Live (real money via KIS) modes. Live mode requires confirmation and KIS API keys.</p>
+            <p>모든 시스템 설정을 한 곳에서 관리합니다.</p>
+
+            <p style="margin-top:0.5rem"><strong>전략 파라미터:</strong></p>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>항목</th><th>기본값</th><th>설명</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>sma_short</code></td><td>50</td><td>단기 이동평균 기간</td></tr>
+                    <tr><td><code>sma_long</code></td><td>200</td><td>장기 이동평균 기간</td></tr>
+                    <tr><td><code>return_period</code></td><td>20</td><td>모멘텀 수익률 측정 기간 (일)</td></tr>
+                    <tr><td><code>return_rank_min</code></td><td>0.6</td><td>최소 백분위 순위 (상위 40%)</td></tr>
+                    <tr><td><code>breakout_days</code></td><td>5</td><td>고점 돌파 확인 기간 (일)</td></tr>
+                    <tr><td><code>volume_ratio_min</code></td><td>1.2</td><td>최소 거래량 급증 비율</td></tr>
+                </tbody>
+            </table>
+
+            <p style="margin-top:0.5rem"><strong>리스크 파라미터:</strong></p>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>항목</th><th>기본값</th><th>설명</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>stop_loss_pct</code></td><td>-0.05</td><td>진입가 대비 -5% 손절</td></tr>
+                    <tr><td><code>take_profit_pct</code></td><td>0.10</td><td>진입가 대비 +10% 익절</td></tr>
+                    <tr><td><code>max_positions</code></td><td>3</td><td>최대 동시 보유 포지션 수</td></tr>
+                    <tr><td><code>max_daily_entries</code></td><td>2</td><td>하루 최대 신규 진입 수</td></tr>
+                    <tr><td><code>position_pct</code></td><td>0.20</td><td>각 포지션 = 계좌의 20%</td></tr>
+                    <tr><td><code>trailing_stop_activation</code></td><td>0.05</td><td>+5% 수익 시 추적 손절 활성화</td></tr>
+                    <tr><td><code>trailing_stop_distance</code></td><td>0.03</td><td>고점 대비 -3% 추적 손절 거리</td></tr>
+                    <tr><td><code>partial_exit_threshold</code></td><td>0.07</td><td>+7% 수익 시 분할 청산 발동</td></tr>
+                    <tr><td><code>partial_exit_pct</code></td><td>0.5</td><td>분할 청산 시 포지션의 50% 매도</td></tr>
+                </tbody>
+            </table>
+
+            <p style="margin-top:0.5rem"><strong>트레이딩 모드 전환:</strong></p>
+            <ul class="help-list">
+                <li><strong>Paper 모드</strong> (기본) — 모의 거래. 실제 돈 사용 없음. 테스트에 안전.</li>
+                <li><strong>Live 모드</strong> — KIS(한국투자증권)를 통한 실제 거래. .env에 KIS API 키 필요, 명시적 확인 필요.</li>
+            </ul>
+
+            <p style="margin-top:0.5rem"><strong>자금 관리 (Capital Management):</strong></p>
+            <ul class="help-list">
+                <li><strong>입금 (Deposit)</strong> — 자금 추가 기록 (예: $500). 모든 수익률 계산에 자동 반영.</li>
+                <li><strong>출금 (Withdraw)</strong> — 자금 인출 기록. 계산에 자동 반영.</li>
+                <li>이력 테이블에 모든 자금 이벤트가 시간순으로 표시됩니다.</li>
+                <li>각 이벤트마다 텔레그램 알림이 전송됩니다.</li>
+            </ul>
         </div>
     </div>
 
-    <!-- Quick Test Checklist -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 시간외 거래 모니터링 -->
+    <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
         <h4 class="help-title">
-            <span class="material-symbols-outlined">checklist</span>
-            Quick Test Checklist
+            <span class="material-symbols-outlined">nightlight</span>
+            시간외 거래 모니터링 (Pre-Market / After-Hours)
         </h4>
-        <div class="help-checklist">
-            <div class="help-check-group">
-                <h5>Pipeline Test</h5>
-                <div class="help-check-item">Pipeline → Universe Refresh → wait for completion</div>
-                <div class="help-check-item">Pipeline → Collect Prices → wait (~90 sec)</div>
-                <div class="help-check-item">Pipeline → Scan Signals → check pending signals</div>
-            </div>
-            <div class="help-check-group">
-                <h5>Signal Flow Test</h5>
-                <div class="help-check-item">Signals → PENDING tab → Factor Score</div>
-                <div class="help-check-item">Signals → AI Analyze → check scores</div>
-                <div class="help-check-item">Signals → Approve a high-score signal</div>
-                <div class="help-check-item">Signals → EXECUTED tab → verify execution</div>
-                <div class="help-check-item">Positions → verify new position appeared</div>
-            </div>
-            <div class="help-check-group">
-                <h5>Monitoring Test</h5>
-                <div class="help-check-item">Events → Scan Events → check for warnings</div>
-                <div class="help-check-item">Performance → check snapshot chart</div>
-            </div>
+        <p class="text-muted" style="line-height:1.7">
+            미국 시장의 프리마켓(04:00~09:30 ET)과 애프터마켓(16:00~20:00 ET) 데이터를 활용하여
+            진입/퇴출 타이밍을 최적화합니다. 학술 연구에 따르면 S&amp;P500 수익의 60% 이상이
+            장외 시간에 발생하며(NY Fed Staff Report #917), 이 데이터를 필터로 활용하면
+            거짓 시그널을 30~40% 줄일 수 있습니다.
+        </p>
+
+        <div style="margin-top:1rem">
+            <p><strong>3가지 자동 모니터링:</strong></p>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>기능</th><th>스케줄</th><th>내용</th><th>알림 조건</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>A. 프리마켓 갭 필터</strong></td>
+                        <td>월~금 22:00 KST<br/>(08:00 ET)</td>
+                        <td>보유 종목, 워치리스트, 대기 시그널의 프리마켓 가격을 확인하여 갭 방향/크기를 분석</td>
+                        <td>보유 종목 갭 &#xB1;2% 이상, 시그널 확인/경고 &#xB1;1%</td>
+                    </tr>
+                    <tr>
+                        <td><strong>B. 애프터마켓 경보</strong></td>
+                        <td>화~토 07:30 KST<br/>(17:30 ET)</td>
+                        <td>보유 종목의 장후 급락/급등을 감지하여 조기 대응 유도</td>
+                        <td>보유 -3% 이하 (손절 경고), +5% 이상 (익절 검토)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>C. 프리마켓 거래량</strong></td>
+                        <td>워치리스트 분석 시</td>
+                        <td>프리마켓 갭 1%+ 감지 시 Volume 카테고리 점수를 &#xB1;0.3 보정</td>
+                        <td>자동 반영 (별도 알림 없음)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:0.75rem">
+            <p><strong>수동 체크:</strong></p>
+            <ul class="help-list">
+                <li><code>POST /extended-hours/check</code> — 모든 관심 종목의 시간외 시세를 즉시 조회</li>
+                <li><code>GET /extended-hours</code> — 마지막 캐시된 시간외 데이터 확인</li>
+                <li>자동 스케줄 외에도 수동으로 언제든 확인 가능</li>
+            </ul>
+        </div>
+
+        <div class="help-tip">
+            <span class="material-symbols-outlined">info</span>
+            <strong>참고:</strong> 시간외 데이터는 yfinance의 Ticker.info를 통해 조회됩니다.
+            프리마켓 가격은 정규장 시작 전(KST 18:00~23:30)에만, 애프터마켓 가격은 정규장 종료 후(KST 06:00~10:00)에만 제공됩니다.
+            정규장 중에는 해당 필드가 비어 있습니다.
         </div>
     </div>
 
-    <!-- Important Notes -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 텔레그램 알림 유형 -->
+    <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
         <h4 class="help-title">
-            <span class="material-symbols-outlined">priority_high</span>
-            Important Notes
+            <span class="material-symbols-outlined">send</span>
+            텔레그램 알림 유형
+        </h4>
+        <p class="text-muted">모든 알림이 텔레그램으로 자동 전송됩니다. 봇: <code>@@quant_v4_alert_bot</code></p>
+        <table class="data-table help-table">
+            <thead>
+                <tr><th>이벤트</th><th>발생 시점</th><th>내용</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>시그널 알림</strong></td>
+                    <td>일일 파이프라인에서 진입/청산 시그널 발견 시</td>
+                    <td>심볼, 가격, SL/TP, 모멘텀 순위</td>
+                </tr>
+                <tr>
+                    <td><strong>거래 체결</strong></td>
+                    <td>대시보드에서 시그널 승인 시</td>
+                    <td>매수/매도, 수량, 가격, 금액, 손익</td>
+                </tr>
+                <tr>
+                    <td><strong>이벤트 알림</strong></td>
+                    <td>critical/warning 이벤트 감지 시</td>
+                    <td>이벤트 유형, 심볼, 심각도, 제목</td>
+                </tr>
+                <tr>
+                    <td><strong>워치리스트 알림</strong></td>
+                    <td>워치리스트 분석에서 65%+ 신뢰도 매수/매도 발견 시</td>
+                    <td>방향, 가격, 신뢰도, 목표/손절가, 전략</td>
+                </tr>
+                <tr>
+                    <td><strong>프리마켓 리포트</strong></td>
+                    <td>월~금 22:00 KST (프리마켓 갭 감지 시)</td>
+                    <td>갭 방향/크기, 시그널 확인/경고</td>
+                </tr>
+                <tr>
+                    <td><strong>애프터마켓 경보</strong></td>
+                    <td>화~토 07:30 KST (장후 급변 감지 시)</td>
+                    <td>보유 종목 급락(-3%) 또는 급등(+5%) 경고</td>
+                </tr>
+                <tr>
+                    <td><strong>자금 이벤트</strong></td>
+                    <td>입금 또는 출금 기록 시</td>
+                    <td>유형, 금액, 메모</td>
+                </tr>
+                <tr>
+                    <td><strong>모드 변경</strong></td>
+                    <td>Paper &#x2194; Live 모드 전환 시</td>
+                    <td>이전 모드 &#x2192; 새 모드</td>
+                </tr>
+                <tr>
+                    <td><strong>엔진 오류</strong></td>
+                    <td>파이프라인 또는 스케줄러 작업 실패 시</td>
+                    <td>단계 이름, 오류 메시지</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- UI 사용 팁 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">tips_and_updates</span>
+            UI 사용 팁
         </h4>
         <div class="help-notes">
             <div class="help-note">
-                <span class="help-note-icon">&#x1f4b5;</span>
+                <span class="help-note-icon">&#x2630;</span>
                 <div>
-                    <strong>Paper Trading Mode</strong> — No real money is used. All trades are simulated.
+                    <strong>사이드바 접기/펴기</strong> — 사이드바 상단의 메뉴 아이콘을 클릭하면 접기/펴기가 됩니다.
+                    접으면 아이콘만 표시되어 데이터 공간이 넓어집니다.
                 </div>
             </div>
             <div class="help-note">
                 <span class="help-note-icon">&#x1f4ca;</span>
                 <div>
-                    <strong>Max 4 signals/day</strong> — Daily entry limit. <strong>Max 5 positions</strong> — Simultaneous holding limit.
+                    <strong>상단 티커바</strong> — <strong>보유 중인 포지션 종목</strong>의 실시간 가격을 표시합니다.
+                    포지션이 없으면 "모니터링 중인 포지션 없음"으로 표시됩니다.
                 </div>
             </div>
             <div class="help-note">
-                <span class="help-note-icon">&#x1f916;</span>
+                <span class="help-note-icon">&#x1f50d;</span>
                 <div>
-                    <strong>AI Scoring</strong> — Claude Haiku 4.5 for sentiment. Finnhub for news/insider/earnings data.
-                </div>
-            </div>
-            <div class="help-note">
-                <span class="help-note-icon">&#x26a0;&#xfe0f;</span>
-                <div>
-                    <strong>exit_review events</strong> — When you see this action in Events, manually check if you should close that position.
+                    <strong>심볼 클릭</strong> — Signals 또는 Positions 페이지에서 종목 심볼을 클릭하면
+                    지표, 팩터 점수, 수익률(1M/3M/6M)이 포함된 상세 팝업이 열립니다.
                 </div>
             </div>
             <div class="help-note">
                 <span class="help-note-icon">&#x1f514;</span>
                 <div>
-                    <strong>Telegram Alerts</strong> — Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env. You'll receive alerts for signals, trades, events, and errors.
+                    <strong>토스트 알림</strong> — SSE(Server-Sent Events) 기반의 실시간 푸시 알림이
+                    거래 체결, 이벤트 스캔, 모드 변경 시 우상단에 자동으로 나타납니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4e5;</span>
+                <div>
+                    <strong>시그널 배지</strong> — 왼쪽 메뉴의 Signals 항목에 대기 중인 시그널 수가 빨간 배지로 표시됩니다.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 빠른 테스트 체크리스트 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">checklist</span>
+            빠른 테스트 체크리스트
+        </h4>
+        <div class="help-checklist">
+            <div class="help-check-group">
+                <h5>1. 파이프라인 테스트</h5>
+                <div class="help-check-item">Pipeline &#x2192; Universe Refresh &#x2192; 완료 대기</div>
+                <div class="help-check-item">Pipeline &#x2192; Collect Prices &#x2192; 대기 (~90초)</div>
+                <div class="help-check-item">Pipeline &#x2192; Scan Signals &#x2192; 대기 중 시그널 확인</div>
+            </div>
+            <div class="help-check-group">
+                <h5>2. 시그널 흐름 테스트</h5>
+                <div class="help-check-item">Signals &#x2192; PENDING 탭 &#x2192; Factor Score 클릭</div>
+                <div class="help-check-item">Signals &#x2192; AI Analyze 클릭 &#x2192; 점수 표시 확인</div>
+                <div class="help-check-item">Signals &#x2192; 높은 점수 시그널 Approve (가격 범위 확인!)</div>
+                <div class="help-check-item">Signals &#x2192; EXECUTED 탭 &#x2192; 거래 표시 확인</div>
+                <div class="help-check-item">Positions &#x2192; 새 포지션 표시 확인</div>
+                <div class="help-check-item">텔레그램 &#x2192; 거래 체결 알림 수신 확인</div>
+            </div>
+            <div class="help-check-group">
+                <h5>3. 모니터링 테스트</h5>
+                <div class="help-check-item">Events &#x2192; Scan Events &#x2192; 경고 확인</div>
+                <div class="help-check-item">Events &#x2192; SEC Filings &#x2192; 공시 확인</div>
+                <div class="help-check-item">Performance &#x2192; 스냅샷 생성 &#x2192; 차트 확인</div>
+            </div>
+            <div class="help-check-group">
+                <h5>4. 워치리스트 테스트</h5>
+                <div class="help-check-item">Watchlist &#x2192; 종목 추가 (예: AAPL, 평균단가, 수량)</div>
+                <div class="help-check-item">Watchlist &#x2192; Analyze All 클릭 &#x2192; ~30초 대기</div>
+                <div class="help-check-item">분석 결과 확인 (방향, RSI, MACD, BB%)</div>
+                <div class="help-check-item">신뢰도 65%+ &#x2192; 텔레그램 알림 확인</div>
+            </div>
+            <div class="help-check-group">
+                <h5>5. 자금 관리 테스트</h5>
+                <div class="help-check-item">Settings &#x2192; Capital Management &#x2192; $1 테스트 입금</div>
+                <div class="help-check-item">텔레그램 &#x2192; 입금 알림 확인</div>
+                <div class="help-check-item">Settings &#x2192; $1 출금으로 복구</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 문제 해결 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">build</span>
+            문제 해결
+        </h4>
+        <div class="help-notes">
+            <div class="help-note">
+                <span class="help-note-icon">&#x274c;</span>
+                <div>
+                    <strong>승인 실패 — "Entry execution failed"</strong><br/>
+                    주가가 <code>price_range_min</code> ~ <code>price_range_max</code> 범위를 벗어나거나,
+                    최대 포지션 수에 도달했거나, 일일 진입 한도를 초과한 경우입니다. Settings를 확인하세요.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x274c;</span>
+                <div>
+                    <strong>시그널이 "approved"에 멈추고 포지션이 없음</strong><br/>
+                    알려진 버그였습니다 (수정 완료). 승인은 되었으나 가격 범위 초과로 체결이 실패한 경우입니다.
+                    <strong>Revert</strong>로 pending으로 되돌리거나, 24시간 후 자동 만료됩니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x274c;</span>
+                <div>
+                    <strong>텔레그램 메시지를 받지 못함</strong><br/>
+                    1) 텔레그램에서 <code>@@quant_v4_alert_bot</code>에게 먼저 메시지를 보냈는지 확인<br/>
+                    2) Settings &#x2192; Engine Status가 "Online"인지 확인<br/>
+                    3) <code>.env</code> 파일에 <code>TELEGRAM_BOT_TOKEN</code>과 <code>TELEGRAM_CHAT_ID</code>가 설정되었는지 확인
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x274c;</span>
+                <div>
+                    <strong>상단 티커바에 "모니터링 중인 포지션 없음" 표시</strong><br/>
+                    티커바는 <strong>보유 중인 포지션 종목</strong>의 가격만 표시합니다.
+                    포지션이 없으면 빈 상태로 표시됩니다. 포지션을 열면 실시간 가격이 나타납니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x274c;</span>
+                <div>
+                    <strong>엔진 또는 대시보드가 오프라인</strong><br/>
+                    두 서비스 모두 systemd를 통해 ~12초 이내에 자동 재시작됩니다.
+                    Settings &#x2192; Engine Status를 확인하세요. 계속 오프라인이면 서버 로그를 확인합니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x274c;</span>
+                <div>
+                    <strong>Collect Prices가 너무 오래 걸림</strong><br/>
+                    정상: ~500개 종목에 약 90초 소요. Pipeline 페이지에서 진행 상황을 확인할 수 있습니다.
+                    타임아웃은 300초(5분)로 설정되어 있습니다. 실패하면 재시도하세요.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 중요 사항 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title">
+            <span class="material-symbols-outlined">priority_high</span>
+            중요 사항
+        </h4>
+        <div class="help-notes">
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4b5;</span>
+                <div>
+                    <strong>Paper 트레이딩 모드 (기본)</strong> — 실제 돈이 사용되지 않습니다. 모든 거래가 시뮬레이션입니다.
+                    실거래 준비가 되면 Settings에서 Live 모드로 전환하세요.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4ca;</span>
+                <div>
+                    <strong>포지션 제한</strong> — 하루 최대 <strong>2건 진입</strong>, 동시 최대 <strong>3종목 보유</strong> (Settings에서 변경 가능).
+                    과집중을 방지하기 위한 안전장치입니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f916;</span>
+                <div>
+                    <strong>AI 스코어링</strong> — Claude Haiku 4.5가 심리 분석과 시그널 평가를 수행합니다.
+                    Finnhub이 뉴스, 내부자 거래, 애널리스트 추천 데이터를 제공합니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4b0;</span>
+                <div>
+                    <strong>자금 추적</strong> — Settings &#x2192; Capital Management에서 입금/출금을 기록하세요.
+                    추가 입금해도 수익률이 부풀려지지 않도록 수익률 계산이 자동 조정됩니다.
+                </div>
+            </div>
+            <div class="help-note">
+                <span class="help-note-icon">&#x1f4d1;</span>
+                <div>
+                    <strong>워치리스트 vs 스윙 포지션</strong> — 워치리스트는 Swing V4 트레이딩 시스템과 독립적입니다.
+                    외부에서 보유 중인 종목용입니다. 스윙 포지션은 시스템의 파이프라인이 관리합니다.
                 </div>
             </div>
             <div class="help-note">
                 <span class="help-note-icon">&#x26a1;</span>
                 <div>
-                    <strong>Real-time Notifications</strong> — Toast alerts appear automatically when trades execute, events are scanned, or modes change (SSE).
+                    <strong>실시간 알림</strong> — SSE 토스트 알림은 우상단에 자동으로 나타납니다.
+                    텔레그램 알림은 모든 중요 액션에 대해 전송됩니다. 둘 다 독립적으로 작동합니다.
                 </div>
             </div>
             <div class="help-note">
                 <span class="help-note-icon">&#x1f504;</span>
                 <div>
-                    <strong>Auto Recovery</strong> — If engine or dashboard crashes, systemd auto-restarts within ~12 seconds.
+                    <strong>자동 복구</strong> — 엔진 또는 대시보드가 비정상 종료되면 systemd가 ~12초 이내에 자동 재시작합니다.
+                    모든 데이터는 PostgreSQL에 저장되므로 데이터 손실이 없습니다.
                 </div>
             </div>
         </div>

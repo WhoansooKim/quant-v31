@@ -1,8 +1,12 @@
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">
-            <span class="brand-icon">S</span> Swing V4
+            <span class="brand-icon">S</span>
+            <span class="brand-text">Swing V4</span>
         </a>
+        <button class="sidebar-toggle" @onclick="ToggleSidebar" title="Toggle Sidebar">
+            <span class="material-symbols-outlined">@(Collapsed ? "menu" : "menu_open")</span>
+        </button>
     </div>
 </div>
 
@@ -14,9 +18,9 @@
         <Authorized>
             <div class="nav-user-section">
                 <span class="nav-user-avatar">@(context.User.Identity?.Name?[..1].ToUpper())</span>
-                <span class="nav-user-name">@context.User.Identity?.Name</span>
+                <span class="nav-user-name nav-text">@context.User.Identity?.Name</span>
                 <form method="post" action="/account/logout">
-                    <button type="submit" class="nav-user-logout">Logout</button>
+                    <button type="submit" class="nav-user-logout nav-text">Logout</button>
                 </form>
             </div>
         </Authorized>
@@ -25,19 +29,22 @@
     <nav class="flex-column">
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="material-symbols-outlined nav-icon">dashboard</span> Dashboard
+                <span class="material-symbols-outlined nav-icon">dashboard</span>
+                <span class="nav-text">Dashboard</span>
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="pipeline">
-                <span class="material-symbols-outlined nav-icon">conversion_path</span> Pipeline
+                <span class="material-symbols-outlined nav-icon">conversion_path</span>
+                <span class="nav-text">Pipeline</span>
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="signals">
-                <span class="material-symbols-outlined nav-icon">notifications_active</span> Signals
+                <span class="material-symbols-outlined nav-icon">notifications_active</span>
+                <span class="nav-text">Signals</span>
                 @if (_pendingCount > 0)
                 {
                     <span class="nav-badge">@_pendingCount</span>
@@ -47,25 +54,36 @@
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="performance">
-                <span class="material-symbols-outlined nav-icon">monitoring</span> Performance
+                <span class="material-symbols-outlined nav-icon">monitoring</span>
+                <span class="nav-text">Performance</span>
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="positions">
-                <span class="material-symbols-outlined nav-icon">account_balance_wallet</span> Positions
+                <span class="material-symbols-outlined nav-icon">account_balance_wallet</span>
+                <span class="nav-text">Positions</span>
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="backtest">
-                <span class="material-symbols-outlined nav-icon">query_stats</span> Backtest
+                <span class="material-symbols-outlined nav-icon">query_stats</span>
+                <span class="nav-text">Backtest</span>
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="events">
-                <span class="material-symbols-outlined nav-icon">bolt</span> Events
+                <span class="material-symbols-outlined nav-icon">bolt</span>
+                <span class="nav-text">Events</span>
+            </NavLink>
+        </div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="watchlist">
+                <span class="material-symbols-outlined nav-icon">bookmark</span>
+                <span class="nav-text">Watchlist</span>
             </NavLink>
         </div>
 
@@ -73,13 +91,15 @@
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="settings">
-                <span class="material-symbols-outlined nav-icon">settings</span> Settings
+                <span class="material-symbols-outlined nav-icon">settings</span>
+                <span class="nav-text">Settings</span>
             </NavLink>
         </div>
 
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="help">
-                <span class="material-symbols-outlined nav-icon">help</span> Help
+                <span class="material-symbols-outlined nav-icon">help</span>
+                <span class="nav-text">Help</span>
             </NavLink>
         </div>
     </nav>
@@ -88,6 +108,15 @@
 @code {
     [Inject] private SwingService? SwingSvc { get; set; }
     private int _pendingCount;
+
+    [Parameter] public bool Collapsed { get; set; }
+    [Parameter] public EventCallback<bool> CollapsedChanged { get; set; }
+
+    private async Task ToggleSidebar()
+    {
+        Collapsed = !Collapsed;
+        await CollapsedChanged.InvokeAsync(Collapsed);
+    }
 
     protected override async Task OnInitializedAsync()
     {

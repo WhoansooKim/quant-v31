@@ -2,9 +2,11 @@
 
 스케줄:
   월~토 07:00 KST  → 데이터 수집 + 시그널 스캔 + 알림
+  월~금 22:00 KST  → 프리마켓 갭 체크 (08:00 ET)
   월~금 23:30 KST  → 장중 청산 체크 (09:30 ET)
   화~토 01:00 KST  → 장중 청산 체크 (11:00 ET)
   화~토 03:00 KST  → 장중 청산 체크 (13:00 ET)
+  화~토 07:00 KST  → 애프터마켓 체크 (17:00 ET)
   토    10:00 KST  → 유니버스 주간 갱신
   매일  06:00 KST  → 만료 시그널 정리
 """
@@ -22,6 +24,7 @@ import pytz
 
 from engine_v4.config.settings import SwingSettings
 from engine_v4.data.collector import DataCollector, UniverseManager
+from engine_v4.data.extended_hours import fetch_extended_hours
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
 from engine_v4.risk.exit_manager import ExitManager
@@ -69,7 +72,16 @@ class SwingScheduler:
             replace_existing=True,
         )
 
-        # 2) 장중 청산 체크 — 월~금 23:30 KST (09:30 ET)
+        # 2a) 프리마켓 갭 체크 — 월~금 22:00 KST (08:00 ET)
+        self.scheduler.add_job(
+            self._job_premarket_check,
+            CronTrigger(day_of_week="mon-fri", hour=22, minute=0, timezone=KST),
+            id="premarket_check",
+            name="Pre-Market Gap Check (08:00 ET)",
+            replace_existing=True,
+        )
+
+        # 2b) 장중 청산 체크 — 월~금 23:30 KST (09:30 ET)
         self.scheduler.add_job(
             self._job_exit_check,
             CronTrigger(day_of_week="mon-fri", hour=23, minute=30, timezone=KST),
@@ -105,7 +117,16 @@ class SwingScheduler:
             replace_existing=True,
         )
 
-        # 6) 매일 06:00 KST — 만료 시그널 정리
+        # 6) 애프터마켓 체크 — 화~토 07:00 KST (17:00 ET)
+        self.scheduler.add_job(
+            self._job_afterhours_check,
+            CronTrigger(day_of_week="tue-sat", hour=7, minute=30, timezone=KST),
+            id="afterhours_check",
+            name="After-Hours Alert (17:30 ET)",
+            replace_existing=True,
+        )
+
+        # 7) 매일 06:00 KST — 만료 시그널 정리
         self.scheduler.add_job(
             self._job_expire_signals,
             CronTrigger(hour=6, minute=0, timezone=KST),
@@ -321,6 +342,155 @@ class SwingScheduler:
         except Exception as e:
             logger.error(f"Expire signals failed: {e}")
 
+    def _job_premarket_check(self):
+        """A안: 프리마켓 갭 필터 — 보유 종목 + 워치리스트 + pending 시그널."""
+        try:
+            # Gather all symbols of interest
+            positions = self.pg.get_open_positions()
+            watchlist = self.pg.get_watchlist()
+            pending = self.pg.get_signals(status="pending")
+
+            syms = set()
+            for p in positions:
+                syms.add(p["symbol"])
+            for w in watchlist:
+                syms.add(w["symbol"])
+            for s in pending:
+                syms.add(s["symbol"])
+
+            if not syms:
+                logger.info("Pre-market check: no symbols to check")
+                return
+
+            data = fetch_extended_hours(list(syms))
+            alerts = []
+
+            for d in data:
+                sym = d["symbol"]
+                gap = d["gap_pct"]
+                pre_price = d.get("pre_price")
+                if not pre_price:
+                    continue
+
+                is_position = any(p["symbol"] == sym for p in positions)
+                is_pending = any(s["symbol"] == sym for s in pending)
+
+                # Position holders: alert on significant gaps
+                if is_position and abs(gap) >= 2.0:
+                    emoji = "\U0001f7e2" if gap > 0 else "\U0001f534"
+                    direction = "GAP UP" if gap > 0 else "GAP DOWN"
+                    alerts.append(
+                        f"{emoji} <b>Pre-Market {direction}: {sym}</b>\n"
+                        f"Gap: <b>{gap:+.1f}%</b> | Pre: ${pre_price:.2f}\n"
+                        f"Prev Close: ${d['regular_close']:.2f}"
+                    )
+
+                # Pending signals: alert on confirming/conflicting gaps
+                if is_pending and abs(gap) >= 1.0:
+                    sig = next((s for s in pending if s["symbol"] == sym), None)
+                    if sig:
+                        sig_type = sig.get("signal_type", "")
+                        if sig_type == "ENTRY" and gap >= 1.0:
+                            alerts.append(
+                                f"\u2705 <b>Pre-Market confirms ENTRY: {sym}</b>\n"
+                                f"Gap: <b>{gap:+.1f}%</b> | Pre: ${pre_price:.2f}"
+                            )
+                        elif sig_type == "ENTRY" and gap <= -2.0:
+                            alerts.append(
+                                f"\u26a0\ufe0f <b>Pre-Market warns against ENTRY: {sym}</b>\n"
+                                f"Gap: <b>{gap:+.1f}%</b> — consider delaying"
+                            )
+
+            # Cache results for API/dashboard
+            self.cache.set_json("extended_hours", {
+                "session": "pre",
+                "checked_at": datetime.now().isoformat(),
+                "data": data,
+            }, ttl=7200)
+
+            # Send consolidated Telegram alert
+            if alerts:
+                header = f"\U0001f4ca <b>Pre-Market Report</b> ({len(data)} symbols)\n\n"
+                msg = header + "\n\n".join(alerts[:10])  # Max 10 alerts
+                msg += f"\n\n\u23f0 {datetime.now().strftime('%H:%M KST')}"
+                asyncio.run(self.notifier.send(msg))
+
+            logger.info(f"Pre-market check done: {len(data)} symbols, {len(alerts)} alerts")
+
+        except Exception as e:
+            logger.error(f"Pre-market check failed: {e}", exc_info=True)
+
+    def _job_afterhours_check(self):
+        """B안: 애프터마켓 이상 움직임 감지 — 보유 종목 중심."""
+        try:
+            positions = self.pg.get_open_positions()
+            watchlist = self.pg.get_watchlist()
+
+            syms = set()
+            for p in positions:
+                syms.add(p["symbol"])
+            for w in watchlist:
+                syms.add(w["symbol"])
+
+            if not syms:
+                logger.info("After-hours check: no symbols")
+                return
+
+            data = fetch_extended_hours(list(syms))
+            alerts = []
+
+            for d in data:
+                sym = d["symbol"]
+                post_price = d.get("post_price")
+                gap = d["gap_pct"]
+                if not post_price:
+                    continue
+
+                is_position = any(p["symbol"] == sym for p in positions)
+
+                # Position: after-hours drop >= 3% → urgent alert
+                if is_position and gap <= -3.0:
+                    alerts.append(
+                        f"\U0001f6a8 <b>After-Hours DROP: {sym}</b>\n"
+                        f"Change: <b>{gap:+.1f}%</b> | AH: ${post_price:.2f}\n"
+                        f"Close: ${d['regular_price']:.2f}\n"
+                        f"<i>Consider early exit at next open</i>"
+                    )
+                # Position: after-hours surge >= 5% → consider partial exit
+                elif is_position and gap >= 5.0:
+                    alerts.append(
+                        f"\U0001f680 <b>After-Hours SURGE: {sym}</b>\n"
+                        f"Change: <b>{gap:+.1f}%</b> | AH: ${post_price:.2f}\n"
+                        f"Close: ${d['regular_price']:.2f}\n"
+                        f"<i>Consider partial profit-taking</i>"
+                    )
+                # Watchlist: big moves (either direction)
+                elif not is_position and abs(gap) >= 4.0:
+                    emoji = "\U0001f7e2" if gap > 0 else "\U0001f534"
+                    alerts.append(
+                        f"{emoji} <b>After-Hours Move: {sym}</b>\n"
+                        f"Change: <b>{gap:+.1f}%</b> | AH: ${post_price:.2f}"
+                    )
+
+            # Cache results
+            self.cache.set_json("extended_hours", {
+                "session": "post",
+                "checked_at": datetime.now().isoformat(),
+                "data": data,
+            }, ttl=7200)
+
+            # Telegram
+            if alerts:
+                header = f"\U0001f319 <b>After-Hours Report</b> ({len(data)} symbols)\n\n"
+                msg = header + "\n\n".join(alerts[:10])
+                msg += f"\n\n\u23f0 {datetime.now().strftime('%H:%M KST')}"
+                asyncio.run(self.notifier.send(msg))
+
+            logger.info(f"After-hours check done: {len(data)} symbols, {len(alerts)} alerts")
+
+        except Exception as e:
+            logger.error(f"After-hours check failed: {e}", exc_info=True)
+
     def generate_snapshot(self) -> dict | None:
         """포트폴리오 스냅샷 생성 — 현재가 조회 + DB 저장."""
         import yfinance as yf
@@ -370,31 +540,44 @@ class SwingScheduler:
             realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
 
             # 포트폴리오 계산
-            cash_usd = INITIAL_CAPITAL + realized_pnl - entry_cost
+            capital_adj = self.pg.get_total_capital_adjustments()
+            cash_usd = INITIAL_CAPITAL + capital_adj + realized_pnl - entry_cost
             total_value = cash_usd + invested_usd
 
-            prev = self.pg.get_latest_snapshot()
-            prev_total = (float(prev["total_value_usd"])
-                          if prev and prev.get("total_value_usd")
-                          else INITIAL_CAPITAL)
-            daily_pnl = total_value - prev_total
-            daily_return = daily_pnl / prev_total if prev_total > 0 else 0
-            cumulative_return = (total_value / INITIAL_CAPITAL) - 1
+            # 순수 트레이딩 손익 (입출금 제외)
+            unrealized_pnl = invested_usd - entry_cost
+            trading_pnl = realized_pnl + unrealized_pnl
 
-            # Max drawdown
+            total_invested = INITIAL_CAPITAL + capital_adj
+            cumulative_return = trading_pnl / total_invested if total_invested > 0 else 0
+
+            # Daily P&L: 순수 트레이딩 손익 변동분 (입출금 제외)
+            prev = self.pg.get_latest_snapshot()
+            if prev and prev.get("trading_pnl") is not None:
+                prev_trading_pnl = float(prev["trading_pnl"])
+            elif prev and prev.get("total_value_usd") is not None:
+                # 이전 스냅샷에 trading_pnl 없으면 추정
+                prev_trading_pnl = float(prev["total_value_usd"]) - total_invested
+            else:
+                prev_trading_pnl = 0
+            daily_pnl = trading_pnl - prev_trading_pnl
+            daily_return = daily_pnl / total_invested if total_invested > 0 else 0
+
+            # Max drawdown (TWR 기반 — 입출금 무관)
             all_snaps = self.pg.get_snapshots(days=9999)
-            peak = INITIAL_CAPITAL
+            peak_return = 0.0
             worst_dd = 0.0
             for s in all_snaps:
-                val = float(s.get("total_value_usd") or 0)
-                if val > peak:
-                    peak = val
-                dd = (val - peak) / peak if peak > 0 else 0
+                cr = float(s.get("cumulative_return") or 0)
+                if cr > peak_return:
+                    peak_return = cr
+                dd = cr - peak_return  # 수익률 기준 drawdown
                 if dd < worst_dd:
                     worst_dd = dd
-            if total_value > peak:
-                peak = total_value
-            curr_dd = (total_value - peak) / peak if peak > 0 else 0
+            # 현재 포함
+            if cumulative_return > peak_return:
+                peak_return = cumulative_return
+            curr_dd = cumulative_return - peak_return
             if curr_dd < worst_dd:
                 worst_dd = curr_dd
 
@@ -409,6 +592,7 @@ class SwingScheduler:
                 "max_drawdown": round(worst_dd, 6),
                 "open_positions": open_count,
                 "exchange_rate": None,
+                "trading_pnl": round(trading_pnl, 2),
             }
             self.pg.insert_snapshot(snap)
             self.cache.set_snapshot(snap)

@@ -1,0 +1,495 @@
+@page "/watchlist"
+@attribute [Authorize]
+@inject IHttpClientFactory HttpFactory
+@inject SwingService Db
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Watchlist</PageTitle>
+
+<div class="page-header">
+    <h3>My Watchlist</h3>
+    <div style="display:flex; gap:0.5rem">
+        <button class="btn-action" @onclick="AnalyzeAll" disabled="@analyzing">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">analytics</span>
+            @(analyzing ? "Analyzing..." : "Analyze All")
+        </button>
+        <button class="btn-action btn-outline" @onclick="LoadAll">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">refresh</span>
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
+}
+
+<!-- Add Symbol Form -->
+<div class="section-card" style="margin-bottom:1rem">
+    <h4 class="section-title">Add Symbol</h4>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end">
+        <div>
+            <label class="form-label">Symbol</label>
+            <input type="text" class="form-input form-input-sm" @bind="newSymbol"
+                   placeholder="AAPL" style="width:100px; text-transform:uppercase" />
+        </div>
+        <div>
+            <label class="form-label">Company</label>
+            <input type="text" class="form-input form-input-sm" @bind="newCompany"
+                   placeholder="Apple Inc." style="width:160px" />
+        </div>
+        <div>
+            <label class="form-label">Avg Cost ($)</label>
+            <input type="number" class="form-input form-input-sm" @bind="newAvgCost"
+                   step="0.01" style="width:100px" />
+        </div>
+        <div>
+            <label class="form-label">Qty</label>
+            <input type="number" class="form-input form-input-sm" @bind="newQty"
+                   step="0.01" style="width:80px" />
+        </div>
+        <div>
+            <label class="form-label">Notes</label>
+            <input type="text" class="form-input form-input-sm" @bind="newNotes"
+                   placeholder="memo" style="width:140px" />
+        </div>
+        <button class="btn-sm btn-approve" @onclick="AddSymbol" disabled="@adding">
+            @(adding ? "Adding..." : "Add")
+        </button>
+    </div>
+</div>
+
+<!-- Watchlist Table (접기/펼치기) -->
+<div class="section-card" style="margin-bottom:1rem">
+    <h4 class="section-title collapsible-title" @onclick="() => showRegistered = !showRegistered" style="cursor:pointer">
+        <span class="material-symbols-outlined collapse-chevron @(showRegistered ? "" : "collapsed")"
+              style="font-size:18px; vertical-align:middle; transition:transform 0.2s">
+            expand_more
+        </span>
+        Registered Symbols (@watchlist.Count)
+    </h4>
+    @if (showRegistered)
+    {
+        @if (watchlist.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Company</th>
+                            <th>Avg Cost</th>
+                            <th>Qty</th>
+                            <th>Notes</th>
+                            <th>Added</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var w in watchlist)
+                        {
+                            <tr>
+                                <td style="font-weight:700">@w.Symbol</td>
+                                <td class="text-muted">@(w.CompanyName ?? "")</td>
+                                <td>@(w.AvgCost > 0 ? $"${w.AvgCost:F2}" : "--")</td>
+                                <td>@(w.Qty > 0 ? w.Qty.ToString("F2") : "--")</td>
+                                <td class="text-muted">@(w.Notes ?? "")</td>
+                                <td class="text-muted">@w.AddedAt.ToString("MM/dd")</td>
+                                <td>
+                                    <button class="btn-sm btn-reject" @onclick="() => RemoveSymbol(w.Symbol)">
+                                        Remove
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p class="text-muted" style="padding:1rem">No symbols registered. Add symbols above.</p>
+        }
+    }
+</div>
+
+<!-- Analysis Results — Investing.com Style -->
+@foreach (var r in analysisResults)
+{
+    var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
+    var dir = r.TryGetProperty("direction", out var dv) ? dv.GetString() ?? "NEUTRAL" : "NEUTRAL";
+    var price = r.TryGetProperty("current_price", out var pv2) ? pv2.GetDouble() : 0;
+    var pnl = r.TryGetProperty("pnl_pct", out var pnlv) && pnlv.ValueKind != System.Text.Json.JsonValueKind.Null ? (double?)pnlv.GetDouble() : null;
+    var target = r.TryGetProperty("target_price", out var tv) ? tv.GetDouble() : 0;
+    var stop = r.TryGetProperty("stop_price", out var stv) ? stv.GetDouble() : 0;
+    var oscBuy = r.TryGetProperty("osc_buy", out var ob) ? ob.GetInt32() : 0;
+    var oscSell = r.TryGetProperty("osc_sell", out var os2) ? os2.GetInt32() : 0;
+    var oscNeutral = r.TryGetProperty("osc_neutral", out var on) ? on.GetInt32() : 0;
+    var maBuy = r.TryGetProperty("ma_buy", out var mb) ? mb.GetInt32() : 0;
+    var maSell = r.TryGetProperty("ma_sell", out var ms) ? ms.GetInt32() : 0;
+    var totalBuy = r.TryGetProperty("total_buy", out var tb) ? tb.GetInt32() : 0;
+    var totalSell = r.TryGetProperty("total_sell", out var ts) ? ts.GetInt32() : 0;
+    var totalNeutral = r.TryGetProperty("total_neutral", out var tn) ? tn.GetInt32() : 0;
+    var dirLabel = dir switch { "STRONG_BUY" => "Strong Buy", "STRONG_SELL" => "Strong Sell", "BUY" => "Buy", "SELL" => "Sell", _ => "Neutral" };
+    var dirCss = dir.Contains("BUY") ? "summary-buy" : dir.Contains("SELL") ? "summary-sell" : "summary-neutral";
+    var regime = r.TryGetProperty("regime", out var rv) ? rv.GetString() ?? "MIXED" : "MIXED";
+    var volFactor = r.TryGetProperty("vol_factor", out var vfv) ? vfv.GetDouble() : 1.0;
+    var wScore = r.TryGetProperty("weighted_score", out var wsv) ? wsv.GetDouble() : 0;
+    var volRatio = r.TryGetProperty("vol_ratio", out var vrv) ? vrv.GetDouble() : 1.0;
+    // Category scores
+    double catTrend = 0, catMom = 0, catMacd = 0, catMr = 0, catVol = 0;
+    if (r.TryGetProperty("category_scores", out var cs))
+    {
+        catTrend = cs.TryGetProperty("trend", out var ct) ? ct.GetDouble() : 0;
+        catMom = cs.TryGetProperty("momentum", out var cm) ? cm.GetDouble() : 0;
+        catMacd = cs.TryGetProperty("macd", out var cmd) ? cmd.GetDouble() : 0;
+        catMr = cs.TryGetProperty("mean_reversion", out var cmr) ? cmr.GetDouble() : 0;
+        catVol = cs.TryGetProperty("volume", out var cv) ? cv.GetDouble() : 0;
+    }
+    // Category weights
+    double wTrend = 0.30, wMom = 0.25, wMacd = 0.20, wMr = 0.15, wVol = 0.10;
+    if (r.TryGetProperty("category_weights", out var cw))
+    {
+        wTrend = cw.TryGetProperty("trend", out var cwt) ? cwt.GetDouble() : 0.30;
+        wMom = cw.TryGetProperty("momentum", out var cwm) ? cwm.GetDouble() : 0.25;
+        wMacd = cw.TryGetProperty("macd", out var cwmd) ? cwmd.GetDouble() : 0.20;
+        wMr = cw.TryGetProperty("mean_reversion", out var cwmr) ? cwmr.GetDouble() : 0.15;
+        wVol = cw.TryGetProperty("volume", out var cwv) ? cwv.GetDouble() : 0.10;
+    }
+
+    <div class="section-card analysis-card" style="margin-bottom:0.3rem">
+        <!-- ★ Level 1: Compact Header (always visible) — click to expand -->
+        <div class="analysis-compact-header" @onclick="() => ToggleCard(sym)">
+            <div class="compact-left">
+                <span class="material-symbols-outlined collapse-chevron @(expandedCards.Contains(sym) ? "" : "collapsed")"
+                      style="font-size:16px; vertical-align:middle; transition:transform 0.2s">expand_more</span>
+                <span style="font-weight:700; font-size:1.05rem">@sym</span>
+                @if (r.TryGetProperty("company_name", out var cn) && cn.GetString() is string cname && cname.Length > 0)
+                {
+                    <span class="text-muted" style="font-size:0.75rem; margin-left:0.3rem">@cname</span>
+                }
+                <span style="font-size:0.88rem; margin-left:0.5rem; font-weight:600">$@price.ToString("F2")</span>
+                @if (pnl.HasValue)
+                {
+                    <span class="@(pnl > 0 ? "text-green" : "text-red")" style="font-size:0.8rem; margin-left:0.3rem; font-weight:600">
+                        @(pnl > 0 ? "+" : "")@pnl.Value.ToString("F2")%
+                    </span>
+                }
+            </div>
+            <div class="compact-right">
+                <span class="compact-verdict @dirCss">@dirLabel</span>
+                <span class="compact-score" style="color:var(--text-secondary)">@(wScore >= 0 ? "+" : "")@wScore.ToString("F3")</span>
+            </div>
+        </div>
+
+        <!-- ★ Level 2: Summary Gauge + Category Breakdown (expandable) -->
+        @if (expandedCards.Contains(sym))
+        {
+            <div class="ind-header" style="padding-top:0.3rem">
+                <div></div>
+                <span class="text-muted" style="font-size:0.72rem">Target $@target.ToString("F2") / Stop $@stop.ToString("F2")</span>
+            </div>
+
+            <div class="summary-gauge">
+                <div class="gauge-sections">
+                    <div class="gauge-section" style="flex:1">
+                        <div class="gauge-label">Oscillators</div>
+                        <div class="gauge-counts">
+                            <span class="text-green">@oscBuy</span> /
+                            <span class="text-muted">@oscNeutral</span> /
+                            <span class="text-red">@oscSell</span>
+                        </div>
+                    </div>
+                    <div class="gauge-section gauge-total" style="flex:1.8">
+                        <div class="gauge-label">Weighted Score</div>
+                        <div class="gauge-verdict gauge-verdict-main @dirCss" style="font-size:1.1rem">@dirLabel</div>
+                        <div style="font-size:0.82rem; font-weight:600; color:var(--text-primary); margin-top:0.15rem">
+                            @(wScore >= 0 ? "+" : "")@wScore.ToString("F3")
+                        </div>
+                        <div style="display:flex; gap:0.5rem; font-size:0.65rem; margin-top:0.2rem; justify-content:center">
+                            <span class="@(regime == "TRENDING" ? "text-green" : regime == "SIDEWAYS" ? "text-yellow" : "text-muted")" style="font-weight:600">
+                                @regime
+                            </span>
+                            <span class="text-muted">|</span>
+                            <span class="@(volFactor >= 1.0 ? "text-green" : "text-yellow")" style="font-weight:600">
+                                Vol ×@volRatio.ToString("F1") @(volFactor < 1.0 ? "(dampened)" : "")
+                            </span>
+                        </div>
+                    </div>
+                    <div class="gauge-section" style="flex:1">
+                        <div class="gauge-label">Moving Avgs</div>
+                        <div class="gauge-counts">
+                            <span class="text-green">@maBuy</span> /
+                            <span class="text-muted">0</span> /
+                            <span class="text-red">@maSell</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Category breakdown bars -->
+                <div class="category-breakdown">
+                    @{
+                        var cats = new (string Name, double Score, double Weight)[] {
+                            ("Trend", catTrend, wTrend),
+                            ("Momentum", catMom, wMom),
+                            ("MACD", catMacd, wMacd),
+                            ("MeanRev", catMr, wMr),
+                            ("Volume", catVol, wVol),
+                        };
+                    }
+                    @foreach (var c in cats)
+                    {
+                        var pct = (int)Math.Round(Math.Abs(c.Score) * 50);
+                        var catCss = c.Score > 0.1 ? "cat-buy" : c.Score < -0.1 ? "cat-sell" : "cat-neutral";
+                        <div class="cat-row">
+                            <span class="cat-label">@c.Name <span class="text-muted">(@((int)(c.Weight*100))%)</span></span>
+                            <div class="cat-bar-track">
+                                <div class="cat-bar-center"></div>
+                                @if (c.Score >= 0)
+                                {
+                                    <div class="cat-bar-fill cat-bar-buy" style="left:50%; width:@(pct)%"></div>
+                                }
+                                else
+                                {
+                                    <div class="cat-bar-fill cat-bar-sell" style="right:50%; width:@(pct)%"></div>
+                                }
+                            </div>
+                            <span class="cat-val @catCss">@(c.Score >= 0 ? "+" : "")@c.Score.ToString("F2")</span>
+                        </div>
+                    }
+                </div>
+
+                <!-- Buy/Sell indicator count bar -->
+                @{ var barBuyPct = totalBuy + totalSell > 0 ? (int)(100.0 * totalBuy / (totalBuy + totalSell + totalNeutral)) : 50; }
+                <div class="summary-bar">
+                    <div class="summary-bar-buy" style="width:@(barBuyPct)%"></div>
+                </div>
+                <div class="summary-bar-labels">
+                    <span class="text-green" style="font-size:0.7rem">Buy @totalBuy</span>
+                    <span class="text-muted" style="font-size:0.7rem">Neutral @totalNeutral</span>
+                    <span class="text-red" style="font-size:0.7rem">Sell @totalSell</span>
+                </div>
+            </div>
+
+            <!-- ★ Level 3: Oscillators + Moving Averages detail tables -->
+            <div class="ind-two-col" style="@(expandedDetails.Contains(sym) ? "" : "display:none")">
+            <!-- Oscillators (12) -->
+            <div class="ind-col">
+                <h5 class="ind-col-title">Oscillators</h5>
+                <table class="data-table ind-table">
+                    <thead><tr><th>Name</th><th>Value</th><th>Action</th></tr></thead>
+                    <tbody>
+                        @if (r.TryGetProperty("indicators", out var indArr) && indArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            @foreach (var ind in indArr.EnumerateArray())
+                            {
+                                var iname = ind.TryGetProperty("name", out var nv) ? nv.GetString() ?? "" : "";
+                                var ival = ind.TryGetProperty("value", out var vv) ? vv.GetDouble() : 0;
+                                var isig = ind.TryGetProperty("signal", out var sigv) ? sigv.GetString() ?? "NEUTRAL" : "NEUTRAL";
+                                <tr>
+                                    <td>@iname</td>
+                                    <td class="text-muted">@ival.ToString(iname.Contains("ATR") ? "F2" : iname.Contains("MACD") || iname.Contains("Bull") || iname.Contains("ROC") ? "F2" : "F1")</td>
+                                    <td><span class="ind-signal @(isig == "BUY" ? "ind-buy" : isig == "SELL" ? "ind-sell" : "ind-neutral")">@isig</span></td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Moving Averages (12) -->
+            <div class="ind-col">
+                <h5 class="ind-col-title">Moving Averages</h5>
+                <table class="data-table ind-table">
+                    <thead><tr><th>Name</th><th>Value</th><th>Action</th></tr></thead>
+                    <tbody>
+                        @if (r.TryGetProperty("moving_averages", out var maArr) && maArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            @foreach (var ma in maArr.EnumerateArray())
+                            {
+                                var mname = ma.TryGetProperty("name", out var mnv) ? mnv.GetString() ?? "" : "";
+                                var mval = ma.TryGetProperty("value", out var mvv) ? mvv.GetDouble() : 0;
+                                var msig = ma.TryGetProperty("signal", out var msigv) ? msigv.GetString() ?? "NEUTRAL" : "NEUTRAL";
+                                <tr>
+                                    <td>@mname</td>
+                                    <td class="text-muted">@mval.ToString("F2")</td>
+                                    <td><span class="ind-signal @(msig == "BUY" ? "ind-buy" : msig == "SELL" ? "ind-sell" : "ind-neutral")">@msig</span></td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+            <!-- Toggle button for Level 3 -->
+            <div class="detail-toggle" @onclick="() => ToggleDetail(sym)" @onclick:stopPropagation="true">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; transition:transform 0.2s; @(expandedDetails.Contains(sym) ? "" : "transform:rotate(-90deg)")">expand_more</span>
+                @(expandedDetails.Contains(sym) ? "Hide Details" : "Show Details")
+            </div>
+        }
+    </div>
+}
+
+@if (!analysisResults.Any())
+{
+    <div class="section-card">
+        <h4 class="section-title">Analysis Results</h4>
+        <p class="text-muted" style="padding:1rem">
+            No analysis results. Click "Analyze All" to run technical analysis.
+        </p>
+    </div>
+}
+@if (analysisResults.Any() && !string.IsNullOrEmpty(analyzedAt))
+{
+    <p class="text-muted" style="padding:0.5rem; font-size:0.72rem">Last analyzed: @analyzedAt</p>
+}
+
+@code {
+    private List<WatchlistItem> watchlist = new();
+    private List<System.Text.Json.JsonElement> analysisResults = new();
+    private string? statusMsg;
+    private string? analyzedAt;
+    private bool analyzing;
+    private bool adding;
+    private bool showRegistered = false;
+    private HashSet<string> expandedCards = new();
+    private HashSet<string> expandedDetails = new();
+
+    private void ToggleCard(string sym)
+    {
+        if (!expandedCards.Remove(sym))
+            expandedCards.Add(sym);
+    }
+
+    private void ToggleDetail(string sym)
+    {
+        if (!expandedDetails.Remove(sym))
+            expandedDetails.Add(sym);
+    }
+
+    // Add form
+    private string newSymbol = "";
+    private string newCompany = "";
+    private double newAvgCost;
+    private double newQty;
+    private string newNotes = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAll();
+    }
+
+    private async Task LoadAll()
+    {
+        statusMsg = null;
+        try
+        {
+            watchlist = await Db.GetWatchlistAsync();
+            await LoadAnalysis();
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Load error: {ex.Message}";
+        }
+    }
+
+    private async Task LoadAnalysis()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis");
+            analysisResults.Clear();
+            if (resp.TryGetProperty("results", out var arr))
+            {
+                foreach (var item in arr.EnumerateArray())
+                    analysisResults.Add(item);
+            }
+            if (resp.TryGetProperty("analyzed_at", out var at))
+                analyzedAt = at.GetString();
+        }
+        catch { }
+    }
+
+    private async Task AddSymbol()
+    {
+        if (string.IsNullOrWhiteSpace(newSymbol)) return;
+        adding = true;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var payload = new
+            {
+                symbol = newSymbol.Trim().ToUpper(),
+                company_name = newCompany.Trim(),
+                avg_cost = newAvgCost,
+                qty = newQty,
+                notes = newNotes.Trim()
+            };
+            var resp = await client.PostAsJsonAsync("/watchlist", payload);
+            if (resp.IsSuccessStatusCode)
+            {
+                statusMsg = $"Added {newSymbol.ToUpper()}";
+                newSymbol = ""; newCompany = ""; newAvgCost = 0; newQty = 0; newNotes = "";
+                watchlist = await Db.GetWatchlistAsync();
+            }
+            else
+            {
+                statusMsg = $"Add failed: {await resp.Content.ReadAsStringAsync()}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { adding = false; }
+    }
+
+    private async Task RemoveSymbol(string symbol)
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.DeleteAsync($"/watchlist/{symbol}");
+            if (resp.IsSuccessStatusCode)
+            {
+                watchlist = await Db.GetWatchlistAsync();
+                statusMsg = $"Removed {symbol}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+    }
+
+    private async Task AnalyzeAll()
+    {
+        if (!watchlist.Any())
+        {
+            statusMsg = "Add symbols first";
+            return;
+        }
+        analyzing = true;
+        statusMsg = "Running analysis... this takes ~30 seconds";
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            client.Timeout = TimeSpan.FromSeconds(120);
+            await client.PostAsync("/watchlist/analyze", null);
+
+            // Poll for results
+            for (int i = 0; i < 20; i++)
+            {
+                await Task.Delay(3000);
+                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis");
+                if (resp.TryGetProperty("status", out var st) && st.GetString() == "done")
+                {
+                    await LoadAnalysis();
+                    statusMsg = $"Analysis complete: {analysisResults.Count} symbols analyzed";
+                    StateHasChanged();
+                    return;
+                }
+            }
+            statusMsg = "Analysis timed out. Refresh to check.";
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { analyzing = false; }
+    }
+}

@@ -64,17 +64,19 @@
     </div>
 </div>
 
-<!-- Equity Curve -->
+<!-- Equity Curve (TWR — 입출금 제외 순수 수익률) -->
 <div class="section-card" style="margin-top:1rem">
-    <h4 class="section-title">Equity Curve</h4>
+    <h4 class="section-title">Equity Curve (Trading Return %)</h4>
+    <p class="text-muted" style="font-size:0.7rem; margin-top:-0.5rem">순수 트레이딩 수익률 — 입출금은 제외됩니다</p>
     <div style="height:300px">
         <canvas id="perfEquityChart"></canvas>
     </div>
 </div>
 
-<!-- Drawdown Chart -->
+<!-- Drawdown Chart (수익률 기준 peak 대비 하락) -->
 <div class="section-card" style="margin-top:1rem">
-    <h4 class="section-title">Drawdown</h4>
+    <h4 class="section-title">Drawdown (%)</h4>
+    <p class="text-muted" style="font-size:0.7rem; margin-top:-0.5rem">수익률 최고점 대비 하락폭 — 입출금은 제외됩니다</p>
     <div style="height:200px">
         <canvas id="perfDDChart"></canvas>
     </div>
@@ -272,15 +274,15 @@
         if (!snapshots.Any()) return;
         try
         {
-            var labels = snapshots.Select(s => s.Time.ToString("MM/dd")).ToArray();
+            var labels = snapshots.Select(s => s.Time.ToString("MM/dd HH:mm")).ToArray();
 
-            // Equity
-            var values = snapshots.Select(s => (double)(s.TotalValueUsd ?? 0)).ToArray();
+            // Equity Curve — 수익률 기반 (TWR, 입출금 무관)
+            var cumReturns = snapshots.Select(s => (s.CumulativeReturn ?? 0) * 100).ToArray();
             var eqDatasets = new[]
             {
                 new {
-                    label = "Portfolio ($)",
-                    data = values,
+                    label = "Cumulative Return (%)",
+                    data = cumReturns,
                     borderColor = "#197fe6",
                     backgroundColor = "rgba(25,127,230,0.08)",
                     fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
@@ -289,8 +291,13 @@
             await JS.InvokeVoidAsync("chartHelper.createLine",
                 "perfEquityChart", labels, eqDatasets, (object?)null);
 
-            // Drawdown
-            var dd = snapshots.Select(s => (s.MaxDrawdown ?? 0) * 100).ToArray();
+            // Drawdown — 시점별 drawdown (입출금 무관, 수익률 peak 대비)
+            double peakReturn = 0;
+            var dd = snapshots.Select(s => {
+                var cr = s.CumulativeReturn ?? 0;
+                if (cr > peakReturn) peakReturn = cr;
+                return (cr - peakReturn) * 100;  // peak 대비 하락폭 (%)
+            }).ToArray();
             var ddDatasets = new[]
             {
                 new {

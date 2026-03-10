@@ -22,7 +22,41 @@
     <script src="https://cdn.jsdelivr.net/npm/hammerjs@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
     <script src="js/charts.js"></script>
-    <script src="_framework/blazor.web.js"></script>
+    <script src="_framework/blazor.web.js" autostart="false"></script>
+    <script>
+        // Silent auto-reconnect: 끊기면 재연결 시도 → 실패 시 조용히 페이지 리로드
+        Blazor.start({
+            circuit: {
+                reconnectionOptions: {
+                    maxRetries: 12,
+                    retryIntervalMilliseconds: (attempt) => {
+                        // 1초 → 2초 → 3초 → 5초 (빠르게 재연결 시도)
+                        const intervals = [1000, 1000, 2000, 2000, 3000, 3000, 5000, 5000, 5000, 5000, 5000, 5000];
+                        return intervals[Math.min(attempt, intervals.length - 1)];
+                    },
+                    dialogId: 'blazor-reconnect-modal'
+                }
+            }
+        });
+
+        // 재연결 실패/거부 시 조용히 리로드
+        new MutationObserver((mutations) => {
+            const modal = document.getElementById('blazor-reconnect-modal');
+            if (!modal) return;
+            const cls = modal.className;
+            if (cls.includes('components-reconnect-failed') || cls.includes('components-reconnect-rejected')) {
+                location.reload();
+            }
+        }).observe(document.getElementById('blazor-reconnect-modal'), { attributes: true, attributeFilter: ['class'] });
+
+        // unhandled error 발생 시 3초 후 조용히 리로드
+        new MutationObserver(() => {
+            const el = document.getElementById('blazor-error-ui');
+            if (el && getComputedStyle(el).display !== 'none') {
+                setTimeout(() => location.reload(), 2000);
+            }
+        }).observe(document.getElementById('blazor-error-ui'), { attributes: true, attributeFilter: ['style'] });
+    </script>
 </body>
 
 </html>

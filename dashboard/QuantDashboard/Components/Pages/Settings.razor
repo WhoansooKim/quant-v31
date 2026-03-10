@@ -120,6 +120,64 @@
     </div>
 </div>
 
+<!-- Capital Management -->
+<div class="section-card" style="margin-bottom:1rem">
+    <h4 class="section-title">CAPITAL MANAGEMENT</h4>
+    <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end; margin-bottom:1rem">
+        <div>
+            <label class="form-label">Type</label>
+            <select class="form-input form-input-sm" @bind="capitalType" style="width:120px">
+                <option value="deposit">Deposit</option>
+                <option value="withdraw">Withdraw</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label">Amount ($)</label>
+            <input type="number" class="form-input form-input-sm" @bind="capitalAmount"
+                   step="0.01" min="0.01" style="width:120px" />
+        </div>
+        <div>
+            <label class="form-label">Note</label>
+            <input type="text" class="form-input form-input-sm" @bind="capitalNote"
+                   placeholder="optional memo" style="width:180px" />
+        </div>
+        <button class="btn-sm btn-approve" @onclick="AddCapitalEvent" disabled="@capitalSaving">
+            @(capitalSaving ? "Saving..." : "Record")
+        </button>
+    </div>
+
+    @if (capitalEvents.Any())
+    {
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Amount</th>
+                        <th>Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var ev in capitalEvents)
+                    {
+                        <tr>
+                            <td class="text-muted">@ev.CreatedAt.ToString("MM/dd HH:mm")</td>
+                            <td>
+                                <span class="status-chip @(ev.EventType == "deposit" ? "status-buy" : "status-sell")">
+                                    @ev.EventType
+                                </span>
+                            </td>
+                            <td style="font-weight:600">$@ev.Amount.ToString("F2")</td>
+                            <td class="text-muted">@(ev.Note ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
 <!-- Engine Status -->
 <div class="section-card">
     <h4 class="section-title">Engine Status</h4>
@@ -193,6 +251,13 @@
     private bool modeChanging;
     private string targetMode = "";
 
+    // Capital Management
+    private string capitalType = "deposit";
+    private double capitalAmount;
+    private string capitalNote = "";
+    private bool capitalSaving;
+    private List<(long EventId, string EventType, decimal Amount, string? Note, DateTime CreatedAt)> capitalEvents = new();
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -209,6 +274,8 @@
 
             var mode = configs.FirstOrDefault(c => c.Key == "trading_mode");
             tradingMode = mode?.Value ?? "paper";
+
+            capitalEvents = await Db.GetCapitalEventsAsync();
         }
         catch { }
     }
@@ -271,6 +338,32 @@
             modeChanging = false;
             showModeConfirm = false;
         }
+    }
+
+    private async Task AddCapitalEvent()
+    {
+        if (capitalAmount <= 0) return;
+        capitalSaving = true;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var payload = new { event_type = capitalType, amount = capitalAmount, note = capitalNote };
+            var resp = await client.PostAsJsonAsync("/capital/event", payload);
+            if (resp.IsSuccessStatusCode)
+            {
+                statusMsg = $"Capital {capitalType}: ${capitalAmount:F2} recorded";
+                capitalAmount = 0;
+                capitalNote = "";
+                capitalEvents = await Db.GetCapitalEventsAsync();
+            }
+            else
+            {
+                statusMsg = $"Error: {await resp.Content.ReadAsStringAsync()}";
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { capitalSaving = false; }
     }
 
     private async Task SaveConfig(string key)
