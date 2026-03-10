@@ -598,6 +598,115 @@ window.chartHelper = {
         this._setupZoomable(ctx, chart);
     },
 
+    /** Intraday chart — Pre-market / Regular / After-hours with prev close line */
+    createIntraday: function (canvasId, labels, prices, sessions, prevClose) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        if (this._instances[canvasId]) {
+            this._instances[canvasId].destroy();
+        }
+
+        // Build segment colors: pre=teal, regular=green/red, post=orange
+        var segmentColors = [];
+        var firstRegularPrice = prevClose || prices[0];
+        for (var i = 0; i < sessions.length; i++) {
+            if (sessions[i] === 'pre') segmentColors.push('rgba(0,188,212,0.8)');
+            else if (sessions[i] === 'post') segmentColors.push('rgba(255,152,0,0.8)');
+            else segmentColors.push(prices[i] >= firstRegularPrice ? 'rgba(34,197,94,0.8)' : 'rgba(239,68,68,0.8)');
+        }
+
+        // Build fill colors (lighter)
+        var fillColors = sessions.map(function(s) {
+            if (s === 'pre') return 'rgba(0,188,212,0.05)';
+            if (s === 'post') return 'rgba(255,152,0,0.05)';
+            return 'rgba(34,197,94,0.05)';
+        });
+
+        // Prev close annotation line data
+        var prevCloseData = prevClose ? labels.map(function() { return prevClose; }) : null;
+
+        var datasets = [{
+            data: prices,
+            borderColor: function(ctx2) {
+                var i = ctx2.p0DataIndex;
+                return segmentColors[i] || 'rgba(34,197,94,0.8)';
+            },
+            backgroundColor: 'rgba(34,197,94,0.06)',
+            fill: true,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.1,
+            segment: {
+                borderColor: function(ctx2) {
+                    return segmentColors[ctx2.p0DataIndex] || 'rgba(34,197,94,0.8)';
+                }
+            }
+        }];
+
+        if (prevCloseData) {
+            datasets.push({
+                data: prevCloseData,
+                borderColor: 'rgba(255,255,255,0.25)',
+                borderDash: [4, 3],
+                borderWidth: 1,
+                pointRadius: 0,
+                fill: false,
+            });
+        }
+
+        // Reduce label density
+        var step = Math.max(1, Math.floor(labels.length / 8));
+        var tickLabels = labels.map(function(l, i) { return i % step === 0 ? l : ''; });
+
+        var chart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(c) {
+                                if (c.datasetIndex === 0) {
+                                    var s = sessions[c.dataIndex] || '';
+                                    var label = s === 'pre' ? 'Pre' : s === 'post' ? 'After' : 'Regular';
+                                    return label + ': $' + c.raw.toFixed(2);
+                                }
+                                return 'Prev Close: $' + c.raw.toFixed(2);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            callback: function(val, idx) { return tickLabels[idx] || ''; },
+                            font: { size: 9 },
+                            color: 'rgba(255,255,255,0.4)',
+                            maxRotation: 0,
+                        },
+                        grid: { display: false },
+                    },
+                    y: {
+                        position: 'right',
+                        ticks: {
+                            font: { size: 9 },
+                            color: 'rgba(255,255,255,0.5)',
+                            callback: function(v) { return '$' + v.toFixed(1); },
+                        },
+                        grid: { color: 'rgba(255,255,255,0.06)' },
+                    }
+                }
+            }
+        });
+        this._instances[canvasId] = chart;
+    },
+
     destroy: function (canvasId) {
         if (this._instances[canvasId]) {
             this._instances[canvasId].destroy();

@@ -121,6 +121,18 @@ class BacktestRequest(BaseModel):
     position_pct: float = 0.05
 
 
+class WatchlistBacktestRequest(BaseModel):
+    start_date: date = date(2025, 1, 1)
+    end_date: date = date(2025, 12, 31)
+    initial_capital: float = 1000.0
+    position_pct: float = 0.20
+    max_positions: int = 3
+    buy_threshold: float = 0.12
+    sell_threshold: float = -0.12
+    trailing_stop_pct: float = 0.05
+    max_hold_days: int = 30
+
+
 class OptimizeRequest(BaseModel):
     start_date: date = date(2022, 1, 1)
     end_date: date = date(2025, 12, 31)
@@ -1624,6 +1636,127 @@ async def get_watchlist_analysis():
     result = cache.get_json("watchlist_analysis")
     if not result:
         return {"status": "no_results", "message": "Run POST /watchlist/analyze first"}
+    return result
+
+
+@app.get("/watchlist/intraday/{symbol}")
+async def get_watchlist_intraday(symbol: str):
+    """워치리스트 종목 인트라데이 차트 데이터 (프리마켓+장중+애프터)."""
+    import yfinance as yf
+    try:
+        tkr = yf.Ticker(symbol)
+        # 1d 5분봉 — 프리마켓/애프터마켓 포함
+        df = tkr.history(period="1d", interval="5m", prepost=True)
+        if df.empty:
+            # 장 마감 상태이면 2일치 시도
+            df = tkr.history(period="2d", interval="5m", prepost=True)
+        if df.empty:
+            return {"symbol": symbol, "points": [], "prev_close": None}
+
+        # 전일 종가 (기준선)
+        info = tkr.info
+        prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
+
+        # 오늘 날짜의 데이터만
+        if len(df) > 0:
+            last_date = df.index[-1].date()
+            df_today = df[df.index.date == last_date]
+            if df_today.empty:
+                df_today = df
+
+        points = []
+        for idx, row in df_today.iterrows():
+            ts = idx.tz_convert("US/Eastern") if idx.tzinfo else idx
+            hour = ts.hour
+            minute = ts.minute
+            t = hour * 60 + minute  # minutes from midnight
+
+            # Session: pre(4:00-9:29), regular(9:30-15:59), post(16:00-20:00)
+            if t < 570:        # before 9:30
+                session = "pre"
+            elif t < 960:      # 9:30 - 15:59
+                session = "regular"
+            else:
+                session = "post"
+
+            points.append({
+                "time": ts.strftime("%H:%M"),
+                "price": round(float(row["Close"]), 2),
+                "session": session,
+            })
+
+        return {
+            "symbol": symbol,
+            "prev_close": round(float(prev_close), 2) if prev_close else None,
+            "points": points,
+        }
+    except Exception as e:
+        logger.error(f"Intraday fetch failed for {symbol}: {e}")
+        return {"symbol": symbol, "points": [], "prev_close": None, "error": str(e)}
+
+
+@app.post("/watchlist/backtest")
+async def run_watchlist_backtest(req: WatchlistBacktestRequest, bg: BackgroundTasks):
+    """워치리스트 종목 가중 스코어링 백테스트."""
+    items = pg.get_watchlist()
+    if not items:
+        return {"status": "error", "message": "No watchlist symbols"}
+    symbols = [w["symbol"] for w in items]
+    cache.set_json("watchlist_backtest", {"status": "running", "symbols": symbols}, ttl=600)
+    bg.add_task(_run_watchlist_backtest, req, symbols)
+    return {"status": "running", "symbols": symbols}
+
+
+def _run_watchlist_backtest(req: WatchlistBacktestRequest, symbols: list[str]):
+    from engine_v4.backtest.watchlist_backtest import WatchlistBacktester, WatchlistBacktestParams
+    bt = WatchlistBacktester()
+    params = WatchlistBacktestParams(
+        start_date=req.start_date,
+        end_date=req.end_date,
+        initial_capital=req.initial_capital,
+        position_pct=req.position_pct,
+        max_positions=req.max_positions,
+        buy_threshold=req.buy_threshold,
+        sell_threshold=req.sell_threshold,
+        trailing_stop_pct=req.trailing_stop_pct,
+        max_hold_days=req.max_hold_days,
+    )
+    result = bt.run(symbols, params)
+    cache.set_json("watchlist_backtest", {
+        "status": "done",
+        "symbols": symbols,
+        "params": {
+            "start_date": str(req.start_date),
+            "end_date": str(req.end_date),
+            "initial_capital": req.initial_capital,
+            "position_pct": req.position_pct,
+            "max_positions": req.max_positions,
+            "buy_threshold": req.buy_threshold,
+            "sell_threshold": req.sell_threshold,
+            "trailing_stop_pct": req.trailing_stop_pct,
+            "max_hold_days": req.max_hold_days,
+        },
+        "total_return": result.total_return,
+        "cagr": result.cagr,
+        "max_drawdown": result.max_drawdown,
+        "sharpe_ratio": result.sharpe_ratio,
+        "win_rate": result.win_rate,
+        "total_trades": result.total_trades,
+        "profit_factor": result.profit_factor,
+        "avg_hold_days": result.avg_hold_days,
+        "final_value": result.final_value,
+        "equity_curve": result.equity_curve,
+        "trades_log": result.trades_log,
+        "score_series": result.score_series,
+    }, ttl=86400)
+
+
+@app.get("/watchlist/backtest")
+async def get_watchlist_backtest():
+    """워치리스트 백테스트 결과 조회."""
+    result = cache.get_json("watchlist_backtest")
+    if not result:
+        return {"status": "no_results", "message": "Run POST /watchlist/backtest first"}
     return result
 
 

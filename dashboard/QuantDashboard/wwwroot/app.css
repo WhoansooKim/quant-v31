@@ -111,7 +111,17 @@ a:hover { color: var(--primary-h); }
     transition: width 0.25s ease;
 }
 
-/* ── Sidebar Collapse ── */
+/* ── Sidebar Collapse (flash 방지: HTML에 먼저 적용) ── */
+.sidebar-init-collapsed .sidebar {
+    width: 60px !important;
+}
+.sidebar-init-collapsed .brand-text,
+.sidebar-init-collapsed .nav-text,
+.sidebar-init-collapsed .nav-divider::after,
+.sidebar-init-collapsed .nav-user-logout {
+    display: none;
+}
+
 .sidebar-collapsed .sidebar {
     width: 60px !important;
 }
@@ -124,11 +134,18 @@ a:hover { color: var(--primary-h); }
 
 .sidebar-collapsed .nav-user-section {
     justify-content: center;
-    padding: 0.5rem 0;
+    padding: 0.5rem 10px;
 }
 
 .sidebar-collapsed .nav-user-avatar {
-    margin-right: 0;
+    margin: 0 auto;
+    width: 24px;
+    height: 24px;
+    font-size: 0.65rem;
+}
+
+.sidebar-collapsed .nav-user-logout {
+    display: none;
 }
 
 .sidebar-collapsed .nav-item .nav-link {
@@ -141,12 +158,8 @@ a:hover { color: var(--primary-h); }
     margin-right: 0;
 }
 
-.sidebar-collapsed .top-row .container-fluid {
-    justify-content: center;
-}
-
 .sidebar-collapsed .brand-icon {
-    margin-right: 0;
+    display: none;
 }
 
 .sidebar-collapsed .nav-badge {
@@ -180,9 +193,14 @@ a:hover { color: var(--primary-h); }
 }
 
 .sidebar-collapsed .sidebar-toggle {
-    position: absolute;
-    right: 4px;
-    top: 12px;
+    margin: 0 auto;
+}
+
+.sidebar-collapsed .top-row .container-fluid {
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 0;
 }
 
 /* Ensure main content adjusts */
@@ -2208,6 +2226,19 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
 .ind-neutral { background: rgba(156,163,175,0.1); color: #9ca3af; }
 
 /* ── Summary Gauge (Investing.com style) ── */
+/* Watchlist Level 2: Score + Chart side-by-side */
+.wl-level2-row {
+    display: flex; gap: 0.75rem; margin-bottom: 0.5rem;
+}
+.wl-level2-left {
+    flex: 1; min-width: 0;
+}
+.wl-level2-right {
+    flex: 1; min-width: 0; min-height: 180px;
+    background: var(--s1); border: 1px solid var(--bd); border-radius: 8px;
+    padding: 0.4rem; display: flex; align-items: center; justify-content: center;
+}
+
 .summary-gauge {
     background: var(--s1); border: 1px solid var(--bd); border-radius: 8px;
     padding: 0.5rem 0.75rem; margin-bottom: 0.5rem;

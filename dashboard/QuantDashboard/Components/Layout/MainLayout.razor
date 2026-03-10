@@ -2,9 +2,9 @@
 @inject SwingService SwingSvc
 @inject IHttpClientFactory HttpFactory
 
-<div class="page dark-theme @(sidebarCollapsed ? "sidebar-collapsed" : "")">
+<div class="page dark-theme" id="page-root">
     <div class="sidebar">
-        <NavMenu Collapsed="@sidebarCollapsed" CollapsedChanged="@(v => { sidebarCollapsed = v; StateHasChanged(); })" />
+        <NavMenu />
     </div>
 
     <main>
@@ -54,7 +54,6 @@
 
 @code {
     private List<TickerBarItem> tickerData = new();
-    private bool sidebarCollapsed;
     private ErrorBoundary? errorBoundary;
 
     private void RecoverSilently()

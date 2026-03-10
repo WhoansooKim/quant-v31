@@ -2,6 +2,7 @@
 @attribute [Authorize]
 @inject IHttpClientFactory HttpFactory
 @inject SwingService Db
+@inject IJSRuntime JS
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
 <PageTitle>Swing V4 - Watchlist</PageTitle>
@@ -24,8 +25,396 @@
     <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
 }
 
-<!-- Add Symbol Form -->
-<div class="section-card" style="margin-bottom:1rem">
+<!-- ① Analysis Results (최상단) -->
+@if (analysisResults.Any())
+{
+    @foreach (var r in analysisResults)
+    {
+        var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
+        var dir = r.TryGetProperty("direction", out var dv) ? dv.GetString() ?? "NEUTRAL" : "NEUTRAL";
+        var price = r.TryGetProperty("current_price", out var pv2) ? pv2.GetDouble() : 0;
+        var pnl = r.TryGetProperty("pnl_pct", out var pnlv) && pnlv.ValueKind != System.Text.Json.JsonValueKind.Null ? (double?)pnlv.GetDouble() : null;
+        var target = r.TryGetProperty("target_price", out var tv) ? tv.GetDouble() : 0;
+        var stop = r.TryGetProperty("stop_price", out var stv) ? stv.GetDouble() : 0;
+        var oscBuy = r.TryGetProperty("osc_buy", out var ob) ? ob.GetInt32() : 0;
+        var oscSell = r.TryGetProperty("osc_sell", out var os2) ? os2.GetInt32() : 0;
+        var oscNeutral = r.TryGetProperty("osc_neutral", out var on) ? on.GetInt32() : 0;
+        var maBuy = r.TryGetProperty("ma_buy", out var mb) ? mb.GetInt32() : 0;
+        var maSell = r.TryGetProperty("ma_sell", out var ms) ? ms.GetInt32() : 0;
+        var totalBuy = r.TryGetProperty("total_buy", out var tb) ? tb.GetInt32() : 0;
+        var totalSell = r.TryGetProperty("total_sell", out var ts) ? ts.GetInt32() : 0;
+        var totalNeutral = r.TryGetProperty("total_neutral", out var tn) ? tn.GetInt32() : 0;
+        var dirLabel = dir switch { "STRONG_BUY" => "Strong Buy", "STRONG_SELL" => "Strong Sell", "BUY" => "Buy", "SELL" => "Sell", _ => "Neutral" };
+        var dirCss = dir.Contains("BUY") ? "summary-buy" : dir.Contains("SELL") ? "summary-sell" : "summary-neutral";
+        var regime = r.TryGetProperty("regime", out var rv) ? rv.GetString() ?? "MIXED" : "MIXED";
+        var volFactor = r.TryGetProperty("vol_factor", out var vfv) ? vfv.GetDouble() : 1.0;
+        var wScore = r.TryGetProperty("weighted_score", out var wsv) ? wsv.GetDouble() : 0;
+        var volRatio = r.TryGetProperty("vol_ratio", out var vrv) ? vrv.GetDouble() : 1.0;
+        double catTrend = 0, catMom = 0, catMacd = 0, catMr = 0, catVol = 0;
+        if (r.TryGetProperty("category_scores", out var cs))
+        {
+            catTrend = cs.TryGetProperty("trend", out var ct) ? ct.GetDouble() : 0;
+            catMom = cs.TryGetProperty("momentum", out var cm) ? cm.GetDouble() : 0;
+            catMacd = cs.TryGetProperty("macd", out var cmd) ? cmd.GetDouble() : 0;
+            catMr = cs.TryGetProperty("mean_reversion", out var cmr) ? cmr.GetDouble() : 0;
+            catVol = cs.TryGetProperty("volume", out var cv) ? cv.GetDouble() : 0;
+        }
+        double wTrend = 0.30, wMom = 0.25, wMacd = 0.20, wMr = 0.15, wVol = 0.10;
+        if (r.TryGetProperty("category_weights", out var cw))
+        {
+            wTrend = cw.TryGetProperty("trend", out var cwt) ? cwt.GetDouble() : 0.30;
+            wMom = cw.TryGetProperty("momentum", out var cwm) ? cwm.GetDouble() : 0.25;
+            wMacd = cw.TryGetProperty("macd", out var cwmd) ? cwmd.GetDouble() : 0.20;
+            wMr = cw.TryGetProperty("mean_reversion", out var cwmr) ? cwmr.GetDouble() : 0.15;
+            wVol = cw.TryGetProperty("volume", out var cwv) ? cwv.GetDouble() : 0.10;
+        }
+
+        <div class="section-card analysis-card" style="margin-bottom:0.3rem">
+            <!-- Level 1: Compact Header -->
+            <div class="analysis-compact-header" @onclick="() => ToggleCard(sym)">
+                <div class="compact-left">
+                    <span class="material-symbols-outlined collapse-chevron @(expandedCards.Contains(sym) ? "" : "collapsed")"
+                          style="font-size:16px; vertical-align:middle; transition:transform 0.2s">expand_more</span>
+                    <a href="https://edition.cnn.com/markets/stocks/@sym" target="_blank" rel="noopener"
+                       @onclick:stopPropagation="true"
+                       style="font-weight:700; font-size:1.05rem; color:var(--primary); text-decoration:none"
+                       title="CNN Markets — @sym">@sym</a>
+                    @if (r.TryGetProperty("company_name", out var cn) && cn.GetString() is string cname && cname.Length > 0)
+                    {
+                        <span class="text-muted" style="font-size:0.75rem; margin-left:0.3rem">@cname</span>
+                    }
+                    <span style="font-size:0.88rem; margin-left:0.5rem; font-weight:600">$@price.ToString("F2")</span>
+                    @if (pnl.HasValue)
+                    {
+                        <span class="@(pnl > 0 ? "text-green" : "text-red")" style="font-size:0.8rem; margin-left:0.3rem; font-weight:600">
+                            @(pnl > 0 ? "+" : "")@pnl.Value.ToString("F2")%
+                        </span>
+                    }
+                </div>
+                <div class="compact-right">
+                    <span class="compact-verdict @dirCss">@dirLabel</span>
+                    <span class="compact-score" style="color:var(--text-secondary)">@(wScore >= 0 ? "+" : "")@wScore.ToString("F3")</span>
+                </div>
+            </div>
+
+            <!-- Level 2: Summary Gauge + Category Breakdown -->
+            @if (expandedCards.Contains(sym))
+            {
+                <div class="ind-header" style="padding-top:0.3rem">
+                    <div></div>
+                    <span class="text-muted" style="font-size:0.72rem">Target $@target.ToString("F2") / Stop $@stop.ToString("F2")</span>
+                </div>
+
+                <div class="wl-level2-row">
+                    <!-- LEFT: Summary Gauge (50%) -->
+                    <div class="wl-level2-left">
+                        <div class="summary-gauge" style="margin:0">
+                            <div class="gauge-sections">
+                                <div class="gauge-section" style="flex:1">
+                                    <div class="gauge-label">Oscillators</div>
+                                    <div class="gauge-counts">
+                                        <span class="text-green">@oscBuy</span> /
+                                        <span class="text-muted">@oscNeutral</span> /
+                                        <span class="text-red">@oscSell</span>
+                                    </div>
+                                </div>
+                                <div class="gauge-section gauge-total" style="flex:1.8">
+                                    <div class="gauge-label">Weighted Score</div>
+                                    <div class="gauge-verdict gauge-verdict-main @dirCss" style="font-size:1rem">@dirLabel</div>
+                                    <div style="font-size:0.78rem; font-weight:600; color:var(--text-primary); margin-top:0.1rem">
+                                        @(wScore >= 0 ? "+" : "")@wScore.ToString("F3")
+                                    </div>
+                                    <div style="display:flex; gap:0.4rem; font-size:0.62rem; margin-top:0.15rem; justify-content:center">
+                                        <span class="@(regime == "TRENDING" ? "text-green" : regime == "SIDEWAYS" ? "text-yellow" : "text-muted")" style="font-weight:600">@regime</span>
+                                        <span class="text-muted">|</span>
+                                        <span class="@(volFactor >= 1.0 ? "text-green" : "text-yellow")" style="font-weight:600">Vol ×@volRatio.ToString("F1")</span>
+                                    </div>
+                                </div>
+                                <div class="gauge-section" style="flex:1">
+                                    <div class="gauge-label">Moving Avgs</div>
+                                    <div class="gauge-counts">
+                                        <span class="text-green">@maBuy</span> /
+                                        <span class="text-muted">0</span> /
+                                        <span class="text-red">@maSell</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="category-breakdown">
+                                @{
+                                    var cats = new (string Name, double Score, double Weight)[] {
+                                        ("Trend", catTrend, wTrend),
+                                        ("Momentum", catMom, wMom),
+                                        ("MACD", catMacd, wMacd),
+                                        ("MeanRev", catMr, wMr),
+                                        ("Volume", catVol, wVol),
+                                    };
+                                }
+                                @foreach (var c in cats)
+                                {
+                                    var pct = (int)Math.Round(Math.Abs(c.Score) * 50);
+                                    var catCss = c.Score > 0.1 ? "cat-buy" : c.Score < -0.1 ? "cat-sell" : "cat-neutral";
+                                    <div class="cat-row">
+                                        <span class="cat-label">@c.Name <span class="text-muted">(@((int)(c.Weight*100))%)</span></span>
+                                        <div class="cat-bar-track">
+                                            <div class="cat-bar-center"></div>
+                                            @if (c.Score >= 0)
+                                            {
+                                                <div class="cat-bar-fill cat-bar-buy" style="left:50%; width:@(pct)%"></div>
+                                            }
+                                            else
+                                            {
+                                                <div class="cat-bar-fill cat-bar-sell" style="right:50%; width:@(pct)%"></div>
+                                            }
+                                        </div>
+                                        <span class="cat-val @catCss">@(c.Score >= 0 ? "+" : "")@c.Score.ToString("F2")</span>
+                                    </div>
+                                }
+                            </div>
+
+                            @{ var barBuyPct = totalBuy + totalSell > 0 ? (int)(100.0 * totalBuy / (totalBuy + totalSell + totalNeutral)) : 50; }
+                            <div class="summary-bar">
+                                <div class="summary-bar-buy" style="width:@(barBuyPct)%"></div>
+                            </div>
+                            <div class="summary-bar-labels">
+                                <span class="text-green" style="font-size:0.7rem">Buy @totalBuy</span>
+                                <span class="text-muted" style="font-size:0.7rem">Neutral @totalNeutral</span>
+                                <span class="text-red" style="font-size:0.7rem">Sell @totalSell</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: Intraday Chart (50%) -->
+                    <div class="wl-level2-right">
+                        @if (!intradayLoaded.Contains(sym))
+                        {
+                            <span class="text-muted" style="font-size:0.8rem">Loading...</span>
+                        }
+                        <canvas id="intraday-@sym" style="width:100%; height:100%; @(!intradayLoaded.Contains(sym) ? "display:none" : "")"></canvas>
+                    </div>
+                </div>
+
+                <!-- Level 3: Oscillators + Moving Averages detail tables -->
+                <div class="ind-two-col" style="@(expandedDetails.Contains(sym) ? "" : "display:none")">
+                    <div class="ind-col">
+                        <h5 class="ind-col-title">Oscillators</h5>
+                        <table class="data-table ind-table">
+                            <thead><tr><th>Name</th><th>Value</th><th>Action</th></tr></thead>
+                            <tbody>
+                                @if (r.TryGetProperty("indicators", out var indArr) && indArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                {
+                                    @foreach (var ind in indArr.EnumerateArray())
+                                    {
+                                        var iname = ind.TryGetProperty("name", out var nv) ? nv.GetString() ?? "" : "";
+                                        var ival = ind.TryGetProperty("value", out var vv) ? vv.GetDouble() : 0;
+                                        var isig = ind.TryGetProperty("signal", out var sigv) ? sigv.GetString() ?? "NEUTRAL" : "NEUTRAL";
+                                        <tr>
+                                            <td>@iname</td>
+                                            <td class="text-muted">@ival.ToString(iname.Contains("ATR") ? "F2" : iname.Contains("MACD") || iname.Contains("Bull") || iname.Contains("ROC") ? "F2" : "F1")</td>
+                                            <td><span class="ind-signal @(isig == "BUY" ? "ind-buy" : isig == "SELL" ? "ind-sell" : "ind-neutral")">@isig</span></td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="ind-col">
+                        <h5 class="ind-col-title">Moving Averages</h5>
+                        <table class="data-table ind-table">
+                            <thead><tr><th>Name</th><th>Value</th><th>Action</th></tr></thead>
+                            <tbody>
+                                @if (r.TryGetProperty("moving_averages", out var maArr) && maArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                {
+                                    @foreach (var ma in maArr.EnumerateArray())
+                                    {
+                                        var mname = ma.TryGetProperty("name", out var mnv) ? mnv.GetString() ?? "" : "";
+                                        var mval = ma.TryGetProperty("value", out var mvv) ? mvv.GetDouble() : 0;
+                                        var msig = ma.TryGetProperty("signal", out var msigv) ? msigv.GetString() ?? "NEUTRAL" : "NEUTRAL";
+                                        <tr>
+                                            <td>@mname</td>
+                                            <td class="text-muted">@mval.ToString("F2")</td>
+                                            <td><span class="ind-signal @(msig == "BUY" ? "ind-buy" : msig == "SELL" ? "ind-sell" : "ind-neutral")">@msig</span></td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="detail-toggle" @onclick="() => ToggleDetail(sym)" @onclick:stopPropagation="true">
+                    <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; transition:transform 0.2s; @(expandedDetails.Contains(sym) ? "" : "transform:rotate(-90deg)")">expand_more</span>
+                    @(expandedDetails.Contains(sym) ? "Hide Details" : "Show Details")
+                </div>
+            }
+        </div>
+    }
+    @if (!string.IsNullOrEmpty(analyzedAt))
+    {
+        <p class="text-muted" style="padding:0.5rem; font-size:0.72rem">Last analyzed: @analyzedAt</p>
+    }
+}
+else
+{
+    <div class="section-card">
+        <h4 class="section-title">Analysis Results</h4>
+        <p class="text-muted" style="padding:1rem">
+            No analysis results. Click "Analyze All" to run technical analysis.
+        </p>
+    </div>
+}
+
+<!-- ② Watchlist Backtest -->
+<div class="section-card" style="margin-bottom:1rem; margin-top:1rem">
+    <h4 class="section-title collapsible-title" @onclick="() => showBacktest = !showBacktest" style="cursor:pointer">
+        <span class="material-symbols-outlined collapse-chevron @(showBacktest ? "" : "collapsed")"
+              style="font-size:18px; vertical-align:middle; transition:transform 0.2s">expand_more</span>
+        Signal Backtest
+    </h4>
+    @if (showBacktest)
+    {
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.5rem">
+            <div>
+                <label class="form-label">From</label>
+                <input type="date" class="form-input form-input-sm" @bind="btFrom" style="width:140px" />
+            </div>
+            <div>
+                <label class="form-label">To</label>
+                <input type="date" class="form-input form-input-sm" @bind="btTo" style="width:140px" />
+            </div>
+            <div>
+                <label class="form-label">Capital ($)</label>
+                <input type="number" class="form-input form-input-sm" @bind="btCapital" step="100" style="width:100px" />
+            </div>
+            <div>
+                <label class="form-label">Buy ≥</label>
+                <input type="number" class="form-input form-input-sm" @bind="btBuyThreshold" step="0.01" style="width:70px" />
+            </div>
+            <div>
+                <label class="form-label">Sell ≤</label>
+                <input type="number" class="form-input form-input-sm" @bind="btSellThreshold" step="0.01" style="width:70px" />
+            </div>
+            <div>
+                <label class="form-label">Max Hold</label>
+                <input type="number" class="form-input form-input-sm" @bind="btMaxHold" style="width:60px" />
+            </div>
+            <button class="btn-sm btn-approve" @onclick="RunBacktest" disabled="@btRunning">
+                @(btRunning ? "Running..." : "Run Backtest")
+            </button>
+        </div>
+
+        @if (!string.IsNullOrEmpty(btStatus))
+        {
+            <div class="alert-info" style="margin:0.5rem 0; font-size:0.82rem">@btStatus</div>
+        }
+
+        @if (btResult != null && btResult.Value.TryGetProperty("status", out var bts) && bts.GetString() == "done")
+        {
+            <!-- KPI Cards -->
+            <div class="kpi-row" style="margin-top:0.5rem">
+                @{
+                    var trr = btResult.Value.TryGetProperty("total_return", out var trv) ? trv.GetDouble() : 0;
+                    var cagr = btResult.Value.TryGetProperty("cagr", out var cv) ? cv.GetDouble() : 0;
+                    var mdd = btResult.Value.TryGetProperty("max_drawdown", out var mdv) ? mdv.GetDouble() : 0;
+                    var sharpe = btResult.Value.TryGetProperty("sharpe_ratio", out var shv) ? shv.GetDouble() : 0;
+                    var winRate = btResult.Value.TryGetProperty("win_rate", out var wrv) ? wrv.GetDouble() : 0;
+                    var pf = btResult.Value.TryGetProperty("profit_factor", out var pfv) ? pfv.GetDouble() : 0;
+                    var totalTrades = btResult.Value.TryGetProperty("total_trades", out var ttv) ? ttv.GetInt32() : 0;
+                    var avgHold = btResult.Value.TryGetProperty("avg_hold_days", out var ahv) ? ahv.GetDouble() : 0;
+                    var finalVal = btResult.Value.TryGetProperty("final_value", out var fvv) ? fvv.GetDouble() : 0;
+                }
+                <div class="kpi-card">
+                    <div class="kpi-label">TOTAL RETURN</div>
+                    <div class="kpi-value @(trr >= 0 ? "text-green" : "text-red")">@(trr >= 0 ? "+" : "")@trr.ToString("F1")%</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">CAGR</div>
+                    <div class="kpi-value @(cagr >= 0 ? "text-green" : "text-red")">@(cagr >= 0 ? "+" : "")@cagr.ToString("F1")%</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">MAX DRAWDOWN</div>
+                    <div class="kpi-value text-red">@mdd.ToString("F1")%</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">SHARPE</div>
+                    <div class="kpi-value">@sharpe.ToString("F2")</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">WIN RATE</div>
+                    <div class="kpi-value">@winRate.ToString("F1")%</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">PROFIT FACTOR</div>
+                    <div class="kpi-value">@pf.ToString("F2")</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">TRADES</div>
+                    <div class="kpi-value">@totalTrades</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">AVG HOLD</div>
+                    <div class="kpi-value">@avgHold.ToString("F0")d</div>
+                </div>
+            </div>
+
+            <div style="font-size:0.78rem; color:var(--text-secondary); margin:0.3rem 0">
+                Final Value: <strong>$@finalVal.ToString("F2")</strong>
+            </div>
+
+            <!-- Equity Curve Chart -->
+            <div style="margin-top:0.5rem">
+                <canvas id="wlBacktestChart" style="width:100%; height:200px"></canvas>
+            </div>
+
+            <!-- Trades Log -->
+            @if (btResult.Value.TryGetProperty("trades_log", out var tlog) && tlog.GetArrayLength() > 0)
+            {
+                <div style="margin-top:0.5rem">
+                    <h5 class="section-title" style="font-size:0.82rem; margin-bottom:0.3rem">Trade Log (@tlog.GetArrayLength())</h5>
+                    <div class="table-responsive" style="max-height:300px; overflow-y:auto">
+                        <table class="data-table" style="font-size:0.75rem">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Entry</th>
+                                    <th>Exit</th>
+                                    <th>Entry $</th>
+                                    <th>Exit $</th>
+                                    <th>Qty</th>
+                                    <th>P&L</th>
+                                    <th>P&L %</th>
+                                    <th>Days</th>
+                                    <th>Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var t in tlog.EnumerateArray())
+                                {
+                                    var tPnl = t.TryGetProperty("pnl", out var tp) ? tp.GetDouble() : 0;
+                                    var tPnlPct = t.TryGetProperty("pnl_pct", out var tpp) ? tpp.GetDouble() : 0;
+                                    <tr>
+                                        <td style="font-weight:600">@(t.TryGetProperty("symbol", out var ts) ? ts.GetString() : "")</td>
+                                        <td class="text-muted">@(t.TryGetProperty("entry_date", out var ted) ? ted.GetString()?[5..] : "")</td>
+                                        <td class="text-muted">@(t.TryGetProperty("exit_date", out var txd) ? txd.GetString()?[5..] : "")</td>
+                                        <td>$@(t.TryGetProperty("entry_price", out var tep) ? tep.GetDouble().ToString("F2") : "--")</td>
+                                        <td>$@(t.TryGetProperty("exit_price", out var txp) ? txp.GetDouble().ToString("F2") : "--")</td>
+                                        <td>@(t.TryGetProperty("qty", out var tq) ? tq.GetInt32().ToString() : "--")</td>
+                                        <td class="@(tPnl >= 0 ? "text-green" : "text-red")">@(tPnl >= 0 ? "+" : "")$@tPnl.ToString("F2")</td>
+                                        <td class="@(tPnlPct >= 0 ? "text-green" : "text-red")">@(tPnlPct >= 0 ? "+" : "")@tPnlPct.ToString("F1")%</td>
+                                        <td>@(t.TryGetProperty("hold_days", out var thd) ? thd.GetInt32().ToString() : "--")</td>
+                                        <td class="text-muted" style="font-size:0.68rem">@(t.TryGetProperty("reason", out var trn) ? trn.GetString() : "")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            }
+        }
+    }
+</div>
+
+<!-- ③ Add Symbol Form -->
+<div class="section-card" style="margin-bottom:1rem; margin-top:1rem">
     <h4 class="section-title">Add Symbol</h4>
     <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end">
         <div>
@@ -59,7 +448,7 @@
     </div>
 </div>
 
-<!-- Watchlist Table (접기/펼치기) -->
+<!-- ④ Registered Symbols (접기/펼치기) -->
 <div class="section-card" style="margin-bottom:1rem">
     <h4 class="section-title collapsible-title" @onclick="() => showRegistered = !showRegistered" style="cursor:pointer">
         <span class="material-symbols-outlined collapse-chevron @(showRegistered ? "" : "collapsed")"
@@ -89,7 +478,7 @@
                         @foreach (var w in watchlist)
                         {
                             <tr>
-                                <td style="font-weight:700">@w.Symbol</td>
+                                <td style="font-weight:700"><a href="https://edition.cnn.com/markets/stocks/@w.Symbol" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:none">@w.Symbol</a></td>
                                 <td class="text-muted">@(w.CompanyName ?? "")</td>
                                 <td>@(w.AvgCost > 0 ? $"${w.AvgCost:F2}" : "--")</td>
                                 <td>@(w.Qty > 0 ? w.Qty.ToString("F2") : "--")</td>
@@ -113,237 +502,6 @@
     }
 </div>
 
-<!-- Analysis Results — Investing.com Style -->
-@foreach (var r in analysisResults)
-{
-    var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
-    var dir = r.TryGetProperty("direction", out var dv) ? dv.GetString() ?? "NEUTRAL" : "NEUTRAL";
-    var price = r.TryGetProperty("current_price", out var pv2) ? pv2.GetDouble() : 0;
-    var pnl = r.TryGetProperty("pnl_pct", out var pnlv) && pnlv.ValueKind != System.Text.Json.JsonValueKind.Null ? (double?)pnlv.GetDouble() : null;
-    var target = r.TryGetProperty("target_price", out var tv) ? tv.GetDouble() : 0;
-    var stop = r.TryGetProperty("stop_price", out var stv) ? stv.GetDouble() : 0;
-    var oscBuy = r.TryGetProperty("osc_buy", out var ob) ? ob.GetInt32() : 0;
-    var oscSell = r.TryGetProperty("osc_sell", out var os2) ? os2.GetInt32() : 0;
-    var oscNeutral = r.TryGetProperty("osc_neutral", out var on) ? on.GetInt32() : 0;
-    var maBuy = r.TryGetProperty("ma_buy", out var mb) ? mb.GetInt32() : 0;
-    var maSell = r.TryGetProperty("ma_sell", out var ms) ? ms.GetInt32() : 0;
-    var totalBuy = r.TryGetProperty("total_buy", out var tb) ? tb.GetInt32() : 0;
-    var totalSell = r.TryGetProperty("total_sell", out var ts) ? ts.GetInt32() : 0;
-    var totalNeutral = r.TryGetProperty("total_neutral", out var tn) ? tn.GetInt32() : 0;
-    var dirLabel = dir switch { "STRONG_BUY" => "Strong Buy", "STRONG_SELL" => "Strong Sell", "BUY" => "Buy", "SELL" => "Sell", _ => "Neutral" };
-    var dirCss = dir.Contains("BUY") ? "summary-buy" : dir.Contains("SELL") ? "summary-sell" : "summary-neutral";
-    var regime = r.TryGetProperty("regime", out var rv) ? rv.GetString() ?? "MIXED" : "MIXED";
-    var volFactor = r.TryGetProperty("vol_factor", out var vfv) ? vfv.GetDouble() : 1.0;
-    var wScore = r.TryGetProperty("weighted_score", out var wsv) ? wsv.GetDouble() : 0;
-    var volRatio = r.TryGetProperty("vol_ratio", out var vrv) ? vrv.GetDouble() : 1.0;
-    // Category scores
-    double catTrend = 0, catMom = 0, catMacd = 0, catMr = 0, catVol = 0;
-    if (r.TryGetProperty("category_scores", out var cs))
-    {
-        catTrend = cs.TryGetProperty("trend", out var ct) ? ct.GetDouble() : 0;
-        catMom = cs.TryGetProperty("momentum", out var cm) ? cm.GetDouble() : 0;
-        catMacd = cs.TryGetProperty("macd", out var cmd) ? cmd.GetDouble() : 0;
-        catMr = cs.TryGetProperty("mean_reversion", out var cmr) ? cmr.GetDouble() : 0;
-        catVol = cs.TryGetProperty("volume", out var cv) ? cv.GetDouble() : 0;
-    }
-    // Category weights
-    double wTrend = 0.30, wMom = 0.25, wMacd = 0.20, wMr = 0.15, wVol = 0.10;
-    if (r.TryGetProperty("category_weights", out var cw))
-    {
-        wTrend = cw.TryGetProperty("trend", out var cwt) ? cwt.GetDouble() : 0.30;
-        wMom = cw.TryGetProperty("momentum", out var cwm) ? cwm.GetDouble() : 0.25;
-        wMacd = cw.TryGetProperty("macd", out var cwmd) ? cwmd.GetDouble() : 0.20;
-        wMr = cw.TryGetProperty("mean_reversion", out var cwmr) ? cwmr.GetDouble() : 0.15;
-        wVol = cw.TryGetProperty("volume", out var cwv) ? cwv.GetDouble() : 0.10;
-    }
-
-    <div class="section-card analysis-card" style="margin-bottom:0.3rem">
-        <!-- ★ Level 1: Compact Header (always visible) — click to expand -->
-        <div class="analysis-compact-header" @onclick="() => ToggleCard(sym)">
-            <div class="compact-left">
-                <span class="material-symbols-outlined collapse-chevron @(expandedCards.Contains(sym) ? "" : "collapsed")"
-                      style="font-size:16px; vertical-align:middle; transition:transform 0.2s">expand_more</span>
-                <span style="font-weight:700; font-size:1.05rem">@sym</span>
-                @if (r.TryGetProperty("company_name", out var cn) && cn.GetString() is string cname && cname.Length > 0)
-                {
-                    <span class="text-muted" style="font-size:0.75rem; margin-left:0.3rem">@cname</span>
-                }
-                <span style="font-size:0.88rem; margin-left:0.5rem; font-weight:600">$@price.ToString("F2")</span>
-                @if (pnl.HasValue)
-                {
-                    <span class="@(pnl > 0 ? "text-green" : "text-red")" style="font-size:0.8rem; margin-left:0.3rem; font-weight:600">
-                        @(pnl > 0 ? "+" : "")@pnl.Value.ToString("F2")%
-                    </span>
-                }
-            </div>
-            <div class="compact-right">
-                <span class="compact-verdict @dirCss">@dirLabel</span>
-                <span class="compact-score" style="color:var(--text-secondary)">@(wScore >= 0 ? "+" : "")@wScore.ToString("F3")</span>
-            </div>
-        </div>
-
-        <!-- ★ Level 2: Summary Gauge + Category Breakdown (expandable) -->
-        @if (expandedCards.Contains(sym))
-        {
-            <div class="ind-header" style="padding-top:0.3rem">
-                <div></div>
-                <span class="text-muted" style="font-size:0.72rem">Target $@target.ToString("F2") / Stop $@stop.ToString("F2")</span>
-            </div>
-
-            <div class="summary-gauge">
-                <div class="gauge-sections">
-                    <div class="gauge-section" style="flex:1">
-                        <div class="gauge-label">Oscillators</div>
-                        <div class="gauge-counts">
-                            <span class="text-green">@oscBuy</span> /
-                            <span class="text-muted">@oscNeutral</span> /
-                            <span class="text-red">@oscSell</span>
-                        </div>
-                    </div>
-                    <div class="gauge-section gauge-total" style="flex:1.8">
-                        <div class="gauge-label">Weighted Score</div>
-                        <div class="gauge-verdict gauge-verdict-main @dirCss" style="font-size:1.1rem">@dirLabel</div>
-                        <div style="font-size:0.82rem; font-weight:600; color:var(--text-primary); margin-top:0.15rem">
-                            @(wScore >= 0 ? "+" : "")@wScore.ToString("F3")
-                        </div>
-                        <div style="display:flex; gap:0.5rem; font-size:0.65rem; margin-top:0.2rem; justify-content:center">
-                            <span class="@(regime == "TRENDING" ? "text-green" : regime == "SIDEWAYS" ? "text-yellow" : "text-muted")" style="font-weight:600">
-                                @regime
-                            </span>
-                            <span class="text-muted">|</span>
-                            <span class="@(volFactor >= 1.0 ? "text-green" : "text-yellow")" style="font-weight:600">
-                                Vol ×@volRatio.ToString("F1") @(volFactor < 1.0 ? "(dampened)" : "")
-                            </span>
-                        </div>
-                    </div>
-                    <div class="gauge-section" style="flex:1">
-                        <div class="gauge-label">Moving Avgs</div>
-                        <div class="gauge-counts">
-                            <span class="text-green">@maBuy</span> /
-                            <span class="text-muted">0</span> /
-                            <span class="text-red">@maSell</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Category breakdown bars -->
-                <div class="category-breakdown">
-                    @{
-                        var cats = new (string Name, double Score, double Weight)[] {
-                            ("Trend", catTrend, wTrend),
-                            ("Momentum", catMom, wMom),
-                            ("MACD", catMacd, wMacd),
-                            ("MeanRev", catMr, wMr),
-                            ("Volume", catVol, wVol),
-                        };
-                    }
-                    @foreach (var c in cats)
-                    {
-                        var pct = (int)Math.Round(Math.Abs(c.Score) * 50);
-                        var catCss = c.Score > 0.1 ? "cat-buy" : c.Score < -0.1 ? "cat-sell" : "cat-neutral";
-                        <div class="cat-row">
-                            <span class="cat-label">@c.Name <span class="text-muted">(@((int)(c.Weight*100))%)</span></span>
-                            <div class="cat-bar-track">
-                                <div class="cat-bar-center"></div>
-                                @if (c.Score >= 0)
-                                {
-                                    <div class="cat-bar-fill cat-bar-buy" style="left:50%; width:@(pct)%"></div>
-                                }
-                                else
-                                {
-                                    <div class="cat-bar-fill cat-bar-sell" style="right:50%; width:@(pct)%"></div>
-                                }
-                            </div>
-                            <span class="cat-val @catCss">@(c.Score >= 0 ? "+" : "")@c.Score.ToString("F2")</span>
-                        </div>
-                    }
-                </div>
-
-                <!-- Buy/Sell indicator count bar -->
-                @{ var barBuyPct = totalBuy + totalSell > 0 ? (int)(100.0 * totalBuy / (totalBuy + totalSell + totalNeutral)) : 50; }
-                <div class="summary-bar">
-                    <div class="summary-bar-buy" style="width:@(barBuyPct)%"></div>
-                </div>
-                <div class="summary-bar-labels">
-                    <span class="text-green" style="font-size:0.7rem">Buy @totalBuy</span>
-                    <span class="text-muted" style="font-size:0.7rem">Neutral @totalNeutral</span>
-                    <span class="text-red" style="font-size:0.7rem">Sell @totalSell</span>
-                </div>
-            </div>
-
-            <!-- ★ Level 3: Oscillators + Moving Averages detail tables -->
-            <div class="ind-two-col" style="@(expandedDetails.Contains(sym) ? "" : "display:none")">
-            <!-- Oscillators (12) -->
-            <div class="ind-col">
-                <h5 class="ind-col-title">Oscillators</h5>
-                <table class="data-table ind-table">
-                    <thead><tr><th>Name</th><th>Value</th><th>Action</th></tr></thead>
-                    <tbody>
-                        @if (r.TryGetProperty("indicators", out var indArr) && indArr.ValueKind == System.Text.Json.JsonValueKind.Array)
-                        {
-                            @foreach (var ind in indArr.EnumerateArray())
-                            {
-                                var iname = ind.TryGetProperty("name", out var nv) ? nv.GetString() ?? "" : "";
-                                var ival = ind.TryGetProperty("value", out var vv) ? vv.GetDouble() : 0;
-                                var isig = ind.TryGetProperty("signal", out var sigv) ? sigv.GetString() ?? "NEUTRAL" : "NEUTRAL";
-                                <tr>
-                                    <td>@iname</td>
-                                    <td class="text-muted">@ival.ToString(iname.Contains("ATR") ? "F2" : iname.Contains("MACD") || iname.Contains("Bull") || iname.Contains("ROC") ? "F2" : "F1")</td>
-                                    <td><span class="ind-signal @(isig == "BUY" ? "ind-buy" : isig == "SELL" ? "ind-sell" : "ind-neutral")">@isig</span></td>
-                                </tr>
-                            }
-                        }
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Moving Averages (12) -->
-            <div class="ind-col">
-                <h5 class="ind-col-title">Moving Averages</h5>
-                <table class="data-table ind-table">
-                    <thead><tr><th>Name</th><th>Value</th><th>Action</th></tr></thead>
-                    <tbody>
-                        @if (r.TryGetProperty("moving_averages", out var maArr) && maArr.ValueKind == System.Text.Json.JsonValueKind.Array)
-                        {
-                            @foreach (var ma in maArr.EnumerateArray())
-                            {
-                                var mname = ma.TryGetProperty("name", out var mnv) ? mnv.GetString() ?? "" : "";
-                                var mval = ma.TryGetProperty("value", out var mvv) ? mvv.GetDouble() : 0;
-                                var msig = ma.TryGetProperty("signal", out var msigv) ? msigv.GetString() ?? "NEUTRAL" : "NEUTRAL";
-                                <tr>
-                                    <td>@mname</td>
-                                    <td class="text-muted">@mval.ToString("F2")</td>
-                                    <td><span class="ind-signal @(msig == "BUY" ? "ind-buy" : msig == "SELL" ? "ind-sell" : "ind-neutral")">@msig</span></td>
-                                </tr>
-                            }
-                        }
-                    </tbody>
-                </table>
-            </div>
-        </div>
-            <!-- Toggle button for Level 3 -->
-            <div class="detail-toggle" @onclick="() => ToggleDetail(sym)" @onclick:stopPropagation="true">
-                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; transition:transform 0.2s; @(expandedDetails.Contains(sym) ? "" : "transform:rotate(-90deg)")">expand_more</span>
-                @(expandedDetails.Contains(sym) ? "Hide Details" : "Show Details")
-            </div>
-        }
-    </div>
-}
-
-@if (!analysisResults.Any())
-{
-    <div class="section-card">
-        <h4 class="section-title">Analysis Results</h4>
-        <p class="text-muted" style="padding:1rem">
-            No analysis results. Click "Analyze All" to run technical analysis.
-        </p>
-    </div>
-}
-@if (analysisResults.Any() && !string.IsNullOrEmpty(analyzedAt))
-{
-    <p class="text-muted" style="padding:0.5rem; font-size:0.72rem">Last analyzed: @analyzedAt</p>
-}
-
 @code {
     private List<WatchlistItem> watchlist = new();
     private List<System.Text.Json.JsonElement> analysisResults = new();
@@ -352,13 +510,36 @@
     private bool analyzing;
     private bool adding;
     private bool showRegistered = false;
+    private bool showBacktest = false;
     private HashSet<string> expandedCards = new();
     private HashSet<string> expandedDetails = new();
 
-    private void ToggleCard(string sym)
+    // Backtest
+    private DateTime btFrom = DateTime.Now.AddMonths(-6);
+    private DateTime btTo = DateTime.Now;
+    private double btCapital = 1000;
+    private double btBuyThreshold = 0.12;
+    private double btSellThreshold = -0.12;
+    private int btMaxHold = 30;
+    private bool btRunning = false;
+    private string? btStatus;
+    private System.Text.Json.JsonElement? btResult;
+
+    private async Task ToggleCard(string sym)
     {
-        if (!expandedCards.Remove(sym))
+        if (expandedCards.Contains(sym))
+        {
+            expandedCards.Remove(sym);
+            intradayLoaded.Remove(sym);
+        }
+        else
+        {
             expandedCards.Add(sym);
+            intradayLoaded.Remove(sym); // show Loading...
+            StateHasChanged();
+            await Task.Delay(200);
+            await FetchAndRenderIntraday(sym);
+        }
     }
 
     private void ToggleDetail(string sym)
@@ -474,7 +655,6 @@
             client.Timeout = TimeSpan.FromSeconds(120);
             await client.PostAsync("/watchlist/analyze", null);
 
-            // Poll for results
             for (int i = 0; i < 20; i++)
             {
                 await Task.Delay(3000);
@@ -491,5 +671,117 @@
         }
         catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
         finally { analyzing = false; }
+    }
+
+    private async Task RunBacktest()
+    {
+        if (!watchlist.Any())
+        {
+            btStatus = "Add symbols first";
+            return;
+        }
+        btRunning = true;
+        btStatus = "Running backtest... (downloading data + computing 24 indicators per day)";
+        btResult = null;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            client.Timeout = TimeSpan.FromSeconds(300);
+            var payload = new
+            {
+                start_date = btFrom.ToString("yyyy-MM-dd"),
+                end_date = btTo.ToString("yyyy-MM-dd"),
+                initial_capital = btCapital,
+                position_pct = 0.20,
+                max_positions = 3,
+                buy_threshold = btBuyThreshold,
+                sell_threshold = btSellThreshold,
+                trailing_stop_pct = 0.05,
+                max_hold_days = btMaxHold,
+            };
+            await client.PostAsJsonAsync("/watchlist/backtest", payload);
+
+            // Poll for results
+            for (int i = 0; i < 60; i++)
+            {
+                await Task.Delay(3000);
+                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/backtest");
+                if (resp.TryGetProperty("status", out var st) && st.GetString() == "done")
+                {
+                    btResult = resp;
+                    btStatus = null;
+                    StateHasChanged();
+                    await RenderBacktestChart();
+                    return;
+                }
+                if (resp.TryGetProperty("status", out var st2) && st2.GetString() == "running")
+                {
+                    continue;
+                }
+            }
+            btStatus = "Backtest timed out. Try again.";
+        }
+        catch (Exception ex) { btStatus = $"Error: {ex.Message}"; }
+        finally { btRunning = false; }
+    }
+
+    private HashSet<string> intradayLoaded = new();
+
+    private async Task FetchAndRenderIntraday(string sym)
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            client.Timeout = TimeSpan.FromSeconds(30);
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/watchlist/intraday/{sym}");
+            if (resp.TryGetProperty("points", out var pts) && pts.GetArrayLength() > 0)
+            {
+                var labels = pts.EnumerateArray()
+                    .Select(p => p.TryGetProperty("time", out var t) ? t.GetString() ?? "" : "").ToArray();
+                var prices = pts.EnumerateArray()
+                    .Select(p => p.TryGetProperty("price", out var v) ? v.GetDouble() : 0).ToArray();
+                var sessions = pts.EnumerateArray()
+                    .Select(p => p.TryGetProperty("session", out var s) ? s.GetString() ?? "" : "").ToArray();
+                double? prevClose = resp.TryGetProperty("prev_close", out var pc) && pc.ValueKind != System.Text.Json.JsonValueKind.Null
+                    ? pc.GetDouble() : null;
+
+                // Mark loaded → hide "Loading..." and show canvas
+                intradayLoaded.Add(sym);
+                StateHasChanged();
+                await Task.Delay(50);
+
+                await JS.InvokeVoidAsync("chartHelper.createIntraday",
+                    $"intraday-{sym}", labels, prices, sessions, prevClose);
+            }
+            else
+            {
+                intradayLoaded.Add(sym);
+                StateHasChanged();
+            }
+        }
+        catch
+        {
+            intradayLoaded.Add(sym);
+            StateHasChanged();
+        }
+    }
+
+    private async Task RenderBacktestChart()
+    {
+        if (btResult == null) return;
+        try
+        {
+            if (btResult.Value.TryGetProperty("equity_curve", out var ec) && ec.GetArrayLength() > 0)
+            {
+                var labels = ec.EnumerateArray().Select(e =>
+                    e.TryGetProperty("date", out var d) ? d.GetString() ?? "" : "").ToArray();
+                var values = ec.EnumerateArray().Select(e =>
+                    e.TryGetProperty("value", out var v) ? v.GetDouble() : 0).ToArray();
+                await JS.InvokeVoidAsync("chartHelper.createLine", "wlBacktestChart", labels, values,
+                    "Equity ($)", "rgba(25,127,230,1)", "rgba(25,127,230,0.1)");
+            }
+        }
+        catch { }
     }
 }

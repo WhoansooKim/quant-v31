@@ -22,6 +22,43 @@
     <script src="https://cdn.jsdelivr.net/npm/hammerjs@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
     <script src="js/charts.js"></script>
+    <script>
+        function toggleSidebar() {
+            var page = document.getElementById('page-root');
+            if (!page) return;
+            page.classList.toggle('sidebar-collapsed');
+            var collapsed = page.classList.contains('sidebar-collapsed');
+            localStorage.setItem('sidebar-collapsed', collapsed ? '1' : '');
+            var icon = document.querySelector('.sidebar-toggle-icon');
+            if (icon) icon.textContent = collapsed ? 'menu' : 'menu_open';
+        }
+        // 페이지 로드 시 저장된 상태 복원
+        (function() {
+            if (localStorage.getItem('sidebar-collapsed') === '1') {
+                document.documentElement.classList.add('sidebar-init-collapsed');
+            }
+        })();
+        document.addEventListener('DOMContentLoaded', function() {
+            if (localStorage.getItem('sidebar-collapsed') === '1') {
+                var page = document.getElementById('page-root');
+                if (page) page.classList.add('sidebar-collapsed');
+                var icon = document.querySelector('.sidebar-toggle-icon');
+                if (icon) icon.textContent = 'menu';
+            }
+        });
+        // Enhanced Blazor navigation 후에도 복원
+        var _sidebarObserver = new MutationObserver(function() {
+            var page = document.getElementById('page-root');
+            if (page && localStorage.getItem('sidebar-collapsed') === '1' && !page.classList.contains('sidebar-collapsed')) {
+                page.classList.add('sidebar-collapsed');
+                var icon = document.querySelector('.sidebar-toggle-icon');
+                if (icon) icon.textContent = 'menu';
+            }
+        });
+        document.addEventListener('DOMContentLoaded', function() {
+            _sidebarObserver.observe(document.body, { childList: true, subtree: true });
+        });
+    </script>
     <script src="_framework/blazor.web.js" autostart="false"></script>
     <script>
         // Silent auto-reconnect: 끊기면 재연결 시도 → 실패 시 조용히 페이지 리로드
