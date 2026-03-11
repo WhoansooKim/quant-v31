@@ -776,7 +776,7 @@ V3.1은 V4 이전의 레짐 적응형 시스템. 현재 비활성이지만 코�
 ## 20. Git History
 
 ```
-PENDING  feat: collapsible sidebar, watchlist backtest, intraday chart, CNN links
+b199b7c feat: collapsible sidebar persistence, watchlist signal backtest, intraday chart, CNN links
 d48afdd feat: extended hours monitoring, watchlist weighted scoring, Performance TWR fix
 986c6b6 feat: Phase F — Telegram alerts, KIS live/paper toggle, SSE push, SEC EDGAR
 06ede29 feat: Phase D (Strategy Optimization) + Phase E (Real-time Events)
