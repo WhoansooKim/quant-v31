@@ -56,7 +56,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var e in events)
+                    @foreach (var e in PagedEvents)
                     {
                         var severity = e.GetValueOrDefault("severity", "info")?.ToString() ?? "info";
                         var evType = e.GetValueOrDefault("event_type", "")?.ToString() ?? "";
@@ -94,6 +94,22 @@
                 </tbody>
             </table>
         </div>
+        <!-- Pagination -->
+        @if (evtTotalPages > 1)
+        {
+            <div class="pagination-bar">
+                <button class="btn-page" disabled="@(evtCurrentPage <= 1)" @onclick="() => GoToEvtPage(1)">«</button>
+                <button class="btn-page" disabled="@(evtCurrentPage <= 1)" @onclick="() => GoToEvtPage(evtCurrentPage - 1)">‹</button>
+                @for (int pg = evtPageStart; pg <= evtPageEnd; pg++)
+                {
+                    var p = pg;
+                    <button class="btn-page @(p == evtCurrentPage ? "btn-page-active" : "")" @onclick="() => GoToEvtPage(p)">@p</button>
+                }
+                <button class="btn-page" disabled="@(evtCurrentPage >= evtTotalPages)" @onclick="() => GoToEvtPage(evtCurrentPage + 1)">›</button>
+                <button class="btn-page" disabled="@(evtCurrentPage >= evtTotalPages)" @onclick="() => GoToEvtPage(evtTotalPages)">»</button>
+                <span class="text-muted" style="font-size:0.72rem; margin-left:0.5rem">@events.Count events</span>
+            </div>
+        }
     }
     else
     {
@@ -108,9 +124,25 @@
     private bool scanningEdgar;
     private string? statusMsg;
 
+    // Pagination (client-side — events loaded from engine API)
+    private const int EvtPageSize = 10;
+    private int evtCurrentPage = 1;
+    private int evtTotalPages => Math.Max(1, (int)Math.Ceiling((double)events.Count / EvtPageSize));
+    private int evtPageStart => Math.Max(1, evtCurrentPage - 2);
+    private int evtPageEnd => Math.Min(evtTotalPages, evtPageStart + 4);
+
+    private IEnumerable<Dictionary<string, object?>> PagedEvents =>
+        events.Skip((evtCurrentPage - 1) * EvtPageSize).Take(EvtPageSize);
+
     protected override async Task OnInitializedAsync()
     {
         await LoadEvents();
+    }
+
+    private void GoToEvtPage(int pg)
+    {
+        if (pg < 1 || pg > evtTotalPages || pg == evtCurrentPage) return;
+        evtCurrentPage = pg;
     }
 
     private async Task LoadEvents()
@@ -215,6 +247,7 @@
     private async Task SetFilter(string filter)
     {
         activeFilter = filter;
+        evtCurrentPage = 1;
         await LoadEvents();
     }
 }

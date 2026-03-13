@@ -652,6 +652,82 @@ class PostgresStore:
             params.append(limit)
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
+    # ─── Watchlist Signal Log ─────────────────────────────
+
+    def upsert_watchlist_signal_log(self, log: dict) -> int:
+        """Insert or update daily signal log entry (UPSERT on symbol+date)."""
+        with self.get_conn() as conn:
+            cur = conn.execute("""
+                INSERT INTO swing_watchlist_signal_log
+                    (symbol, signal_date, direction, weighted_score, confidence,
+                     current_price, regime, category_scores, category_weights,
+                     vol_ratio, vol_factor, target_price, stop_price)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                        %s, %s, %s, %s)
+                ON CONFLICT (symbol, signal_date) DO UPDATE SET
+                    direction = EXCLUDED.direction,
+                    weighted_score = EXCLUDED.weighted_score,
+                    confidence = EXCLUDED.confidence,
+                    current_price = EXCLUDED.current_price,
+                    regime = EXCLUDED.regime,
+                    category_scores = EXCLUDED.category_scores,
+                    category_weights = EXCLUDED.category_weights,
+                    vol_ratio = EXCLUDED.vol_ratio,
+                    vol_factor = EXCLUDED.vol_factor,
+                    target_price = EXCLUDED.target_price,
+                    stop_price = EXCLUDED.stop_price,
+                    created_at = now()
+                RETURNING log_id
+            """, (log["symbol"], log["signal_date"], log["direction"],
+                  log["weighted_score"], log["confidence"], log["current_price"],
+                  log.get("regime"), json.dumps(log.get("category_scores", {})),
+                  json.dumps(log.get("category_weights", {})),
+                  log.get("vol_ratio"), log.get("vol_factor"),
+                  log.get("target_price"), log.get("stop_price")))
+            conn.commit()
+            return cur.fetchone()["log_id"]
+
+    def get_watchlist_signal_logs(self, symbol: str = None,
+                                  start_date=None, end_date=None,
+                                  limit: int = 500) -> list[dict]:
+        """Retrieve signal logs for replay backtest."""
+        with self.get_conn() as conn:
+            conditions = []
+            params = []
+            if symbol:
+                conditions.append("symbol = %s")
+                params.append(symbol.upper())
+            if start_date:
+                conditions.append("signal_date >= %s")
+                params.append(start_date)
+            if end_date:
+                conditions.append("signal_date <= %s")
+                params.append(end_date)
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            sql = f"""SELECT log_id, symbol, signal_date, direction, weighted_score,
+                             confidence, current_price, regime, vol_ratio, vol_factor,
+                             target_price, stop_price, created_at
+                      FROM swing_watchlist_signal_log {where}
+                      ORDER BY signal_date, symbol LIMIT %s"""
+            params.append(limit)
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def get_watchlist_signal_log_stats(self) -> dict:
+        """Signal log summary stats."""
+        with self.get_conn() as conn:
+            row = conn.execute("""
+                SELECT count(*) as total,
+                       count(DISTINCT symbol) as symbols,
+                       count(DISTINCT signal_date) as days,
+                       min(signal_date) as first_date,
+                       max(signal_date) as last_date,
+                       count(*) FILTER (WHERE direction IN ('STRONG_BUY','BUY')) as buy_count,
+                       count(*) FILTER (WHERE direction = 'NEUTRAL') as neutral_count,
+                       count(*) FILTER (WHERE direction IN ('STRONG_SELL','SELL')) as sell_count
+                FROM swing_watchlist_signal_log
+            """).fetchone()
+            return dict(row) if row else {}
+
     # ─── Utility ──────────────────────────────────────────
 
     def health_check(self) -> bool:

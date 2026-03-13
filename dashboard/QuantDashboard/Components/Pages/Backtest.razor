@@ -95,7 +95,8 @@
     <!-- Equity Curve Chart -->
     <div class="section-card" style="margin-top:1rem">
         <h4 class="section-title">Equity Curve
-            <span class="text-muted" style="font-size:0.7rem; font-weight:400; margin-left:auto">drag to zoom · right-drag to pan · double-click to reset</span>
+            <span class="text-muted chart-hint-desktop" style="font-size:0.7rem; font-weight:400; margin-left:auto">drag to zoom · right-drag to pan · double-click to reset</span>
+            <span class="text-muted chart-hint-mobile" style="font-size:0.7rem; font-weight:400; margin-left:auto">swipe to zoom · pinch to zoom · double-tap to reset</span>
         </h4>
         <div style="height:300px">
             <canvas id="btEquityChart"></canvas>
@@ -115,23 +116,23 @@
     {
         <div class="section-card" style="margin-top:1rem">
             <h4 class="section-title">Trade Log (@detail.TradesLog.Count trades)</h4>
-            <div class="table-responsive" style="max-height:400px; overflow-y:auto">
+            <div class="table-responsive">
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("date")'>Date@(tradeSort.Arrow("date"))</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("symbol")'>Symbol@(tradeSort.Arrow("symbol"))</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("side")'>Side@(tradeSort.Arrow("side"))</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("qty")'>Qty@(tradeSort.Arrow("qty"))</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("price")'>Price@(tradeSort.Arrow("price"))</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("pnl")'>P&L@(tradeSort.Arrow("pnl"))</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("pnlPct")'>P&L %@(tradeSort.Arrow("pnlPct"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("date")'>Date@(tradeSort.Arrow("date"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("symbol")'>Symbol@(tradeSort.Arrow("symbol"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("side")'>Side@(tradeSort.Arrow("side"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("qty")'>Qty@(tradeSort.Arrow("qty"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("price")'>Price@(tradeSort.Arrow("price"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("pnl")'>P&L@(tradeSort.Arrow("pnl"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("pnlPct")'>P&L %@(tradeSort.Arrow("pnlPct"))</th>
                             <th>Reason</th>
-                            <th class="sortable" @onclick='() => tradeSort.Toggle("holdDays")'>Hold Days@(tradeSort.Arrow("holdDays"))</th>
+                            <th class="sortable" @onclick='() => ToggleTradeSort("holdDays")'>Hold Days@(tradeSort.Arrow("holdDays"))</th>
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach (var t in SortedTrades)
+                        @foreach (var t in PagedTrades)
                         {
                             var pnlClass = t.Pnl >= 0 ? "text-green" : "text-red";
                             <tr>
@@ -151,6 +152,22 @@
                     </tbody>
                 </table>
             </div>
+            <!-- Trade Log Pagination -->
+            @if (tradeTotalPages > 1)
+            {
+                <div class="pagination-bar">
+                    <button class="btn-page" disabled="@(tradeCurrentPage <= 1)" @onclick="() => GoToTradePage(1)">«</button>
+                    <button class="btn-page" disabled="@(tradeCurrentPage <= 1)" @onclick="() => GoToTradePage(tradeCurrentPage - 1)">‹</button>
+                    @for (int pg = tradePageStart; pg <= tradePageEnd; pg++)
+                    {
+                        var p = pg;
+                        <button class="btn-page @(p == tradeCurrentPage ? "btn-page-active" : "")" @onclick="() => GoToTradePage(p)">@p</button>
+                    }
+                    <button class="btn-page" disabled="@(tradeCurrentPage >= tradeTotalPages)" @onclick="() => GoToTradePage(tradeCurrentPage + 1)">›</button>
+                    <button class="btn-page" disabled="@(tradeCurrentPage >= tradeTotalPages)" @onclick="() => GoToTradePage(tradeTotalPages)">»</button>
+                    <span class="text-muted" style="font-size:0.72rem; margin-left:0.5rem">@detail.TradesLog.Count trades</span>
+                </div>
+            }
         </div>
     }
 }
@@ -202,6 +219,22 @@
                 </tbody>
             </table>
         </div>
+        <!-- Past Results Pagination -->
+        @if (runTotalPages > 1)
+        {
+            <div class="pagination-bar">
+                <button class="btn-page" disabled="@(runCurrentPage <= 1)" @onclick="() => GoToRunPage(1)">«</button>
+                <button class="btn-page" disabled="@(runCurrentPage <= 1)" @onclick="() => GoToRunPage(runCurrentPage - 1)">‹</button>
+                @for (int pg = runPageStart; pg <= runPageEnd; pg++)
+                {
+                    var p = pg;
+                    <button class="btn-page @(p == runCurrentPage ? "btn-page-active" : "")" @onclick="() => GoToRunPage(p)">@p</button>
+                }
+                <button class="btn-page" disabled="@(runCurrentPage >= runTotalPages)" @onclick="() => GoToRunPage(runCurrentPage + 1)">›</button>
+                <button class="btn-page" disabled="@(runCurrentPage >= runTotalPages)" @onclick="() => GoToRunPage(runTotalPages)">»</button>
+                <span class="text-muted" style="font-size:0.72rem; margin-left:0.5rem">@runTotalCount results</span>
+            </div>
+        }
     }
     else
     {
@@ -278,6 +311,22 @@
     private BacktestRunDetail? detail;
     private long? selectedRunId;
 
+    // Pagination — Trade Log (client-side)
+    private const int TradePageSize = 10;
+    private int tradeCurrentPage = 1;
+    private int tradeTotalCount => detail?.TradesLog.Count ?? 0;
+    private int tradeTotalPages => Math.Max(1, (int)Math.Ceiling((double)tradeTotalCount / TradePageSize));
+    private int tradePageStart => Math.Max(1, tradeCurrentPage - 2);
+    private int tradePageEnd => Math.Min(tradeTotalPages, tradePageStart + 4);
+
+    // Pagination — Past Results (server-side)
+    private const int RunPageSize = 10;
+    private int runCurrentPage = 1;
+    private int runTotalCount;
+    private int runTotalPages => Math.Max(1, (int)Math.Ceiling((double)runTotalCount / RunPageSize));
+    private int runPageStart => Math.Max(1, runCurrentPage - 2);
+    private int runPageEnd => Math.Min(runTotalPages, runPageStart + 4);
+
     // Sort state
     private SortState tradeSort = new();
     private SortState runSort = new();
@@ -308,6 +357,9 @@
 
     private IEnumerable<BacktestTradeEntry> SortedTrades =>
         detail != null ? tradeSort.Apply(detail.TradesLog, TradeSelectors) : Enumerable.Empty<BacktestTradeEntry>();
+
+    private IEnumerable<BacktestTradeEntry> PagedTrades =>
+        SortedTrades.Skip((tradeCurrentPage - 1) * TradePageSize).Take(TradePageSize);
 
     private IEnumerable<SwingBacktestRun> SortedRuns =>
         runSort.Apply(runs, RunSelectors);
@@ -347,8 +399,7 @@
     {
         try
         {
-            runs = await Db.GetBacktestRunsAsync(20);
-            _prevRunCount = runs.Count;
+            await LoadRuns();
             // Auto-load latest run detail if exists
             if (runs.Any())
             {
@@ -356,6 +407,34 @@
             }
         }
         catch { }
+    }
+
+    private async Task LoadRuns()
+    {
+        var offset = (runCurrentPage - 1) * RunPageSize;
+        var result = await Db.GetBacktestRunsPagedAsync(offset, RunPageSize);
+        runs = result.Items;
+        runTotalCount = result.TotalCount;
+        _prevRunCount = result.TotalCount;
+    }
+
+    private async Task GoToRunPage(int pg)
+    {
+        if (pg < 1 || pg > runTotalPages || pg == runCurrentPage) return;
+        runCurrentPage = pg;
+        await LoadRuns();
+    }
+
+    private void GoToTradePage(int pg)
+    {
+        if (pg < 1 || pg > tradeTotalPages || pg == tradeCurrentPage) return;
+        tradeCurrentPage = pg;
+    }
+
+    private void ToggleTradeSort(string col)
+    {
+        tradeSort.Toggle(col);
+        tradeCurrentPage = 1;
     }
 
     private async Task RunBacktest()
@@ -406,17 +485,19 @@
             try
             {
                 pollCount++;
-                var newRuns = await Db.GetBacktestRunsAsync(20);
-                if (newRuns.Count > _prevRunCount)
+                var newResult = await Db.GetBacktestRunsPagedAsync(0, RunPageSize);
+                if (newResult.TotalCount > _prevRunCount)
                 {
                     // New run appeared — backtest complete
-                    runs = newRuns;
-                    _prevRunCount = newRuns.Count;
+                    runs = newResult.Items;
+                    runTotalCount = newResult.TotalCount;
+                    _prevRunCount = newResult.TotalCount;
+                    runCurrentPage = 1;
                     polling = false;
                     _pollTimer?.Dispose();
                     statusMsg = "Backtest completed!";
                     // Load the newest run
-                    await LoadRunDetail(newRuns.First().RunId);
+                    await LoadRunDetail(runs.First().RunId);
                     await InvokeAsync(StateHasChanged);
                     return;
                 }
@@ -436,6 +517,7 @@
     {
         selectedRunId = runId;
         _chartRendered = false;
+        tradeCurrentPage = 1;
         try
         {
             var client = HttpFactory.CreateClient("Engine");

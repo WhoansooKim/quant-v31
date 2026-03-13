@@ -194,6 +194,12 @@
                     </div>
                 </div>
 
+                <!-- Show/Hide Details toggle -->
+                <div class="detail-toggle" @onclick="() => ToggleDetail(sym)" @onclick:stopPropagation="true">
+                    <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; transition:transform 0.2s; @(expandedDetails.Contains(sym) ? "" : "transform:rotate(-90deg)")">expand_more</span>
+                    @(expandedDetails.Contains(sym) ? "Hide Details" : "Show Details")
+                </div>
+
                 <!-- Level 3: Oscillators + Moving Averages detail tables -->
                 <div class="ind-two-col" style="@(expandedDetails.Contains(sym) ? "" : "display:none")">
                     <div class="ind-col">
@@ -241,10 +247,6 @@
                         </table>
                     </div>
                 </div>
-                <div class="detail-toggle" @onclick="() => ToggleDetail(sym)" @onclick:stopPropagation="true">
-                    <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; transition:transform 0.2s; @(expandedDetails.Contains(sym) ? "" : "transform:rotate(-90deg)")">expand_more</span>
-                    @(expandedDetails.Contains(sym) ? "Hide Details" : "Show Details")
-                </div>
             }
         </div>
     }
@@ -263,42 +265,73 @@ else
     </div>
 }
 
-<!-- ② Watchlist Backtest -->
+<!-- ② Signal Log & Replay Backtest -->
 <div class="section-card" style="margin-bottom:1rem; margin-top:1rem">
     <h4 class="section-title collapsible-title" @onclick="() => showBacktest = !showBacktest" style="cursor:pointer">
         <span class="material-symbols-outlined collapse-chevron @(showBacktest ? "" : "collapsed")"
               style="font-size:18px; vertical-align:middle; transition:transform 0.2s">expand_more</span>
-        Signal Backtest
+        Signal Replay Backtest
     </h4>
     @if (showBacktest)
     {
+        <!-- Signal Log Stats -->
+        <div style="margin-top:0.5rem; padding:0.5rem; background:var(--s2); border-radius:6px; font-size:0.8rem">
+            @if (logStats != null)
+            {
+                var logDays = logStats.Value.TryGetProperty("days", out var ld) ? ld.GetInt32() : 0;
+                var logSyms = logStats.Value.TryGetProperty("symbols", out var ls) ? ls.GetInt32() : 0;
+                var logFirst = logStats.Value.TryGetProperty("first_date", out var lf) ? lf.GetString() : "--";
+                var logLast = logStats.Value.TryGetProperty("last_date", out var ll) ? ll.GetString() : "--";
+                var logBuy = logStats.Value.TryGetProperty("buy_count", out var lb) ? lb.GetInt32() : 0;
+                var logSell = logStats.Value.TryGetProperty("sell_count", out var lsl) ? lsl.GetInt32() : 0;
+                var logNeutral = logStats.Value.TryGetProperty("neutral_count", out var ln) ? ln.GetInt32() : 0;
+                <div style="display:flex; gap:1.5rem; flex-wrap:wrap; align-items:center">
+                    <span><strong>Signal Log:</strong> @logDays days · @logSyms symbols</span>
+                    <span class="text-muted">@logFirst ~ @logLast</span>
+                    <span>
+                        <span class="text-green">BUY @logBuy</span> ·
+                        <span class="text-muted">NEUTRAL @logNeutral</span> ·
+                        <span class="text-red">SELL @logSell</span>
+                    </span>
+                </div>
+                @if (logDays < 5)
+                {
+                    <div style="margin-top:0.3rem; padding:0.3rem 0.5rem; background:rgba(249,115,22,0.12); border-radius:4px; color:#ffa502; font-size:0.75rem">
+                        <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">warning</span>
+                        Signal logging started recently. Run "Analyze All" daily to accumulate data. Need 5+ trading days for meaningful backtest.
+                    </div>
+                }
+            }
+            else
+            {
+                <span class="text-muted">No signal logs yet. Run "Analyze All" to start logging signals.</span>
+            }
+        </div>
+
+        <!-- Backtest Controls -->
         <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.5rem">
-            <div>
-                <label class="form-label">From</label>
-                <input type="date" class="form-input form-input-sm" @bind="btFrom" style="width:140px" />
-            </div>
-            <div>
-                <label class="form-label">To</label>
-                <input type="date" class="form-input form-input-sm" @bind="btTo" style="width:140px" />
-            </div>
             <div>
                 <label class="form-label">Capital ($)</label>
                 <input type="number" class="form-input form-input-sm" @bind="btCapital" step="100" style="width:100px" />
             </div>
             <div>
-                <label class="form-label">Buy ≥</label>
-                <input type="number" class="form-input form-input-sm" @bind="btBuyThreshold" step="0.01" style="width:70px" />
+                <label class="form-label">Position %</label>
+                <input type="number" class="form-input form-input-sm" @bind="btPosPct" step="0.05" style="width:70px" />
             </div>
             <div>
-                <label class="form-label">Sell ≤</label>
-                <input type="number" class="form-input form-input-sm" @bind="btSellThreshold" step="0.01" style="width:70px" />
+                <label class="form-label">Max Pos</label>
+                <input type="number" class="form-input form-input-sm" @bind="btMaxPos" min="1" max="10" style="width:60px" />
+            </div>
+            <div>
+                <label class="form-label">Trail Stop %</label>
+                <input type="number" class="form-input form-input-sm" @bind="btTrailStop" step="0.01" style="width:70px" />
             </div>
             <div>
                 <label class="form-label">Max Hold</label>
                 <input type="number" class="form-input form-input-sm" @bind="btMaxHold" style="width:60px" />
             </div>
-            <button class="btn-sm btn-approve" @onclick="RunBacktest" disabled="@btRunning">
-                @(btRunning ? "Running..." : "Run Backtest")
+            <button class="btn-sm btn-approve" @onclick="RunReplayBacktest" disabled="@btRunning">
+                @(btRunning ? "Running..." : "Run Replay")
             </button>
         </div>
 
@@ -309,11 +342,18 @@ else
 
         @if (btResult != null && btResult.Value.TryGetProperty("status", out var bts) && bts.GetString() == "done")
         {
-            <!-- KPI Cards -->
-            <div class="kpi-row" style="margin-top:0.5rem">
+            <div style="font-size:0.72rem; color:var(--text-secondary); margin:0.3rem 0">
+                @{
+                    var btFirst = btResult.Value.TryGetProperty("first_date", out var bf) ? bf.GetString() : "";
+                    var btLast = btResult.Value.TryGetProperty("last_date", out var bl) ? bl.GetString() : "";
+                    var btDays = btResult.Value.TryGetProperty("days_logged", out var bd) ? bd.GetInt32() : 0;
+                }
+                Period: @btFirst ~ @btLast (@btDays trading days) — based on actual logged signals
+            </div>
+
+            <div class="stat-grid cols-4" style="margin-top:0.3rem">
                 @{
                     var trr = btResult.Value.TryGetProperty("total_return", out var trv) ? trv.GetDouble() : 0;
-                    var cagr = btResult.Value.TryGetProperty("cagr", out var cv) ? cv.GetDouble() : 0;
                     var mdd = btResult.Value.TryGetProperty("max_drawdown", out var mdv) ? mdv.GetDouble() : 0;
                     var sharpe = btResult.Value.TryGetProperty("sharpe_ratio", out var shv) ? shv.GetDouble() : 0;
                     var winRate = btResult.Value.TryGetProperty("win_rate", out var wrv) ? wrv.GetDouble() : 0;
@@ -322,43 +362,80 @@ else
                     var avgHold = btResult.Value.TryGetProperty("avg_hold_days", out var ahv) ? ahv.GetDouble() : 0;
                     var finalVal = btResult.Value.TryGetProperty("final_value", out var fvv) ? fvv.GetDouble() : 0;
                 }
-                <div class="kpi-card">
-                    <div class="kpi-label">TOTAL RETURN</div>
-                    <div class="kpi-value @(trr >= 0 ? "text-green" : "text-red")">@(trr >= 0 ? "+" : "")@trr.ToString("F1")%</div>
+                <div class="stat-card">
+                    <div class="stat-label">TOTAL RETURN</div>
+                    <div class="stat-value @(trr >= 0 ? "text-green" : "text-red")">@(trr >= 0 ? "+" : "")@trr.ToString("F1")%</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">CAGR</div>
-                    <div class="kpi-value @(cagr >= 0 ? "text-green" : "text-red")">@(cagr >= 0 ? "+" : "")@cagr.ToString("F1")%</div>
+                <div class="stat-card">
+                    <div class="stat-label">MAX DRAWDOWN</div>
+                    <div class="stat-value text-red">@mdd.ToString("F1")%</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">MAX DRAWDOWN</div>
-                    <div class="kpi-value text-red">@mdd.ToString("F1")%</div>
+                <div class="stat-card">
+                    <div class="stat-label">SHARPE</div>
+                    <div class="stat-value">@sharpe.ToString("F2")</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">SHARPE</div>
-                    <div class="kpi-value">@sharpe.ToString("F2")</div>
+                <div class="stat-card">
+                    <div class="stat-label">WIN RATE</div>
+                    <div class="stat-value">@winRate.ToString("F1")%</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">WIN RATE</div>
-                    <div class="kpi-value">@winRate.ToString("F1")%</div>
+                <div class="stat-card">
+                    <div class="stat-label">PROFIT FACTOR</div>
+                    <div class="stat-value">@pf.ToString("F2")</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">PROFIT FACTOR</div>
-                    <div class="kpi-value">@pf.ToString("F2")</div>
+                <div class="stat-card">
+                    <div class="stat-label">TRADES</div>
+                    <div class="stat-value">@totalTrades</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">TRADES</div>
-                    <div class="kpi-value">@totalTrades</div>
+                <div class="stat-card">
+                    <div class="stat-label">AVG HOLD</div>
+                    <div class="stat-value">@avgHold.ToString("F0")d</div>
                 </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">AVG HOLD</div>
-                    <div class="kpi-value">@avgHold.ToString("F0")d</div>
+                <div class="stat-card">
+                    <div class="stat-label">FINAL VALUE</div>
+                    <div class="stat-value @(finalVal >= btCapital ? "text-green" : "text-red")">$@finalVal.ToString("F0")</div>
                 </div>
             </div>
 
-            <div style="font-size:0.78rem; color:var(--text-secondary); margin:0.3rem 0">
-                Final Value: <strong>$@finalVal.ToString("F2")</strong>
-            </div>
+            <!-- Signal Accuracy -->
+            @if (btResult.Value.TryGetProperty("signal_accuracy", out var accEl) && accEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                <div style="margin-top:0.5rem; font-size:0.78rem">
+                    <strong>Signal Accuracy:</strong>
+                    @foreach (var prop in accEl.EnumerateObject())
+                    {
+                        var accTotal = prop.Value.TryGetProperty("total", out var at2) ? at2.GetInt32() : 0;
+                        var accProfit = prop.Value.TryGetProperty("profitable", out var ap) ? ap.GetInt32() : 0;
+                        var accPct = prop.Value.TryGetProperty("accuracy", out var ac) ? ac.GetDouble() : 0;
+                        <span style="margin-left:0.75rem">
+                            <strong>@prop.Name</strong>: @accProfit/@accTotal
+                            (<span class="@(accPct >= 50 ? "text-green" : "text-red")">@accPct.ToString("F0")%</span>)
+                        </span>
+                    }
+                </div>
+            }
+
+            <!-- Monthly Returns -->
+            @if (btResult.Value.TryGetProperty("monthly_returns", out var monthlyEl) && monthlyEl.GetArrayLength() > 0)
+            {
+                <div style="margin-top:0.5rem">
+                    <h5 class="section-title" style="font-size:0.82rem; margin-bottom:0.3rem">Monthly Returns</h5>
+                    <div style="display:flex; gap:0.25rem; flex-wrap:wrap">
+                        @foreach (var m in monthlyEl.EnumerateArray())
+                        {
+                            var mMonth = m.TryGetProperty("month", out var mm) ? mm.GetString() : "";
+                            var mRet = m.TryGetProperty("return_pct", out var mr) ? mr.GetDouble() : 0;
+                            <div style="padding:0.25rem 0.5rem; border-radius:4px; font-size:0.72rem; min-width:80px; text-align:center;
+                                        background:@(mRet >= 0 ? "rgba(0,200,150,0.12)" : "rgba(239,68,68,0.12)");
+                                        border:1px solid @(mRet >= 0 ? "rgba(0,200,150,0.3)" : "rgba(239,68,68,0.3)")">
+                                <div class="text-muted">@mMonth</div>
+                                <div class="@(mRet >= 0 ? "text-green" : "text-red")" style="font-weight:600">
+                                    @(mRet >= 0 ? "+" : "")@mRet.ToString("F1")%
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
 
             <!-- Equity Curve Chart -->
             <div style="margin-top:0.5rem">
@@ -502,6 +579,134 @@ else
     }
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ④ Market Sector Heatmap -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="section-card" style="margin-top:1.5rem">
+    @if (drilldownEtf == null)
+    {
+        <h4 class="section-title collapsible-title" @onclick="() => showHeatmap = !showHeatmap" style="cursor:pointer">
+            <span class="material-symbols-outlined collapse-chevron @(showHeatmap ? "" : "collapsed")"
+                  style="font-size:20px">chevron_right</span>
+            <span class="material-symbols-outlined" style="font-size:18px; vertical-align:middle">grid_view</span>
+            US Market Sector Heatmap
+        </h4>
+    }
+    else
+    {
+        <h4 class="section-title" style="display:flex; align-items:center; gap:0.5rem">
+            <span class="material-symbols-outlined" style="font-size:18px; vertical-align:middle; cursor:pointer" @onclick="() => drilldownEtf = null">arrow_back</span>
+            <span>@drilldownEtf @drilldownSectorName</span>
+            @if (drilldownStocks.Any())
+            {
+                <span class="text-muted" style="font-weight:400; font-size:0.75rem">
+                    상승 @drilldownStocks.Count(s => s.ChangePct > 0) · 하락 @drilldownStocks.Count(s => s.ChangePct < 0)
+                </span>
+            }
+            <button class="btn-action btn-outline" style="padding:3px 10px; font-size:0.78rem; margin-left:auto" @onclick="() => drilldownEtf = null">← 돌아가기</button>
+        </h4>
+    }
+
+    @if (showHeatmap || drilldownEtf != null)
+    {
+        @if (heatmapLoading)
+        {
+            <p class="text-muted">Loading market data...</p>
+        }
+        else if (sectorData.Any())
+        {
+            @if (drilldownEtf == null)
+            {
+                <!-- Index Summary Bar -->
+                <div style="display:flex; gap:0.6rem; margin-bottom:0.8rem; flex-wrap:wrap">
+                    @foreach (var idx in indexData)
+                    {
+                        var idxColor = idx.ChangePct >= 0 ? "var(--accent-green, #22c55e)" : "var(--accent-red, #ef4444)";
+                        <div style="background:var(--s3, #1e293b); border-radius:6px; padding:0.35rem 0.7rem; border-left:3px solid @idxColor">
+                            <span style="font-weight:700; font-size:0.82rem">@idx.Name</span>
+                            <span style="color:@idxColor; font-weight:600; margin-left:0.3rem; font-size:0.82rem">
+                                @(idx.ChangePct >= 0 ? "+" : "")@idx.ChangePct.ToString("F2")%
+                            </span>
+                        </div>
+                    }
+                </div>
+
+                <!-- Sector Treemap -->
+                <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:4px; min-height:180px">
+                    @foreach (var s in sectorData.OrderByDescending(x => x.Weight))
+                    {
+                        var intensity = Math.Min(Math.Abs(s.ChangePct) / 3.0, 1.0);
+                        var bgColor = s.ChangePct >= 0
+                            ? $"rgba(34,197,94,{(0.15 + intensity * 0.55):F2})"
+                            : $"rgba(239,68,68,{(0.15 + intensity * 0.55):F2})";
+                        var textColor = intensity > 0.4 ? "#fff" : "#e2e8f0";
+                        var gridStyle = s.Weight >= 10
+                            ? "grid-column:span 2; grid-row:span 2; min-height:140px"
+                            : (s.Weight >= 7 ? "grid-column:span 2; min-height:70px" : "min-height:70px");
+                        var symSize = s.Weight >= 10 ? "1.1rem" : "0.9rem";
+                        var pctSize = s.Weight >= 10 ? "1.35rem" : "1.05rem";
+
+                        <div style="@gridStyle; background:@bgColor; color:@textColor; border-radius:6px; padding:0.6rem; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; cursor:pointer; transition:transform 0.15s"
+                             title="Click to drill down — @s.Symbol (@s.NameEn)"
+                             @onclick="() => ToggleDrilldown(s.Symbol)">
+                            <div style="font-weight:700; font-size:@symSize">@s.Symbol</div>
+                            <div style="font-size:0.7rem; opacity:0.85; margin:2px 0">@s.Name</div>
+                            <div style="font-weight:700; font-size:@pctSize">@(s.ChangePct >= 0 ? "+" : "")@s.ChangePct.ToString("F2")%</div>
+                        </div>
+                    }
+                </div>
+
+                <!-- Advance / Decline -->
+                <div style="display:flex; gap:1rem; margin-top:0.5rem; font-size:0.75rem; align-items:center">
+                    <span>
+                        <span style="color:var(--accent-green, #22c55e)">● 상승 @sectorData.Count(s => s.ChangePct > 0)</span>
+                        &nbsp;
+                        <span style="color:var(--text-secondary)">● 보합 @sectorData.Count(s => s.ChangePct == 0)</span>
+                        &nbsp;
+                        <span style="color:var(--accent-red, #ef4444)">● 하락 @sectorData.Count(s => s.ChangePct < 0)</span>
+                    </span>
+                    <span class="text-muted" style="margin-left:auto">@heatmapUpdatedAt</span>
+                </div>
+            }
+            else
+            {
+                <!-- Drilldown: Sector Holdings (in-place) -->
+                @if (drilldownLoading)
+                {
+                    <p class="text-muted" style="font-size:0.8rem">Loading @drilldownEtf holdings...</p>
+                }
+                else if (drilldownStocks.Any())
+                {
+                    <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:3px; min-height:180px">
+                        @foreach (var st in drilldownStocks.OrderByDescending(x => x.Weight))
+                        {
+                            var stIntensity = Math.Min(Math.Abs(st.ChangePct) / 3.0, 1.0);
+                            var stBg = st.ChangePct >= 0
+                                ? $"rgba(34,197,94,{(0.15 + stIntensity * 0.55):F2})"
+                                : $"rgba(239,68,68,{(0.15 + stIntensity * 0.55):F2})";
+                            var stTxt = stIntensity > 0.4 ? "#fff" : "#e2e8f0";
+                            var stSpan = st.Weight >= 15
+                                ? "grid-column:span 2; grid-row:span 2; min-height:100px"
+                                : (st.Weight >= 8 ? "grid-column:span 2; min-height:55px" : "min-height:55px");
+
+                            <div style="@stSpan; background:@stBg; color:@stTxt; border-radius:5px; padding:0.4rem; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center"
+                                 title="@st.Name — $@st.Price (@st.Weight%)">
+                                <div style="font-weight:700; font-size:0.82rem">@st.Symbol</div>
+                                <div style="font-size:0.62rem; opacity:0.8">@st.Name</div>
+                                <div style="font-weight:700; font-size:0.9rem">@(st.ChangePct >= 0 ? "+" : "")@st.ChangePct.ToString("F2")%</div>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        }
+        else
+        {
+            <p class="text-muted">No market data available.</p>
+        }
+    }
+</div>
+
 @code {
     private List<WatchlistItem> watchlist = new();
     private List<System.Text.Json.JsonElement> analysisResults = new();
@@ -511,19 +716,35 @@ else
     private bool adding;
     private bool showRegistered = false;
     private bool showBacktest = false;
+    private bool showHeatmap = true;
     private HashSet<string> expandedCards = new();
     private HashSet<string> expandedDetails = new();
 
-    // Backtest
-    private DateTime btFrom = DateTime.Now.AddMonths(-6);
-    private DateTime btTo = DateTime.Now;
+    // Market Heatmap
+    private bool heatmapLoading = false;
+    private List<SectorItem> sectorData = new();
+    private List<IndexItem> indexData = new();
+    private string? heatmapUpdatedAt;
+    private record SectorItem(string Symbol, string Name, string NameEn, double ChangePct, int Weight);
+    private record IndexItem(string Symbol, string Name, double ChangePct);
+
+    // Drilldown
+    private string? drilldownEtf;
+    private string? drilldownSectorName;
+    private bool drilldownLoading;
+    private List<StockItem> drilldownStocks = new();
+    private record StockItem(string Symbol, string Name, int Weight, double ChangePct, double Price);
+
+    // Replay Backtest
     private double btCapital = 1000;
-    private double btBuyThreshold = 0.12;
-    private double btSellThreshold = -0.12;
+    private double btPosPct = 0.20;
+    private int btMaxPos = 3;
+    private double btTrailStop = 0.05;
     private int btMaxHold = 30;
     private bool btRunning = false;
     private string? btStatus;
     private System.Text.Json.JsonElement? btResult;
+    private System.Text.Json.JsonElement? logStats;
 
     private async Task ToggleCard(string sym)
     {
@@ -567,11 +788,102 @@ else
         {
             watchlist = await Db.GetWatchlistAsync();
             await LoadAnalysis();
+            await LoadSignalLogStats();
+            await LoadMarketOverview();
         }
         catch (Exception ex)
         {
             statusMsg = $"Load error: {ex.Message}";
         }
+    }
+
+    private async Task LoadMarketOverview()
+    {
+        heatmapLoading = true;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/market/overview");
+
+            sectorData.Clear();
+            indexData.Clear();
+
+            if (resp.TryGetProperty("sectors", out var sectors))
+            {
+                foreach (var s in sectors.EnumerateArray())
+                {
+                    sectorData.Add(new SectorItem(
+                        s.GetProperty("symbol").GetString() ?? "",
+                        s.GetProperty("name").GetString() ?? "",
+                        s.GetProperty("name_en").GetString() ?? "",
+                        s.GetProperty("change_pct").GetDouble(),
+                        s.GetProperty("weight").GetInt32()
+                    ));
+                }
+            }
+            if (resp.TryGetProperty("indices", out var indices))
+            {
+                foreach (var idx in indices.EnumerateArray())
+                {
+                    indexData.Add(new IndexItem(
+                        idx.GetProperty("symbol").GetString() ?? "",
+                        idx.GetProperty("name").GetString() ?? "",
+                        idx.GetProperty("change_pct").GetDouble()
+                    ));
+                }
+            }
+            if (resp.TryGetProperty("updated_at", out var ua))
+                heatmapUpdatedAt = ua.GetString()?[..16]?.Replace("T", " ");
+        }
+        catch { }
+        finally { heatmapLoading = false; }
+    }
+
+    private async Task ToggleDrilldown(string etfSymbol)
+    {
+        if (drilldownEtf == etfSymbol)
+        {
+            drilldownEtf = null;
+            return;
+        }
+        drilldownEtf = etfSymbol;
+        drilldownSectorName = sectorData.FirstOrDefault(s => s.Symbol == etfSymbol)?.Name ?? etfSymbol;
+        drilldownLoading = true;
+        drilldownStocks.Clear();
+        StateHasChanged();
+
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/market/sector/{etfSymbol}");
+            if (resp.TryGetProperty("stocks", out var stocks))
+            {
+                foreach (var st in stocks.EnumerateArray())
+                {
+                    drilldownStocks.Add(new StockItem(
+                        st.GetProperty("symbol").GetString() ?? "",
+                        st.GetProperty("name").GetString() ?? "",
+                        st.GetProperty("weight").GetInt32(),
+                        st.GetProperty("change_pct").GetDouble(),
+                        st.GetProperty("price").GetDouble()
+                    ));
+                }
+            }
+        }
+        catch { }
+        finally { drilldownLoading = false; }
+    }
+
+    private async Task LoadSignalLogStats()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/signal-log/stats");
+            var total = resp.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
+            logStats = total > 0 ? resp : null;
+        }
+        catch { logStats = null; }
     }
 
     private async Task LoadAnalysis()
@@ -673,40 +985,37 @@ else
         finally { analyzing = false; }
     }
 
-    private async Task RunBacktest()
+    private async Task RunReplayBacktest()
     {
-        if (!watchlist.Any())
-        {
-            btStatus = "Add symbols first";
-            return;
-        }
         btRunning = true;
-        btStatus = "Running backtest... (downloading data + computing 24 indicators per day)";
+        btStatus = "Running replay backtest on logged signals...";
         btResult = null;
         StateHasChanged();
         try
         {
             var client = HttpFactory.CreateClient("Engine");
-            client.Timeout = TimeSpan.FromSeconds(300);
+            client.Timeout = TimeSpan.FromSeconds(120);
             var payload = new
             {
-                start_date = btFrom.ToString("yyyy-MM-dd"),
-                end_date = btTo.ToString("yyyy-MM-dd"),
                 initial_capital = btCapital,
-                position_pct = 0.20,
-                max_positions = 3,
-                buy_threshold = btBuyThreshold,
-                sell_threshold = btSellThreshold,
-                trailing_stop_pct = 0.05,
+                position_pct = btPosPct,
+                max_positions = btMaxPos,
+                trailing_stop_pct = btTrailStop,
                 max_hold_days = btMaxHold,
             };
-            await client.PostAsJsonAsync("/watchlist/backtest", payload);
+            var postResp = await client.PostAsJsonAsync("/watchlist/replay-backtest", payload);
+            var postJson = await postResp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+            if (postJson.TryGetProperty("status", out var errSt) && errSt.GetString() == "error")
+            {
+                btStatus = postJson.TryGetProperty("message", out var msg) ? msg.GetString() : "Error";
+                return;
+            }
 
             // Poll for results
-            for (int i = 0; i < 60; i++)
+            for (int i = 0; i < 40; i++)
             {
-                await Task.Delay(3000);
-                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/backtest");
+                await Task.Delay(2000);
+                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/replay-backtest");
                 if (resp.TryGetProperty("status", out var st) && st.GetString() == "done")
                 {
                     btResult = resp;
@@ -714,10 +1023,6 @@ else
                     StateHasChanged();
                     await RenderBacktestChart();
                     return;
-                }
-                if (resp.TryGetProperty("status", out var st2) && st2.GetString() == "running")
-                {
-                    continue;
                 }
             }
             btStatus = "Backtest timed out. Try again.";

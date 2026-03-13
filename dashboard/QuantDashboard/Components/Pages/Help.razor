@@ -14,14 +14,16 @@
     <!-- 시스템 개요 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('1')">
+            <span class="help-section-arrow" id="help-icon-1">&#x25bc;</span>
             <span class="material-symbols-outlined">info</span>
             시스템 개요
         </h4>
+        <div id="help-body-1">
         <p class="text-muted" style="line-height:1.7">
             Swing V4는 미국 주식을 위한 <strong>반자동 스윙 트레이딩 시스템</strong>입니다.
             엔진이 매일 S&amp;P 500 종목을 기술적 지표로 스캔하여 진입/청산 시그널을 생성하고,
-            AI(Claude)와 멀티팩터 분석(Finnhub)으로 점수를 매긴 후, 사용자의 승인을 기다립니다.
+            AI(Ollama 로컬 LLM)와 멀티팩터 분석(Finnhub)으로 점수를 매긴 후, 사용자의 승인을 기다립니다.
             모든 알림은 텔레그램으로 실시간 전송됩니다.
         </p>
         <div style="margin-top:0.75rem; display:flex; flex-wrap:wrap; gap:0.5rem">
@@ -29,9 +31,837 @@
             <span class="help-tag">Blazor 대시보드 (포트 5000)</span>
             <span class="help-tag">PostgreSQL + TimescaleDB</span>
             <span class="help-tag">Redis 캐시</span>
+            <span class="help-tag">Ollama 로컬 AI (Qwen 2.5 3B)</span>
             <span class="help-tag">systemd 자동 재시작</span>
             <span class="help-tag">텔레그램 알림</span>
             <span class="help-tag">SSE 실시간 푸시</span>
+        </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 주식 투자 기초 & 스윙 트레이딩이란? -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('2')">
+            <span class="help-section-arrow" id="help-icon-2">&#x25bc;</span>
+            <span class="material-symbols-outlined">school</span>
+            주식 투자 기초 &amp; 스윙 트레이딩이란?
+        </h4>
+        <div id="help-body-2">
+
+        <div class="help-edu-block">
+            <h5 class="help-subtitle">주식 투자의 3가지 스타일</h5>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>스타일</th><th>보유 기간</th><th>특징</th><th>적합 대상</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>데이 트레이딩</strong></td>
+                        <td>수 분 ~ 하루</td>
+                        <td>하루 안에 매수-매도 완료. 빠른 판단 필요, 수수료 부담 큼</td>
+                        <td>전업 트레이더</td>
+                    </tr>
+                    <tr style="background: rgba(59,130,246,0.08)">
+                        <td><strong>스윙 트레이딩 &#x2b50;</strong></td>
+                        <td>2일 ~ 2주</td>
+                        <td>추세를 타고 며칠간 보유. 하루 1~2번 확인. <strong>우리 시스템이 이 방식</strong></td>
+                        <td>직장인, 초보자</td>
+                    </tr>
+                    <tr>
+                        <td><strong>장기 투자</strong></td>
+                        <td>수 개월 ~ 수 년</td>
+                        <td>기업 가치 분석 후 장기 보유. 변동성 견딤 필요</td>
+                        <td>워렌 버핏 스타일</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="help-edu-block">
+            <h5 class="help-subtitle">스윙 트레이딩의 핵심 개념</h5>
+            <div class="help-concept-grid">
+                <div class="help-concept-card">
+                    <div class="help-concept-icon">&#x1f4c8;</div>
+                    <strong>추세(Trend)</strong>
+                    <p>주가가 일정 방향으로 움직이는 흐름. <strong>상승 추세</strong>일 때 매수하고, 추세가 꺾이면 매도합니다.</p>
+                </div>
+                <div class="help-concept-card">
+                    <div class="help-concept-icon">&#x1f680;</div>
+                    <strong>모멘텀(Momentum)</strong>
+                    <p>주가 상승의 <strong>"힘"</strong>. 최근 많이 오른 종목이 계속 오르는 경향이 있다는 원리입니다.</p>
+                </div>
+                <div class="help-concept-card">
+                    <div class="help-concept-icon">&#x1f4ca;</div>
+                    <strong>거래량(Volume)</strong>
+                    <p>하루에 거래된 주식 수. 거래량이 평소보다 <strong>많으면</strong> 기관 투자자가 관심을 갖고 있다는 신호입니다.</p>
+                </div>
+                <div class="help-concept-card">
+                    <div class="help-concept-icon">&#x1f6e1;&#xfe0f;</div>
+                    <strong>손절/익절(SL/TP)</strong>
+                    <p><strong>손절(Stop Loss)</strong>: 손실이 커지기 전에 파는 것 (-5%). <strong>익절(Take Profit)</strong>: 목표 수익에 도달하면 파는 것 (+10%).</p>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 우리의 전략: 한눈에 보기 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('3')">
+            <span class="help-section-arrow" id="help-icon-3">&#x25bc;</span>
+            <span class="material-symbols-outlined">strategy</span>
+            우리의 전략: 한눈에 보기
+        </h4>
+        <div id="help-body-3">
+        <p class="text-muted" style="line-height:1.7; margin-bottom:1rem">
+            Swing V4는 <strong>"강한 상승 추세 + 높은 모멘텀 + 거래량 급증"</strong> 조건이 동시에 충족되는 종목만 골라서 매수하고,
+            수익이 나면 자동으로 이익을 확보하고 손실이 나면 빠르게 빠져나오는 <strong>규칙 기반 트레이딩 시스템</strong>입니다.
+        </p>
+
+        <div class="help-strategy-flow">
+            <div class="help-strat-step">
+                <div class="help-strat-num">1</div>
+                <div class="help-strat-content">
+                    <strong>종목 선별 (Universe)</strong>
+                    <p>S&amp;P 500 + NASDAQ 100 중에서 가격 $10~$60, 거래량 충분한 종목 ~200개를 매주 갱신합니다.</p>
+                    <span class="help-strat-why">&#x2753; 왜? 대형 우량주만 대상으로 하면 갑자기 상장폐지되거나 급락할 위험이 적습니다.</span>
+                </div>
+            </div>
+            <div class="help-strat-arrow">&#x25bc;</div>
+            <div class="help-strat-step">
+                <div class="help-strat-num">2</div>
+                <div class="help-strat-content">
+                    <strong>매수 시그널 스캔 (Entry Signal)</strong>
+                    <p>매일 아침 아래 <strong>5가지 조건을 모두 만족</strong>하는 종목을 찾습니다:</p>
+                    <table class="data-table help-table" style="margin-top:0.5rem">
+                        <thead><tr><th>조건</th><th>의미</th><th>사용 지표</th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td>현재가 &gt; <a href="javascript:void(0)" onclick="openIndicatorPopup('sma')" class="help-indicator-link">SMA50</a> &gt; <a href="javascript:void(0)" onclick="openIndicatorPopup('sma')" class="help-indicator-link">SMA200</a></td>
+                                <td>확실한 상승 추세 (골든크로스 상태)</td>
+                                <td>이동평균선</td>
+                            </tr>
+                            <tr>
+                                <td>20일 수익률 상위 40%</td>
+                                <td>최근 한 달간 다른 종목보다 많이 오른 강한 종목</td>
+                                <td>모멘텀 순위</td>
+                            </tr>
+                            <tr>
+                                <td>최근 5일 최고가 돌파</td>
+                                <td>단기 저항선을 뚫고 올라가는 중 (브레이크아웃)</td>
+                                <td>가격 패턴</td>
+                            </tr>
+                            <tr>
+                                <td>거래량 &ge; 평균의 1.2배</td>
+                                <td>기관 투자자가 매수에 참여하고 있다는 증거</td>
+                                <td>거래량 비율</td>
+                            </tr>
+                            <tr>
+                                <td>주가 $10 ~ $60</td>
+                                <td>$200 예산으로 최소 3주 이상 매수 가능한 가격대</td>
+                                <td>가격 필터</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="help-strat-arrow">&#x25bc;</div>
+            <div class="help-strat-step">
+                <div class="help-strat-num">3</div>
+                <div class="help-strat-content">
+                    <strong>AI + 멀티팩터 검증</strong>
+                    <p>기술적 조건을 통과한 시그널에 대해 3가지 관점에서 추가 검증합니다:</p>
+                    <div class="help-factor-bar">
+                        <div class="help-factor-seg" style="flex:4; background:var(--accent-blue,#3b82f6)">기술 40%</div>
+                        <div class="help-factor-seg" style="flex:3; background:var(--accent-green,#34d399)">감성 30%</div>
+                        <div class="help-factor-seg" style="flex:3; background:var(--accent-yellow,#fbbf24)">수급 30%</div>
+                    </div>
+                    <ul class="help-list" style="margin-top:0.5rem">
+                        <li><strong>기술(40%)</strong> — 추세 강도, 모멘텀, 거래량 패턴 점수화</li>
+                        <li><strong>감성(30%)</strong> — Finnhub 뉴스를 Ollama 로컬 AI가 분석하여 시장 심리 판단</li>
+                        <li><strong>수급(30%)</strong> — 내부자 매수/매도, 애널리스트 추천, 어닝 일정</li>
+                    </ul>
+                    <p style="margin-top:0.5rem"><strong>종합 점수 50점 이상</strong>이면 "투자 가치 있음"으로 판정합니다.</p>
+                </div>
+            </div>
+            <div class="help-strat-arrow">&#x25bc;</div>
+            <div class="help-strat-step">
+                <div class="help-strat-num">4</div>
+                <div class="help-strat-content">
+                    <strong>사용자 승인 &amp; 매수</strong>
+                    <p>텔레그램 알림 확인 → 대시보드에서 <strong>Approve</strong> 클릭 → 자동 매수</p>
+                    <p style="margin-top:0.3rem">포지션 크기: 계좌의 20% ($1,000이면 $200씩 매수)</p>
+                </div>
+            </div>
+            <div class="help-strat-arrow">&#x25bc;</div>
+            <div class="help-strat-step">
+                <div class="help-strat-num">5</div>
+                <div class="help-strat-content">
+                    <strong>자동 청산 (Exit)</strong>
+                    <p>매수 후에는 시스템이 하루 3회 자동으로 체크합니다:</p>
+                    <table class="data-table help-table" style="margin-top:0.5rem">
+                        <thead><tr><th>청산 조건</th><th>발동 기준</th><th>초보자 설명</th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>손절 (Stop Loss)</strong></td>
+                                <td>-5%</td>
+                                <td>더 떨어지기 전에 손실을 확정하고 빠져나옵니다. <strong>"손실을 작게"</strong></td>
+                            </tr>
+                            <tr>
+                                <td><strong>익절 (Take Profit)</strong></td>
+                                <td>+10%</td>
+                                <td>목표에 도달하면 이익을 확정합니다. <strong>"욕심부리지 않기"</strong></td>
+                            </tr>
+                            <tr>
+                                <td><strong>추적 손절 (Trailing Stop)</strong></td>
+                                <td>+5% 후 활성화,<br/>고점 대비 -3%</td>
+                                <td>수익이 나면 <strong>이익을 보호</strong>합니다. +8% 올랐다가 +5%로 빠지면 자동 매도</td>
+                            </tr>
+                            <tr>
+                                <td><strong>분할 청산 (Partial Exit)</strong></td>
+                                <td>+7% 시 50% 매도</td>
+                                <td>+7% 수익 시 <strong>절반을 먼저 팔아서 이익을 확보</strong>하고, 나머지는 더 오를 수 있게 남깁니다</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="help-tip" style="margin-top:0.75rem">
+                        <span class="material-symbols-outlined">lightbulb</span>
+                        <strong>핵심 원칙:</strong> "손실은 작게(-5%), 이익은 크게(+10%)" — 이것이 스윙 트레이딩의 기본 원칙입니다.
+                        10번 거래에서 5번 손절(-5%)하고 5번 익절(+10%)해도 <strong>전체적으로는 수익</strong>이 납니다.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+        </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 기술적 지표 사전 (팝업 설명) -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('4')">
+            <span class="help-section-arrow" id="help-icon-4">&#x25bc;</span>
+            <span class="material-symbols-outlined">auto_stories</span>
+            기술적 지표 사전
+            <span class="text-muted" style="font-size:0.85rem; margin-left:0.5rem">&#x2014; 클릭하면 상세 설명이 열립니다</span>
+        </h4>
+        <div id="help-body-4">
+        <p class="text-muted" style="line-height:1.7; margin-bottom:1rem">
+            우리 시스템이 사용하는 모든 기술적 지표를 초보자도 이해할 수 있게 설명합니다.
+            각 지표의 이름을 클릭하면 상세 설명이 펼쳐지고, <span class="help-ext-link-sample">&#x1f517; 더 알아보기</span> 링크로 전문 자료를 볼 수 있습니다.
+        </p>
+
+        <!-- SMA -->
+        <div class="help-indicator-card" id="ind-sma">
+            <div class="help-ind-header" onclick="toggleIndicator('sma')">
+                <span class="help-ind-expand" id="ind-sma-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-trend">추세</span>
+                <strong>SMA (Simple Moving Average) — 단순이동평균선</strong>
+                <span class="help-ind-usage">진입/워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-sma-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    최근 N일간의 <strong>평균 주가</strong>를 선으로 이은 것입니다.
+                    마치 시험 점수의 "최근 50일 평균"과 같습니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>계산 방법:</strong> SMA50 = 최근 50일 종가의 합 / 50</p>
+                    <p><strong>우리 시스템에서의 사용:</strong></p>
+                    <ul class="help-list">
+                        <li><strong>SMA50</strong> (50일선) — 중기 추세. 현재가가 이 위에 있으면 중기적으로 상승 중</li>
+                        <li><strong>SMA200</strong> (200일선) — 장기 추세. "장기 건강 상태"를 보여줌</li>
+                        <li><strong>SMA20</strong> (20일선) — 단기 추세. 워치리스트 분석에서 사용</li>
+                        <li><strong>골든크로스</strong>: SMA50이 SMA200을 <strong>위로 돌파</strong> → 강한 매수 시그널</li>
+                        <li><strong>데드크로스</strong>: SMA50이 SMA200을 <strong>아래로 돌파</strong> → 매도 경고</li>
+                    </ul>
+                    <div class="help-ind-chart-example">
+                        <strong>진입 조건:</strong> 현재가 &gt; SMA50 &gt; SMA200 (3중 정렬 = 확실한 상승 추세)
+                    </div>
+                </div>
+                <a href="https://www.investopedia.com/terms/s/sma.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: SMA 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- RSI -->
+        <div class="help-indicator-card" id="ind-rsi">
+            <div class="help-ind-header" onclick="toggleIndicator('rsi')">
+                <span class="help-ind-expand" id="ind-rsi-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-momentum">모멘텀</span>
+                <strong>RSI (Relative Strength Index) — 상대강도지수</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-rsi-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    주가가 <strong>"너무 많이 올랐는지"(과매수) 또는 "너무 많이 빠졌는지"(과매도)</strong>를 0~100 숫자로 알려줍니다.
+                    체온계처럼 "지금 과열됐는지" 체크하는 도구입니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>계산 방법:</strong> 최근 14일간 상승폭과 하락폭의 비율</p>
+                    <div class="help-ind-gauge">
+                        <div class="help-gauge-zone help-gauge-oversold">0 ────── 30<br/><strong>과매도</strong><br/>&#x1f7e2; 매수 기회</div>
+                        <div class="help-gauge-zone help-gauge-neutral">30 ────── 70<br/><strong>중립</strong><br/>&#x26aa; 관망</div>
+                        <div class="help-gauge-zone help-gauge-overbought">70 ────── 100<br/><strong>과매수</strong><br/>&#x1f534; 매도 고려</div>
+                    </div>
+                    <p style="margin-top:0.5rem"><strong>우리 시스템에서의 사용:</strong></p>
+                    <ul class="help-list">
+                        <li>RSI &lt; 30 → <strong>과매도</strong> 상태. 반등할 가능성이 높음 (매수 시그널)</li>
+                        <li>RSI &gt; 70 → <strong>과매수</strong> 상태. 조정받을 가능성이 높음 (매도 시그널)</li>
+                        <li>RSI 40~60 → 중립. 다른 지표와 함께 판단</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/r/rsi.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: RSI 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- MACD -->
+        <div class="help-indicator-card" id="ind-macd">
+            <div class="help-ind-header" onclick="toggleIndicator('macd')">
+                <span class="help-ind-expand" id="ind-macd-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-macd-cat">MACD</span>
+                <strong>MACD (Moving Average Convergence Divergence) — 이동평균수렴확산</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-macd-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    두 이동평균선의 <strong>간격(차이)</strong>을 측정하여 추세의 <strong>방향과 강도</strong>를 보여줍니다.
+                    "상승세가 빨라지고 있는지, 느려지고 있는지"를 판단합니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>3가지 구성 요소:</strong></p>
+                    <ul class="help-list">
+                        <li><strong>MACD 라인</strong> = EMA12 - EMA26 (단기 평균 - 장기 평균의 차이)</li>
+                        <li><strong>시그널 라인</strong> = MACD 라인의 9일 평균</li>
+                        <li><strong>히스토그램</strong> = MACD - 시그널 (막대그래프로 표시)</li>
+                    </ul>
+                    <p style="margin-top:0.5rem"><strong>매매 시그널:</strong></p>
+                    <ul class="help-list">
+                        <li>MACD가 시그널을 <strong>위로 돌파</strong> → &#x1f7e2; <strong>매수 시그널</strong> (상승세 시작)</li>
+                        <li>MACD가 시그널을 <strong>아래로 돌파</strong> → &#x1f534; <strong>매도 시그널</strong> (하락세 시작)</li>
+                        <li>히스토그램이 <strong>양수 → 커지는 중</strong> = 상승 모멘텀 강화</li>
+                        <li>히스토그램이 <strong>양수 → 줄어드는 중</strong> = 상승 모멘텀 약화 (주의)</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/m/macd.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: MACD 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- Stochastic -->
+        <div class="help-indicator-card" id="ind-stoch">
+            <div class="help-ind-header" onclick="toggleIndicator('stoch')">
+                <span class="help-ind-expand" id="ind-stoch-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-momentum">모멘텀</span>
+                <strong>Stochastic Oscillator — 스토캐스틱</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-stoch-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    현재 주가가 최근 14일 동안의 <strong>최고가~최저가 범위에서 어디쯤</strong> 위치하는지를 0~100%로 보여줍니다.
+                    "현재 주가가 최근 범위의 꼭대기인지, 바닥인지" 알려줍니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>계산:</strong> %K = (현재가 - 14일최저) / (14일최고 - 14일최저) × 100</p>
+                    <ul class="help-list">
+                        <li>%K &gt; 80 → <strong>과매수 영역</strong>. 가격이 최근 범위의 상단에 있음 (하락 가능성)</li>
+                        <li>%K &lt; 20 → <strong>과매도 영역</strong>. 가격이 최근 범위의 하단에 있음 (반등 가능성)</li>
+                        <li>RSI와 비슷하지만, 스토캐스틱이 더 <strong>민감하게</strong> 반응합니다</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/s/stochasticoscillator.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: Stochastic 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- ADX -->
+        <div class="help-indicator-card" id="ind-adx">
+            <div class="help-ind-header" onclick="toggleIndicator('adx')">
+                <span class="help-ind-expand" id="ind-adx-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-trend">추세</span>
+                <strong>ADX (Average Directional Index) — 평균방향지수</strong>
+                <span class="help-ind-usage">워치리스트 (레짐 판단)</span>
+            </div>
+            <div class="help-ind-body" id="ind-adx-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    추세가 <strong>"얼마나 강한지"</strong>를 측정합니다. 방향(오르는지/내리는지)은 알려주지 않고,
+                    <strong>추세의 힘</strong>만 0~100으로 보여줍니다.
+                </div>
+                <div class="help-ind-detail">
+                    <div class="help-ind-gauge">
+                        <div class="help-gauge-zone" style="background:rgba(148,163,184,0.15); border-color:#94a3b8">0 ────── 20<br/><strong>추세 없음</strong><br/>횡보장 (박스권)</div>
+                        <div class="help-gauge-zone" style="background:rgba(59,130,246,0.15); border-color:#3b82f6">20 ────── 25<br/><strong>약한 추세</strong><br/>추세 시작?</div>
+                        <div class="help-gauge-zone" style="background:rgba(52,211,153,0.15); border-color:#34d399">25 ────── 100<br/><strong>강한 추세</strong><br/>추세 추종 유리</div>
+                    </div>
+                    <p style="margin-top:0.5rem"><strong>우리 시스템에서의 핵심 역할 — 레짐 판단:</strong></p>
+                    <ul class="help-list">
+                        <li>ADX &gt; 25 (추세장) → <strong>추세 추종 지표</strong>(SMA, MACD)의 가중치를 높임</li>
+                        <li>ADX &lt; 20 (횡보장) → <strong>평균회귀 지표</strong>(RSI, 볼린저밴드)의 가중치를 높임</li>
+                        <li>"지금이 추세장인지 횡보장인지"에 따라 분석 방법 자체를 바꿉니다</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/a/adx.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: ADX 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- Bollinger Bands -->
+        <div class="help-indicator-card" id="ind-bb">
+            <div class="help-ind-header" onclick="toggleIndicator('bb')">
+                <span class="help-ind-expand" id="ind-bb-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-meanrev">평균회귀</span>
+                <strong>Bollinger Bands — 볼린저 밴드</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-bb-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    주가 주변에 <strong>"정상 범위"</strong>를 그려주는 밴드입니다.
+                    주가가 밴드 밖으로 나가면 "비정상적으로 많이 올랐거나 빠졌다"는 의미입니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>3개의 선:</strong></p>
+                    <ul class="help-list">
+                        <li><strong>상단 밴드</strong> = SMA20 + (표준편차 × 2) — "비싼 영역"</li>
+                        <li><strong>중간선</strong> = SMA20 (20일 평균가)</li>
+                        <li><strong>하단 밴드</strong> = SMA20 - (표준편차 × 2) — "싼 영역"</li>
+                    </ul>
+                    <p style="margin-top:0.5rem"><strong>%B 지표</strong> = 현재가가 밴드 안에서 어디 있는지 (0%=하단, 100%=상단)</p>
+                    <ul class="help-list">
+                        <li>%B &lt; 10% → 하단 밴드 근처. <strong>반등 가능성</strong> (매수 검토)</li>
+                        <li>%B &gt; 90% → 상단 밴드 근처. <strong>조정 가능성</strong> (매도 검토)</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/b/bollingerbands.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: Bollinger Bands 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- ATR -->
+        <div class="help-indicator-card" id="ind-atr">
+            <div class="help-ind-header" onclick="toggleIndicator('atr')">
+                <span class="help-ind-expand" id="ind-atr-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-vol">변동성</span>
+                <strong>ATR (Average True Range) — 평균진폭</strong>
+                <span class="help-ind-usage">워치리스트 (목표가/손절가)</span>
+            </div>
+            <div class="help-ind-body" id="ind-atr-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    하루 동안 주가가 <strong>평균적으로 얼마나 움직이는지</strong>를 알려줍니다.
+                    "이 주식은 보통 하루에 $1.50 정도 왔다갔다 한다"를 측정합니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>용도:</strong></p>
+                    <ul class="help-list">
+                        <li><strong>목표가 설정</strong>: 현재가 + ATR × 2 (평균 이동폭의 2배를 목표)</li>
+                        <li><strong>손절가 설정</strong>: 현재가 - ATR × 1.5 (평균 변동 범위 밖으로 나가면 손절)</li>
+                        <li>ATR이 크면 변동성이 큰 주식, 작으면 안정적인 주식</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/a/atr.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: ATR 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- OBV -->
+        <div class="help-indicator-card" id="ind-obv">
+            <div class="help-ind-header" onclick="toggleIndicator('obv')">
+                <span class="help-ind-expand" id="ind-obv-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-volume">거래량</span>
+                <strong>OBV (On Balance Volume) — 거래량 누적지표</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-obv-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    주가가 오른 날의 거래량은 <strong>더하고</strong>, 내린 날의 거래량은 <strong>빼서</strong> 누적합니다.
+                    "돈이 이 종목으로 <strong>들어오고 있는지, 빠져나가고 있는지</strong>"를 보여줍니다.
+                </div>
+                <div class="help-ind-detail">
+                    <ul class="help-list">
+                        <li>OBV가 <strong>상승 추세</strong> → 매수세 유입 (기관이 사는 중)</li>
+                        <li>OBV가 <strong>하락 추세</strong> → 매도세 유출 (기관이 파는 중)</li>
+                        <li>주가는 횡보인데 OBV가 상승 → <strong>곧 주가도 올라갈 가능성</strong> (선행 지표)</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/o/onbalancevolume.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: OBV 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- Williams %R -->
+        <div class="help-indicator-card" id="ind-willr">
+            <div class="help-ind-header" onclick="toggleIndicator('willr')">
+                <span class="help-ind-expand" id="ind-willr-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-momentum">모멘텀</span>
+                <strong>Williams %R — 윌리엄스 %R</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-willr-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    스토캐스틱과 비슷하지만 <strong>거꾸로 된 버전</strong>입니다.
+                    -100~0 범위로, 현재가가 최근 범위의 <strong>최고점에 얼마나 가까운지</strong>를 보여줍니다.
+                </div>
+                <div class="help-ind-detail">
+                    <ul class="help-list">
+                        <li>%R &gt; -20 → <strong>과매수</strong> 영역 (최고가 근처, 하락 가능성)</li>
+                        <li>%R &lt; -80 → <strong>과매도</strong> 영역 (최저가 근처, 반등 가능성)</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/w/williamsr.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: Williams %R 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- ROC -->
+        <div class="help-indicator-card" id="ind-roc">
+            <div class="help-ind-header" onclick="toggleIndicator('roc')">
+                <span class="help-ind-expand" id="ind-roc-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-momentum">모멘텀</span>
+                <strong>ROC (Rate of Change) — 변화율</strong>
+                <span class="help-ind-usage">워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-roc-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    "10일 전과 비교해서 <strong>몇 % 올랐거나 내렸는지</strong>"를 단순하게 보여줍니다.
+                    가장 직관적인 모멘텀 지표입니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>계산:</strong> ROC = (오늘 종가 - 10일 전 종가) / 10일 전 종가 × 100</p>
+                    <ul class="help-list">
+                        <li>ROC &gt; 0 → 10일 전보다 <strong>상승</strong> (양의 모멘텀)</li>
+                        <li>ROC &lt; 0 → 10일 전보다 <strong>하락</strong> (음의 모멘텀)</li>
+                        <li>ROC가 <strong>커지는 중</strong> → 상승 속도가 빨라지고 있음</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/r/rateofchange.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: ROC 더 알아보기</a>
+            </div>
+        </div>
+
+        <!-- Volume Ratio -->
+        <div class="help-indicator-card" id="ind-volratio">
+            <div class="help-ind-header" onclick="toggleIndicator('volratio')">
+                <span class="help-ind-expand" id="ind-volratio-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-volume">거래량</span>
+                <strong>Volume Ratio — 거래량 비율</strong>
+                <span class="help-ind-usage">진입/워치리스트</span>
+            </div>
+            <div class="help-ind-body" id="ind-volratio-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    "오늘 거래량이 <strong>평소보다 몇 배나 많은지</strong>"를 보여줍니다.
+                    갑자기 거래량이 많아지면 큰 손(기관)이 움직이고 있다는 뜻입니다.
+                </div>
+                <div class="help-ind-detail">
+                    <p><strong>계산:</strong> 최근 5일 평균 거래량 / 20일 평균 거래량</p>
+                    <ul class="help-list">
+                        <li>비율 &ge; <strong>1.2</strong> → 평소보다 20% 이상 많은 거래 → <strong>진입 조건 충족</strong></li>
+                        <li>비율 &ge; <strong>1.5</strong> → 워치리스트에서 거래량 확인으로 인정</li>
+                        <li>비율 &lt; 1.0 → 평소보다 적은 거래 → 관심도 낮음</li>
+                    </ul>
+                    <div class="help-tip" style="margin-top:0.5rem">
+                        <span class="material-symbols-outlined">info</span>
+                        거래량이 없는 상승은 "힘 없는 상승"이라 곧 떨어질 수 있습니다. 거래량은 상승의 <strong>"연료"</strong>입니다.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- EMA -->
+        <div class="help-indicator-card" id="ind-ema">
+            <div class="help-ind-header" onclick="toggleIndicator('ema')">
+                <span class="help-ind-expand" id="ind-ema-icon">&#x25b6;</span>
+                <span class="help-ind-badge help-ind-trend">추세</span>
+                <strong>EMA (Exponential Moving Average) — 지수이동평균선</strong>
+                <span class="help-ind-usage">MACD 내부</span>
+            </div>
+            <div class="help-ind-body" id="ind-ema-body" style="display:none">
+                <div class="help-ind-simple">
+                    <strong>&#x1f4a1; 쉬운 설명:</strong>
+                    SMA와 같은 이동평균이지만, <strong>최근 가격에 더 많은 비중</strong>을 줍니다.
+                    SMA보다 가격 변화에 <strong>빠르게 반응</strong>합니다.
+                </div>
+                <div class="help-ind-detail">
+                    <ul class="help-list">
+                        <li>MACD 계산에 사용됨: EMA12 (단기), EMA26 (장기)</li>
+                        <li>SMA보다 민감하여 추세 전환을 먼저 감지</li>
+                    </ul>
+                </div>
+                <a href="https://www.investopedia.com/terms/e/ema.asp" target="_blank" rel="noopener" class="help-ext-link">&#x1f517; Investopedia: EMA 더 알아보기</a>
+            </div>
+        </div>
+    </div>
+        </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 워치리스트 스코어링 시스템 -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('5')">
+            <span class="help-section-arrow" id="help-icon-5">&#x25bc;</span>
+            <span class="material-symbols-outlined">tune</span>
+            워치리스트 24지표 스코어링 시스템
+        </h4>
+        <div id="help-body-5">
+        <p class="text-muted" style="line-height:1.7; margin-bottom:1rem">
+            워치리스트의 "Analyze All"을 실행하면 <strong>24개 기술적 지표</strong>를 5개 카테고리로 분류하여
+            가중 합산합니다. 단순히 "RSI가 낮으니까 사라"가 아니라, <strong>지금이 추세장인지 횡보장인지에 따라
+            분석 방법 자체를 바꿉니다.</strong>
+        </p>
+
+        <h5 class="help-subtitle">5개 카테고리와 가중치</h5>
+        <table class="data-table help-table">
+            <thead>
+                <tr><th>카테고리</th><th>기본 가중치</th><th>포함 지표</th><th>역할</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="help-ind-badge help-ind-trend">추세 (Trend)</span></td>
+                    <td>30%</td>
+                    <td>
+                        <a href="javascript:void(0)" onclick="toggleIndicator('sma')" class="help-indicator-link">SMA</a> 20/50 크로스,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('sma')" class="help-indicator-link">SMA</a> 50/200 크로스,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('adx')" class="help-indicator-link">ADX</a> 방향,
+                        가격 vs SMA200
+                    </td>
+                    <td>"지금 상승 추세인가?"</td>
+                </tr>
+                <tr>
+                    <td><span class="help-ind-badge help-ind-momentum">모멘텀</span></td>
+                    <td>25%</td>
+                    <td>
+                        <a href="javascript:void(0)" onclick="toggleIndicator('rsi')" class="help-indicator-link">RSI(14)</a>,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('stoch')" class="help-indicator-link">Stochastic(14,3)</a>,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('roc')" class="help-indicator-link">ROC(10)</a>,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('willr')" class="help-indicator-link">Williams %R</a>
+                    </td>
+                    <td>"상승/하락의 힘이 강한가?"</td>
+                </tr>
+                <tr>
+                    <td><span class="help-ind-badge help-ind-macd-cat">MACD</span></td>
+                    <td>20%</td>
+                    <td>
+                        <a href="javascript:void(0)" onclick="toggleIndicator('macd')" class="help-indicator-link">MACD</a> 크로스,
+                        히스토그램 방향,
+                        시그널 거리
+                    </td>
+                    <td>"모멘텀이 빨라지고 있나?"</td>
+                </tr>
+                <tr>
+                    <td><span class="help-ind-badge help-ind-meanrev">평균회귀</span></td>
+                    <td>15%</td>
+                    <td>
+                        <a href="javascript:void(0)" onclick="toggleIndicator('bb')" class="help-indicator-link">BB</a> 위치/\%B,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('rsi')" class="help-indicator-link">RSI</a> 극단,
+                        가격 vs SMA20
+                    </td>
+                    <td>"너무 올랐으니 빠질까?"</td>
+                </tr>
+                <tr>
+                    <td><span class="help-ind-badge help-ind-volume">거래량</span></td>
+                    <td>10%</td>
+                    <td>
+                        <a href="javascript:void(0)" onclick="toggleIndicator('volratio')" class="help-indicator-link">거래량 비율</a>,
+                        <a href="javascript:void(0)" onclick="toggleIndicator('obv')" class="help-indicator-link">OBV</a> 추세,
+                        거래량-가격 확인
+                    </td>
+                    <td>"큰 손이 움직이고 있나?"</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h5 class="help-subtitle" style="margin-top:1.5rem">
+            <a href="javascript:void(0)" onclick="toggleIndicator('adx')" class="help-indicator-link">ADX</a> 기반 레짐 적응형 가중치
+        </h5>
+        <p style="margin-bottom:0.5rem">시장 상황에 따라 <strong>가중치가 자동으로 조정</strong>됩니다:</p>
+        <table class="data-table help-table">
+            <thead>
+                <tr><th>시장 상황</th><th>ADX 값</th><th>추세</th><th>모멘텀</th><th>MACD</th><th>평균회귀</th><th>거래량</th></tr>
+            </thead>
+            <tbody>
+                <tr style="background: rgba(52,211,153,0.08)">
+                    <td><strong>추세장</strong></td>
+                    <td>&gt; 25</td>
+                    <td><strong>40%</strong> &#x2191;</td>
+                    <td>25%</td>
+                    <td>20%</td>
+                    <td><strong>10%</strong> &#x2193;</td>
+                    <td>5%</td>
+                </tr>
+                <tr>
+                    <td><strong>혼합</strong></td>
+                    <td>20~25</td>
+                    <td>30%</td>
+                    <td>25%</td>
+                    <td>20%</td>
+                    <td>15%</td>
+                    <td>10%</td>
+                </tr>
+                <tr style="background: rgba(251,191,36,0.08)">
+                    <td><strong>횡보장</strong></td>
+                    <td>&lt; 20</td>
+                    <td><strong>15%</strong> &#x2193;</td>
+                    <td>20%</td>
+                    <td>15%</td>
+                    <td><strong>30%</strong> &#x2191;</td>
+                    <td>20%</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="help-tip" style="margin-top:0.75rem">
+            <span class="material-symbols-outlined">lightbulb</span>
+            <strong>왜 가중치를 바꾸나요?</strong> 추세장에서는 "추세를 따라가는 전략"이, 횡보장에서는 "너무 올랐으면 팔고 너무 빠졌으면 사는 전략"이 더 잘 작동하기 때문입니다.
+        </div>
+
+        <h5 class="help-subtitle" style="margin-top:1.5rem">최종 판정</h5>
+        <table class="data-table help-table">
+            <thead>
+                <tr><th>점수 범위</th><th>판정</th><th>의미</th></tr>
+            </thead>
+            <tbody>
+                <tr style="color:var(--accent-green,#34d399)">
+                    <td>&ge; +0.35</td>
+                    <td><strong>STRONG BUY</strong></td>
+                    <td>대부분의 지표가 강한 매수를 가리킴. 높은 신뢰도.</td>
+                </tr>
+                <tr style="color:var(--accent-green,#34d399)">
+                    <td>&ge; +0.12</td>
+                    <td><strong>BUY</strong></td>
+                    <td>매수 지표가 우세. 추가 확인 후 진입 고려.</td>
+                </tr>
+                <tr>
+                    <td>-0.12 ~ +0.12</td>
+                    <td><strong>NEUTRAL</strong></td>
+                    <td>매수/매도 시그널이 혼재. 관망 추천.</td>
+                </tr>
+                <tr style="color:var(--accent-red,#f87171)">
+                    <td>&le; -0.12</td>
+                    <td><strong>SELL</strong></td>
+                    <td>매도 지표가 우세. 보유 중이면 청산 검토.</td>
+                </tr>
+                <tr style="color:var(--accent-red,#f87171)">
+                    <td>&le; -0.35</td>
+                    <td><strong>STRONG SELL</strong></td>
+                    <td>대부분의 지표가 강한 매도를 가리킴. 즉시 청산 권장.</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="help-tip" style="margin-top:0.75rem">
+            <span class="material-symbols-outlined">info</span>
+            <strong>거래량 확인:</strong> 거래량 비율이 1.5 미만이면 최종 점수가 <strong>50% 감쇄</strong>됩니다.
+            거래량 없는 시그널은 신뢰도가 낮기 때문입니다.
+        </div>
+    </div>
+        </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- AI 분석 엔진 (Ollama 로컬 LLM) -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('6')">
+            <span class="help-section-arrow" id="help-icon-6">&#x25bc;</span>
+            <span class="material-symbols-outlined">smart_toy</span>
+            AI 분석 엔진 (Ollama 로컬 LLM)
+        </h4>
+        <div id="help-body-6">
+        <p class="text-muted" style="line-height:1.7">
+            시그널 분석에 <strong>Ollama</strong>를 사용하여 서버 내에서 직접 AI 분석을 수행합니다.
+            외부 API 비용 없이 차트 패턴, 뉴스 심리, 리스크 요인을 분석합니다.
+        </p>
+
+        <div style="margin-top:0.75rem">
+            <h5 class="help-subtitle">시스템 구성</h5>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>항목</th><th>내용</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>AI 엔진</strong></td>
+                        <td>Ollama (로컬 LLM 서버, systemd 자동 시작)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>모델</strong></td>
+                        <td>Qwen 2.5 3B (1.9GB, 중국 Alibaba 오픈소스)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>실행 환경</strong></td>
+                        <td>CPU 전용 (GPU 없이 동작), 약 2분/건</td>
+                    </tr>
+                    <tr>
+                        <td><strong>비용</strong></td>
+                        <td><strong>$0</strong> — 완전 무료 (로컬 실행)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>포트</strong></td>
+                        <td>http://localhost:11434</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:0.75rem">
+            <h5 class="help-subtitle">AI가 수행하는 분석 2가지</h5>
+
+            <div class="help-card" style="margin-top:0.5rem; border-left: 3px solid var(--accent-blue, #3b82f6)">
+                <p><strong>&#x2460; AI Analyze (시그널 심층 분석)</strong></p>
+                <p class="text-muted">Trade Signals 페이지에서 "AI Analyze" 버튼 클릭 시 실행됩니다.</p>
+                <ul class="help-list">
+                    <li><strong>입력</strong> — 종목명, 진입가, SL/TP, 기술 지표, 최근 뉴스 헤드라인</li>
+                    <li><strong>출력</strong> — 1-10점 신뢰도 + 분석 근거(reasoning) + 리스크 요인 + 뉴스 요약</li>
+                    <li><strong>표시</strong> — 시그널 행의 AI 점수 배지. 클릭하면 상세 분석 텍스트 확인</li>
+                </ul>
+            </div>
+
+            <div class="help-card" style="margin-top:0.5rem; border-left: 3px solid var(--accent-green, #34d399)">
+                <p><strong>&#x2461; Factor Score (멀티팩터 감성 분석)</strong></p>
+                <p class="text-muted">"Factor Score" 버튼 클릭 시, 감성(30%) 부분에서 AI가 뉴스를 분석합니다.</p>
+                <ul class="help-list">
+                    <li><strong>입력</strong> — Finnhub에서 수집한 최근 7일 뉴스 헤드라인</li>
+                    <li><strong>출력</strong> — 감성 점수 0-100 (0=매우 부정, 100=매우 긍정) + 1줄 요약</li>
+                    <li><strong>반영</strong> — 종합점수의 30% 비중으로 기술(40%) + 수급(30%)과 합산</li>
+                </ul>
+            </div>
+        </div>
+
+        <div style="margin-top:0.75rem">
+            <h5 class="help-subtitle">우선순위 체계</h5>
+            <p class="text-muted">시스템은 3단계 우선순위로 자동 선택합니다:</p>
+            <div class="help-workflow">
+                <div class="help-wf-step">
+                    <span class="help-wf-num">1</span>
+                    <div>
+                        <strong>Claude API</strong> — .env에 ANTHROPIC_KEY가 설정된 경우 (유료, 최고 품질, ~2초/건)
+                    </div>
+                </div>
+                <div class="help-wf-step" style="background: rgba(59,130,246,0.08)">
+                    <span class="help-wf-num" style="background:var(--accent-blue,#3b82f6)">2</span>
+                    <div>
+                        <strong>Ollama 로컬 LLM</strong> — 현재 사용 중 &#x2705; (무료, 양호 품질, ~2분/건)
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">3</span>
+                    <div>
+                        <strong>Mock 모드</strong> — AI 없이 기술 지표만으로 간이 점수 (무료, 낮은 품질, 즉시)
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="help-tip" style="margin-top:0.75rem">
+            <span class="material-symbols-outlined">lightbulb</span>
+            <strong>현재 모드 확인:</strong> 엔진 Health API (<code>/health</code>)의 <code>ai_mode</code> 필드에서
+            현재 "ollama", "claude", "mock" 중 어떤 모드인지 확인할 수 있습니다.
+        </div>
+        <div class="help-tip" style="margin-top:0.5rem">
+            <span class="material-symbols-outlined">speed</span>
+            <strong>속도 참고:</strong> CPU 전용 환경에서 Ollama는 1건당 약 2분이 소요됩니다.
+            하루 파이프라인(5-10건)에는 10-20분이면 충분하며, 스케줄러가 자동으로 처리하므로 대기할 필요가 없습니다.
+        </div>
         </div>
     </div>
 
@@ -39,10 +869,12 @@
     <!-- 전체 시나리오: $1,000으로 첫 거래까지 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('7')">
+            <span class="help-section-arrow" id="help-icon-7">&#x25bc;</span>
             <span class="material-symbols-outlined">rocket_launch</span>
             전체 시나리오: $1,000으로 첫 거래까지
         </h4>
+        <div id="help-body-7">
         <p class="text-muted">초기 자본 설정부터 텔레그램 알림 수신까지의 전체 흐름을 단계별로 설명합니다.</p>
 
         <!-- Phase 0 -->
@@ -172,7 +1004,7 @@
                         <div>
                             <strong>Factor Score</strong> — 모든 대기 시그널에 멀티팩터 분석 실행<br/>
                             <span class="text-muted">기술적(40%): 추세, 브레이크아웃, 거래량, 모멘텀 순위</span><br/>
-                            <span class="text-muted">심리(30%): Finnhub 뉴스를 Claude가 분석</span><br/>
+                            <span class="text-muted">심리(30%): Finnhub 뉴스를 Ollama 로컬 AI가 분석</span><br/>
                             <span class="text-muted">자금흐름(30%): 내부자 거래, 애널리스트 추천</span><br/>
                             <span class="text-muted">결과: 종합 점수 0-100. 각 시그널에 색상 배지로 표시.</span>
                         </div>
@@ -180,8 +1012,8 @@
                     <div class="help-wf-step">
                         <span class="help-wf-num">3</span>
                         <div>
-                            <strong>AI Analyze</strong> — Claude Haiku 4.5 심층 분석<br/>
-                            <span class="text-muted">1-10점 + 분석 근거, 리스크 요인, 뉴스 요약 생성.</span><br/>
+                            <strong>AI Analyze</strong> — Ollama 로컬 LLM (Qwen 2.5 3B) 심층 분석<br/>
+                            <span class="text-muted">1-10점 + 분석 근거, 리스크 요인, 뉴스 요약 생성. CPU 전용으로 1건당 ~2분 소요.</span><br/>
                             <span class="text-muted">AI 점수 배지를 클릭하면 전체 분석 텍스트를 볼 수 있습니다.</span>
                         </div>
                     </div>
@@ -401,15 +1233,18 @@
             </div>
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 일일 운영 스케줄 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('8')">
+            <span class="help-section-arrow" id="help-icon-8">&#x25bc;</span>
             <span class="material-symbols-outlined">schedule</span>
             일일 운영 (자동 스케줄)
         </h4>
+        <div id="help-body-8">
         <p class="text-muted">systemd + APScheduler로 자동 실행됩니다. 평소에는 시그널 검토만 하면 됩니다.</p>
         <table class="data-table help-table">
             <thead>
@@ -464,15 +1299,18 @@
             평소에는 아무것도 할 필요 없습니다. 아침에 텔레그램을 확인하고 대시보드에서 승인/거절만 하면 됩니다.
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 페이지 가이드 (전체 페이지) -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('9')">
+            <span class="help-section-arrow" id="help-icon-9">&#x25bc;</span>
             <span class="material-symbols-outlined">menu_book</span>
             페이지별 가이드
         </h4>
+        <div id="help-body-9">
 
         <!-- Dashboard -->
         <div class="help-card">
@@ -541,8 +1379,8 @@
                 <div class="help-wf-step">
                     <span class="help-wf-num">2</span>
                     <div>
-                        <strong>AI Analyze</strong> — Claude Haiku 4.5 심층 분석 (1-10점)<br/>
-                        <span class="text-muted">차트 패턴, 뉴스 심리, 리스크 요인 분석. 배지 클릭 시 상세 내용 확인.</span>
+                        <strong>AI Analyze</strong> — Ollama 로컬 LLM 심층 분석 (1-10점)<br/>
+                        <span class="text-muted">차트 패턴, 뉴스 심리, 리스크 요인 분석. 배지 클릭 시 상세 내용 확인. (~2분/건)</span>
                     </div>
                 </div>
                 <div class="help-wf-step">
@@ -643,11 +1481,11 @@
                 <li><strong>초기 자본</strong> — 백테스트 시작 금액</li>
                 <li><strong>파라미터</strong> — SL/TP %, 최대 포지션, 포지션 비율</li>
                 <li><strong>결과</strong> — 총 수익률, CAGR, 샤프비율, 최대 낙폭, 승률, 자산 곡선</li>
-                <li><strong>최적화</strong> — Claude AI가 파라미터 변형을 제안, 다수 백테스트 실행, 결과 비교</li>
+                <li><strong>최적화</strong> — AI가 파라미터 변형을 제안, 다수 백테스트 실행, 결과 비교</li>
             </ul>
             <div class="help-tip">
                 <span class="material-symbols-outlined">info</span>
-                최적화는 6개 백테스트 (기본 + AI 제안 5개 변형)에 약 4분이 소요됩니다.
+                최적화는 6개 백테스트 (기본 + AI 제안 5개 변형)를 실행합니다. Ollama 로컬 모드에서는 약 15분이 소요될 수 있습니다.
             </div>
         </div>
 
@@ -773,6 +1611,111 @@
             </div>
         </div>
 
+        <!-- Signal Replay Backtest -->
+        <div class="help-card">
+            <div class="help-card-header">
+                <span class="material-symbols-outlined">replay</span>
+                <strong>Signal Replay Backtest</strong> <span class="text-muted">/watchlist &rarr; ② Signal Log</span>
+                <span class="badge badge-green" style="margin-left:0.5rem">신규</span>
+            </div>
+            <p>
+                워치리스트 분석(Analyze All 또는 매일 자동 스캔)에서 생성된 <strong>실제 매수/매도/중립 시그널 로그</strong>를 사용하여,
+                "만약 시스템 시그널을 그대로 따랐다면 수익이 어떻게 됐을까?"를 시뮬레이션하는 백테스트입니다.
+            </p>
+            <p class="text-muted" style="margin-top:0.5rem">
+                기존 백테스트가 과거 지표를 소급 계산하는 것과 달리, Replay Backtest는 <strong>실제로 기록된 일별 시그널</strong>을 그대로 재생합니다.
+                미래 데이터를 참조하지 않으므로(look-ahead bias 없음) 시스템 성능을 객관적으로 평가할 수 있습니다.
+            </p>
+
+            <p style="margin-top:0.75rem"><strong>작동 방식:</strong></p>
+            <div class="help-workflow">
+                <div class="help-wf-step">
+                    <span class="help-wf-num">1</span>
+                    <div>
+                        <strong>시그널 축적</strong> — 매일 Analyze All 실행 또는 자동 스케줄(07:40 KST)로 각 종목의 BUY/SELL/NEUTRAL 결과가 DB에 기록됩니다.<br/>
+                        <span class="text-muted">최소 2일, 권장 5일 이상의 데이터가 필요합니다.</span>
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">2</span>
+                    <div>
+                        <strong>파라미터 설정</strong> — 초기 자본, 포지션 비율, 최대 동시 보유 수 등을 입력합니다
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">3</span>
+                    <div>
+                        <strong>시뮬레이션 실행</strong> — 기록된 시그널을 날짜순으로 재생하며 가상 매매를 수행합니다<br/>
+                        <span class="text-muted">매일: 청산 판단(SELL 시그널, 트레일링 스탑, 최대 보유일) &rarr; 진입 판단(BUY/STRONG_BUY 점수순)</span>
+                    </div>
+                </div>
+                <div class="help-wf-step">
+                    <span class="help-wf-num">4</span>
+                    <div>
+                        <strong>결과 분석</strong> — 수익률, MDD, Sharpe, 승률, Profit Factor, 월별 수익, 시그널 정확도 등
+                    </div>
+                </div>
+            </div>
+
+            <p style="margin-top:0.75rem"><strong>파라미터 설명:</strong></p>
+            <table class="data-table help-table">
+                <thead>
+                    <tr><th>파라미터</th><th>기본값</th><th>설명</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Capital ($)</strong></td>
+                        <td>1,000</td>
+                        <td>시뮬레이션 시작 자본금. 실제 투자할 금액과 동일하게 설정하면 현실적인 결과를 얻을 수 있습니다.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Position %</strong></td>
+                        <td>0.20 (20%)</td>
+                        <td>한 종목에 투자하는 현금 비율. 0.20이면 현금의 20%를 한 포지션에 투입합니다. 값이 클수록 집중 투자, 작을수록 분산 투자 성격입니다.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Max Positions</strong></td>
+                        <td>3</td>
+                        <td>동시에 보유할 수 있는 최대 포지션 수. 이미 3개를 보유 중이면 새로운 BUY 시그널이 있어도 진입하지 않습니다.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trail Stop %</strong></td>
+                        <td>0.05 (5%)</td>
+                        <td>트레일링 스탑 비율. 보유 중 최고가 대비 5% 하락하면 자동 청산됩니다. 값이 작을수록 보수적(빨리 손절), 클수록 공격적(넓은 여유)입니다.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Max Hold (days)</strong></td>
+                        <td>30</td>
+                        <td>최대 보유 기간. 30일이 지나면 시그널과 관계없이 강제 청산됩니다. 스윙 트레이딩 성격에 맞게 짧은 기간을 유지하는 것이 좋습니다.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p style="margin-top:0.75rem"><strong>결과 지표:</strong></p>
+            <ul class="help-list">
+                <li><strong>Total Return</strong> — 전체 기간 수익률 (%)</li>
+                <li><strong>Max Drawdown (MDD)</strong> — 최대 고점 대비 하락폭 (%). 작을수록 안정적</li>
+                <li><strong>Sharpe Ratio</strong> — 위험 대비 수익 (1.0 이상이면 양호, 2.0 이상이면 우수)</li>
+                <li><strong>Win Rate</strong> — 수익으로 청산된 거래 비율 (%)</li>
+                <li><strong>Profit Factor</strong> — 총 수익 / 총 손실 (1.0 이상이면 수익, 2.0 이상이면 우수)</li>
+                <li><strong>Total Trades</strong> — 시뮬레이션 기간 동안의 총 거래 횟수</li>
+                <li><strong>Avg Hold</strong> — 평균 보유 기간 (일)</li>
+                <li><strong>Signal Accuracy</strong> — BUY/SELL/NEUTRAL 각 방향별 적중률</li>
+                <li><strong>Monthly Returns</strong> — 월별 수익률 카드 (초록: 수익, 빨강: 손실)</li>
+            </ul>
+
+            <div class="help-tip">
+                <span class="material-symbols-outlined">lightbulb</span>
+                <strong>팁:</strong> 데이터가 충분히 쌓일수록(최소 1개월 이상) 결과가 의미 있습니다.
+                매일 Analyze All을 실행하거나, 자동 스케줄(07:40 KST)이 동작하도록 두면 시그널 로그가 자동 축적됩니다.
+            </div>
+            <div class="help-tip" style="margin-top:0.5rem">
+                <span class="material-symbols-outlined">warning</span>
+                <strong>주의:</strong> 슬리피지 0.1%가 적용되며, 실제 시장에서는 스프레드·수수료·유동성 등 추가 비용이 발생합니다.
+                시뮬레이션 결과는 참고용이며 실제 수익을 보장하지 않습니다.
+            </div>
+        </div>
+
         <!-- Settings -->
         <div class="help-card">
             <div class="help-card-header">
@@ -829,15 +1772,18 @@
             </ul>
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 시간외 거래 모니터링 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('10')">
+            <span class="help-section-arrow" id="help-icon-10">&#x25bc;</span>
             <span class="material-symbols-outlined">nightlight</span>
             시간외 거래 모니터링 (Pre-Market / After-Hours)
         </h4>
+        <div id="help-body-10">
         <p class="text-muted" style="line-height:1.7">
             미국 시장의 프리마켓(04:00~09:30 ET)과 애프터마켓(16:00~20:00 ET) 데이터를 활용하여
             진입/퇴출 타이밍을 최적화합니다. 학술 연구에 따르면 S&amp;P500 수익의 60% 이상이
@@ -890,15 +1836,18 @@
             정규장 중에는 해당 필드가 비어 있습니다.
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 텔레그램 알림 유형 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('11')">
+            <span class="help-section-arrow" id="help-icon-11">&#x25bc;</span>
             <span class="material-symbols-outlined">send</span>
             텔레그램 알림 유형
         </h4>
+        <div id="help-body-11">
         <p class="text-muted">모든 알림이 텔레그램으로 자동 전송됩니다. 봇: <code>@@quant_v4_alert_bot</code></p>
         <table class="data-table help-table">
             <thead>
@@ -953,15 +1902,18 @@
             </tbody>
         </table>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- UI 사용 팁 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('12')">
+            <span class="help-section-arrow" id="help-icon-12">&#x25bc;</span>
             <span class="material-symbols-outlined">tips_and_updates</span>
             UI 사용 팁
         </h4>
+        <div id="help-body-12">
         <div class="help-notes">
             <div class="help-note">
                 <span class="help-note-icon">&#x2630;</span>
@@ -999,15 +1951,18 @@
             </div>
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 빠른 테스트 체크리스트 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('13')">
+            <span class="help-section-arrow" id="help-icon-13">&#x25bc;</span>
             <span class="material-symbols-outlined">checklist</span>
             빠른 테스트 체크리스트
         </h4>
+        <div id="help-body-13">
         <div class="help-checklist">
             <div class="help-check-group">
                 <h5>1. 파이프라인 테스트</h5>
@@ -1045,15 +2000,18 @@
             </div>
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 문제 해결 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('14')">
+            <span class="help-section-arrow" id="help-icon-14">&#x25bc;</span>
             <span class="material-symbols-outlined">build</span>
             문제 해결
         </h4>
+        <div id="help-body-14">
         <div class="help-notes">
             <div class="help-note">
                 <span class="help-note-icon">&#x274c;</span>
@@ -1106,15 +2064,18 @@
             </div>
         </div>
     </div>
+        </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
     <!-- 중요 사항 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
-        <h4 class="help-title">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('15')">
+            <span class="help-section-arrow" id="help-icon-15">&#x25bc;</span>
             <span class="material-symbols-outlined">priority_high</span>
             중요 사항
         </h4>
+        <div id="help-body-15">
         <div class="help-notes">
             <div class="help-note">
                 <span class="help-note-icon">&#x1f4b5;</span>
@@ -1133,8 +2094,8 @@
             <div class="help-note">
                 <span class="help-note-icon">&#x1f916;</span>
                 <div>
-                    <strong>AI 스코어링</strong> — Claude Haiku 4.5가 심리 분석과 시그널 평가를 수행합니다.
-                    Finnhub이 뉴스, 내부자 거래, 애널리스트 추천 데이터를 제공합니다.
+                    <strong>AI 스코어링</strong> — Ollama 로컬 LLM (Qwen 2.5 3B)이 심리 분석과 시그널 평가를 수행합니다.
+                    외부 API 비용 없이 서버에서 직접 AI 분석이 이루어지며, Finnhub이 뉴스, 내부자 거래, 애널리스트 추천 데이터를 제공합니다.
                 </div>
             </div>
             <div class="help-note">
@@ -1167,5 +2128,18 @@
             </div>
         </div>
     </div>
+        </div>
 
 </div>
+
+@code {
+    [Inject] IJSRuntime JS { get; set; } = default!;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("initHelpCollapsed");
+        }
+    }
+}

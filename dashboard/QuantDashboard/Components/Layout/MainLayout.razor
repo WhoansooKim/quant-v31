@@ -2,6 +2,22 @@
 @inject SwingService SwingSvc
 @inject IHttpClientFactory HttpFactory
 
+<!-- Mobile Top Bar -->
+<div class="mobile-topbar">
+    <span class="brand-icon">S</span>
+    <span class="brand-text">Swing V4</span>
+    <button class="mobile-menu-btn" onclick="toggleMobileSidebar()">
+        <span class="material-symbols-outlined">menu</span>
+    </button>
+</div>
+
+<!-- Mobile Sidebar Overlay -->
+<div class="mobile-sidebar-overlay" id="mobile-sidebar-overlay" onclick="closeMobileSidebar(event)">
+    <div class="sidebar" onclick="event.stopPropagation()">
+        <NavMenu />
+    </div>
+</div>
+
 <div class="page dark-theme" id="page-root">
     <div class="sidebar">
         <NavMenu />

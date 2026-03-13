@@ -135,6 +135,15 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 8) 매일 07:40 KST — 워치리스트 자동 분석 + 시그널 로그
+        self.scheduler.add_job(
+            self._job_watchlist_analysis,
+            CronTrigger(day_of_week="mon-sat", hour=7, minute=40, timezone=KST),
+            id="watchlist_analysis",
+            name="Daily Watchlist Analysis + Signal Log",
+            replace_existing=True,
+        )
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()
@@ -603,3 +612,33 @@ class SwingScheduler:
         except Exception as e:
             logger.error(f"Snapshot generation failed: {e}", exc_info=True)
             return None
+
+    def _job_watchlist_analysis(self):
+        """매일 워치리스트 자동 분석 → 시그널 로그 기록."""
+        import requests
+        try:
+            watchlist = self.pg.get_watchlist()
+            if not watchlist:
+                logger.info("Watchlist analysis skipped: no symbols")
+                return
+
+            logger.info(f"Watchlist analysis starting: {len(watchlist)} symbols")
+            resp = requests.post("http://localhost:8001/watchlist/analyze", timeout=300)
+            logger.info(f"Watchlist analysis triggered: {resp.status_code}")
+
+            # Poll for completion (max 5 min)
+            import time
+            for _ in range(100):
+                time.sleep(3)
+                result = requests.get("http://localhost:8001/watchlist/analysis", timeout=10)
+                data = result.json()
+                if data.get("status") == "done":
+                    count = data.get("count", 0)
+                    logger.info(f"Watchlist analysis done: {count} symbols analyzed & logged")
+                    self.pg.insert_pipeline_log("watchlist_analysis", "completed", 0, {
+                        "symbols_analyzed": count,
+                    })
+                    return
+            logger.warning("Watchlist analysis timed out after 5 min")
+        except Exception as e:
+            logger.error(f"Watchlist analysis job failed: {e}", exc_info=True)

@@ -28,6 +28,10 @@ class SwingSettings(BaseSettings):
     # ── Anthropic (Claude API) ──
     anthropic_key: str = Field(default="", alias="ANTHROPIC_KEY")
 
+    # ── Ollama (Local LLM) ──
+    ollama_url: str = Field(default="http://localhost:11434", alias="OLLAMA_URL")
+    ollama_model: str = Field(default="qwen2.5:3b", alias="OLLAMA_MODEL")
+
     # ── Finnhub ──
     finnhub_api_key: str = Field(default="", alias="FINNHUB_API_KEY")
 

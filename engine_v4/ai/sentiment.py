@@ -48,14 +48,27 @@ Recent News Headlines:
 Respond in this exact JSON format (no markdown):
 {{"score": <1-10>, "reasoning": "<2-3 sentences>", "risk_factors": "<1-2 sentences>", "news_summary": "<1 sentence summary of news sentiment>"}}"""
 
+# Ollama용 간결 프롬프트 (CPU에서 빠른 처리를 위해)
+OLLAMA_ANALYSIS_PROMPT = """Score this stock signal 1-10 (10=strong buy). JSON only.
+
+{symbol} {signal_type} at ${entry_price:.2f} | SL ${stop_loss:.2f} | TP ${take_profit:.2f}
+Trend: {trend} | Breakout: {breakout} | Volume: {volume_surge} | Rank: {rank}
+News: {news_short}
+
+{{"score":<1-10>,"reasoning":"<1 sentence>","risk_factors":"<1 sentence>","news_summary":"<1 sentence>"}}"""
+
 
 class SentimentAnalyzer:
-    """Claude API 기반 시그널 분석기."""
+    """Claude API / Ollama 로컬 LLM 기반 시그널 분석기."""
 
-    def __init__(self, pg: PostgresStore, api_key: str = ""):
+    def __init__(self, pg: PostgresStore, api_key: str = "",
+                 ollama_url: str = "", ollama_model: str = ""):
         self.pg = pg
         self.api_key = api_key
         self._client = None
+        self._ollama_url = ollama_url or "http://localhost:11434"
+        self._ollama_model = ollama_model or "qwen2.5:3b"
+        self._ollama_available = False
 
         if self.api_key and self.api_key != "your_anthropic_key_here":
             try:
@@ -63,15 +76,41 @@ class SentimentAnalyzer:
                 self._client = anthropic.Anthropic(api_key=self.api_key)
                 logger.info("SentimentAnalyzer: Claude API initialized")
             except ImportError:
-                logger.warning("SentimentAnalyzer: anthropic package not installed, using mock mode")
+                logger.warning("SentimentAnalyzer: anthropic package not installed")
             except Exception as e:
                 logger.warning(f"SentimentAnalyzer: Failed to init Claude client: {e}")
-        else:
-            logger.info("SentimentAnalyzer: No API key — running in mock mode")
+
+        if not self._client:
+            # Ollama 로컬 LLM 사용 시도
+            self._ollama_available = self._check_ollama()
+            if self._ollama_available:
+                logger.info(f"SentimentAnalyzer: Ollama ({self._ollama_model}) initialized")
+            else:
+                logger.info("SentimentAnalyzer: No Claude API / No Ollama — running in mock mode")
+
+    def _check_ollama(self) -> bool:
+        """Ollama 서버 + 모델 사용 가능 여부 확인."""
+        import requests as req
+        try:
+            resp = req.get(f"{self._ollama_url}/api/tags", timeout=5)
+            if resp.status_code != 200:
+                return False
+            models = [m.get("name", "") for m in resp.json().get("models", [])]
+            return any(self._ollama_model in m for m in models)
+        except Exception:
+            return False
 
     @property
     def is_live(self) -> bool:
-        return self._client is not None
+        return self._client is not None or self._ollama_available
+
+    @property
+    def mode(self) -> str:
+        if self._client:
+            return "claude"
+        if self._ollama_available:
+            return "ollama"
+        return "mock"
 
     def analyze_signal(self, signal_id: int) -> dict:
         """단일 시그널 AI 분석 → DB 업데이트.
@@ -117,6 +156,8 @@ class SentimentAnalyzer:
 
         if self._client:
             result = self._call_claude(context)
+        elif self._ollama_available:
+            result = self._call_ollama(context)
         else:
             result = self._mock_analysis(context)
 
@@ -128,7 +169,7 @@ class SentimentAnalyzer:
             "symbol": symbol,
             "score": result["score"],
             "analysis": result["analysis"],
-            "mode": "live" if self._client else "mock",
+            "mode": self.mode,
         }
 
     def analyze_pending(self) -> list[dict]:
@@ -207,6 +248,62 @@ class SentimentAnalyzer:
             logger.error(f"Claude API call failed: {e}")
             return self._mock_analysis(context, error=str(e))
 
+    def _call_ollama(self, context: dict) -> dict:
+        """Ollama 로컬 LLM 호출 (간결 프롬프트)."""
+        import requests as req
+
+        # 뉴스를 1줄로 축약
+        news_raw = context.get("news", "No news")
+        news_lines = [l.strip("- ").split("(")[0].strip() for l in news_raw.split("\n") if l.strip()]
+        news_short = "; ".join(news_lines[:3]) if news_lines else "No news"
+        ctx = {**context, "news_short": news_short[:200]}
+
+        prompt = OLLAMA_ANALYSIS_PROMPT.format(**ctx)
+        start = time.time()
+
+        try:
+            resp = req.post(
+                f"{self._ollama_url}/api/generate",
+                json={
+                    "model": self._ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": 150, "temperature": 0.3},
+                },
+                timeout=600,
+            )
+            elapsed = time.time() - start
+            text = resp.json().get("response", "").strip()
+
+            # JSON 파싱
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                import re
+                match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+                if match:
+                    data = json.loads(match.group())
+                else:
+                    logger.warning(f"Ollama response not JSON: {text[:200]}")
+                    data = {"score": 5, "reasoning": text[:200], "risk_factors": "Parse error"}
+
+            score = max(1, min(10, int(data.get("score", 5))))
+            analysis = json.dumps({
+                "reasoning": data.get("reasoning", ""),
+                "risk_factors": data.get("risk_factors", ""),
+                "news_summary": data.get("news_summary", ""),
+                "model": f"ollama/{self._ollama_model}",
+                "elapsed_sec": round(elapsed, 2),
+            }, ensure_ascii=False)
+
+            logger.info(f"Ollama analysis for {context['symbol']}: "
+                        f"score={score} in {elapsed:.1f}s")
+            return {"score": score, "analysis": analysis}
+
+        except Exception as e:
+            logger.error(f"Ollama call failed: {e}")
+            return self._mock_analysis(context, error=str(e))
+
     def _mock_analysis(self, context: dict, error: str | None = None) -> dict:
         """Mock 분석 — API 키 없을 때 기술적 지표 기반 점수."""
         score = 5  # 기본
@@ -237,8 +334,8 @@ class SentimentAnalyzer:
                          f"Trend={'aligned' if context.get('trend') == 'Yes' else 'not aligned'}, "
                          f"Breakout={'confirmed' if context.get('breakout') == 'Yes' else 'no'}, "
                          f"Volume={'surging' if context.get('volume_surge') == 'Yes' else 'normal'}.",
-            "risk_factors": "Mock mode — no news or fundamental analysis. "
-                            "Set ANTHROPIC_KEY in .env for full AI analysis.",
+            "risk_factors": "Mock mode — no LLM available. "
+                            "Install Ollama (ollama pull qwen2.5:3b) or set ANTHROPIC_KEY for AI analysis.",
             "news_summary": "N/A (mock mode)",
             "model": "mock",
             "error": error,

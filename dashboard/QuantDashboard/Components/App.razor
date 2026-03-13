@@ -46,6 +46,54 @@
                 if (icon) icon.textContent = 'menu';
             }
         });
+        // Help 페이지: 지표 설명 아코디언 토글
+        function toggleIndicator(id) {
+            var body = document.getElementById('ind-' + id + '-body');
+            var icon = document.getElementById('ind-' + id + '-icon');
+            if (!body) return;
+            var open = body.style.display !== 'none';
+            body.style.display = open ? 'none' : 'block';
+            if (icon) icon.textContent = open ? '\u25b6' : '\u25bc';
+        }
+        function openIndicatorPopup(id) {
+            toggleIndicator(id);
+            var el = document.getElementById('ind-' + id);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        // Help 페이지: 섹션 아코디언 토글
+        function toggleHelpSection(id) {
+            var body = document.getElementById('help-body-' + id);
+            var icon = document.getElementById('help-icon-' + id);
+            if (!body) return;
+            var open = body.style.display !== 'none';
+            body.style.display = open ? 'none' : 'block';
+            if (icon) icon.textContent = open ? '\u25b6' : '\u25bc';
+        }
+        // Help 페이지: 초기 로드 시 모든 섹션 접기
+        function initHelpCollapsed() {
+            for (var i = 1; i <= 20; i++) {
+                var body = document.getElementById('help-body-' + i);
+                var icon = document.getElementById('help-icon-' + i);
+                if (body) { body.style.display = 'none'; }
+                if (icon) { icon.textContent = '\u25b6'; }
+            }
+        }
+        // Mobile sidebar toggle
+        function toggleMobileSidebar() {
+            var overlay = document.getElementById('mobile-sidebar-overlay');
+            if (overlay) overlay.classList.toggle('open');
+        }
+        function closeMobileSidebar(e) {
+            var overlay = document.getElementById('mobile-sidebar-overlay');
+            if (overlay && (e.target === overlay)) overlay.classList.remove('open');
+        }
+        // Close mobile sidebar on nav link click
+        document.addEventListener('click', function(e) {
+            if (e.target.closest && e.target.closest('.mobile-sidebar-overlay .nav-link')) {
+                var overlay = document.getElementById('mobile-sidebar-overlay');
+                if (overlay) overlay.classList.remove('open');
+            }
+        });
         // Enhanced Blazor navigation 후에도 복원
         var _sidebarObserver = new MutationObserver(function() {
             var page = document.getElementById('page-root');

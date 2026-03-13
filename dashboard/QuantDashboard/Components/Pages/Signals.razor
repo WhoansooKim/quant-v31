@@ -52,19 +52,19 @@
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th class="sortable" @onclick='() => sigSort.Toggle("time")'>Time@(sigSort.Arrow("time"))</th>
-                        <th class="sortable" @onclick='() => sigSort.Toggle("symbol")'>Symbol@(sigSort.Arrow("symbol"))</th>
-                        <th class="sortable" @onclick='() => sigSort.Toggle("type")'>Type@(sigSort.Arrow("type"))</th>
-                        <th class="sortable" @onclick='() => sigSort.Toggle("price")'>Price@(sigSort.Arrow("price"))</th>
+                        <th class="sortable" @onclick='() => ToggleSort("time")'>Time@(sigSort.Arrow("time"))</th>
+                        <th class="sortable" @onclick='() => ToggleSort("symbol")'>Symbol@(sigSort.Arrow("symbol"))</th>
+                        <th class="sortable" @onclick='() => ToggleSort("type")'>Type@(sigSort.Arrow("type"))</th>
+                        <th class="sortable" @onclick='() => ToggleSort("price")'>Price@(sigSort.Arrow("price"))</th>
                         <th>SL</th>
                         <th>TP</th>
-                        <th class="sortable" title="20d Return Rank" @onclick='() => sigSort.Toggle("rank")'>Rank@(sigSort.Arrow("rank"))</th>
+                        <th class="sortable" title="20d Return Rank" @onclick='() => ToggleSort("rank")'>Rank@(sigSort.Arrow("rank"))</th>
                         <th title="Trend Aligned">Trend</th>
                         <th title="5d Breakout">Break</th>
                         <th title="Volume Surge">Vol</th>
-                        <th class="sortable" title="AI Sentiment Score" @onclick='() => sigSort.Toggle("ai")'>AI@(sigSort.Arrow("ai"))</th>
-                        <th class="sortable" title="Multi-Factor Composite Score (T40+S30+F30)" @onclick='() => sigSort.Toggle("composite")'>Score@(sigSort.Arrow("composite"))</th>
-                        <th class="sortable" @onclick='() => sigSort.Toggle("status")'>Status@(sigSort.Arrow("status"))</th>
+                        <th class="sortable" title="AI Sentiment Score" @onclick='() => ToggleSort("ai")'>AI@(sigSort.Arrow("ai"))</th>
+                        <th class="sortable" title="Multi-Factor Composite Score (T40+S30+F30)" @onclick='() => ToggleSort("composite")'>Score@(sigSort.Arrow("composite"))</th>
+                        <th class="sortable" @onclick='() => ToggleSort("status")'>Status@(sigSort.Arrow("status"))</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -164,6 +164,22 @@
                 </tbody>
             </table>
         </div>
+        <!-- Pagination -->
+        @if (sigTotalPages > 1)
+        {
+            <div class="pagination-bar">
+                <button class="btn-page" disabled="@(sigCurrentPage <= 1)" @onclick="() => GoToSigPage(1)">«</button>
+                <button class="btn-page" disabled="@(sigCurrentPage <= 1)" @onclick="() => GoToSigPage(sigCurrentPage - 1)">‹</button>
+                @for (int pg = sigPageStart; pg <= sigPageEnd; pg++)
+                {
+                    var p = pg;
+                    <button class="btn-page @(p == sigCurrentPage ? "btn-page-active" : "")" @onclick="() => GoToSigPage(p)">@p</button>
+                }
+                <button class="btn-page" disabled="@(sigCurrentPage >= sigTotalPages)" @onclick="() => GoToSigPage(sigCurrentPage + 1)">›</button>
+                <button class="btn-page" disabled="@(sigCurrentPage >= sigTotalPages)" @onclick="() => GoToSigPage(sigTotalPages)">»</button>
+                <span class="text-muted" style="font-size:0.72rem; margin-left:0.5rem">@sigTotalCount items</span>
+            </div>
+        }
     }
     else
     {
@@ -316,6 +332,14 @@
     private bool scoring;
     private string? statusMsg;
 
+    // Pagination
+    private const int SigPageSize = 10;
+    private int sigCurrentPage = 1;
+    private int sigTotalCount;
+    private int sigTotalPages => Math.Max(1, (int)Math.Ceiling((double)sigTotalCount / SigPageSize));
+    private int sigPageStart => Math.Max(1, sigCurrentPage - 2);
+    private int sigPageEnd => Math.Min(sigTotalPages, sigPageStart + 4);
+
     // AI Detail popup
     private bool aiDetailVisible;
     private SwingSignal? aiDetailSignal;
@@ -360,7 +384,10 @@
         try
         {
             var status = activeTab == "all" ? null : activeTab;
-            signals = await Db.GetSignalsAsync(status, 100);
+            var offset = (sigCurrentPage - 1) * SigPageSize;
+            var result = await Db.GetSignalsPagedAsync(status, offset, SigPageSize);
+            signals = result.Items;
+            sigTotalCount = result.TotalCount;
             pendingCount = await Db.GetPendingSignalCountAsync();
         }
         catch { }
@@ -369,8 +396,21 @@
     private async Task SetTab(string tab)
     {
         activeTab = tab;
+        sigCurrentPage = 1;
         statusMsg = null;
         await LoadSignals();
+    }
+
+    private async Task GoToSigPage(int pg)
+    {
+        if (pg < 1 || pg > sigTotalPages || pg == sigCurrentPage) return;
+        sigCurrentPage = pg;
+        await LoadSignals();
+    }
+
+    private void ToggleSort(string col)
+    {
+        sigSort.Toggle(col);
     }
 
     private async Task ScanSignals()
@@ -489,11 +529,9 @@
             var resp = await client.PostAsync($"/signals/{signalId}/analyze", null);
             if (resp.IsSuccessStatusCode)
             {
-                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-                var score = json.TryGetProperty("score", out var sc) ? sc.GetInt32() : 0;
-                var mode = json.TryGetProperty("mode", out var md) ? md.GetString() : "unknown";
-                statusMsg = $"AI Score for #{signalId}: {score}/10 ({mode} mode)";
-                await LoadSignals();
+                statusMsg = "AI analysis started (1 signal)...";
+                StateHasChanged();
+                await PollAnalyzeStatus();
             }
             else
             {
@@ -523,10 +561,17 @@
             if (resp.IsSuccessStatusCode)
             {
                 var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-                var count = json.TryGetProperty("analyzed", out var cnt) ? cnt.GetInt32() : 0;
+                var total = json.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
                 var mode = json.TryGetProperty("mode", out var md) ? md.GetString() : "unknown";
-                statusMsg = $"AI analysis completed: {count} signals analyzed ({mode} mode)";
-                await LoadSignals();
+                if (total == 0)
+                {
+                    statusMsg = "No pending signals to analyze.";
+                    analyzing = false;
+                    return;
+                }
+                statusMsg = $"AI analysis started: {total} signals ({mode})...";
+                StateHasChanged();
+                await PollAnalyzeStatus();
             }
             else
             {
@@ -542,6 +587,50 @@
         {
             analyzing = false;
         }
+    }
+
+    private async Task PollAnalyzeStatus()
+    {
+        var client = HttpFactory.CreateClient("Engine");
+        for (int i = 0; i < 120; i++)  // 최대 10분 (120 x 5s)
+        {
+            await Task.Delay(5000);
+            try
+            {
+                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/ai/analyze-status");
+                var status = resp.TryGetProperty("status", out var s) ? s.GetString() : "idle";
+                if (status == "running")
+                {
+                    var done = resp.TryGetProperty("done", out var d) ? d.GetInt32() : 0;
+                    var total = resp.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
+                    var current = resp.TryGetProperty("current", out var c) ? c.GetString() : "";
+                    statusMsg = $"AI analyzing... {done}/{total} done{(string.IsNullOrEmpty(current) ? "" : $" (now: {current})")}";
+                    StateHasChanged();
+                    continue;
+                }
+                if (status == "done")
+                {
+                    var analyzed = resp.TryGetProperty("analyzed", out var a) ? a.GetInt32() : 0;
+                    var mode = resp.TryGetProperty("mode", out var md) ? md.GetString() : "";
+                    statusMsg = $"AI analysis completed: {analyzed} signals ({mode})";
+                    await LoadSignals();
+                    return;
+                }
+                if (status == "error")
+                {
+                    var msg = resp.TryGetProperty("message", out var m) ? m.GetString() : "Unknown error";
+                    statusMsg = $"AI analysis error: {msg}";
+                    return;
+                }
+                // idle or unknown
+                statusMsg = "AI analysis finished.";
+                await LoadSignals();
+                return;
+            }
+            catch { /* polling error, retry */ }
+        }
+        statusMsg = "AI analysis timed out. Check results manually.";
+        await LoadSignals();
     }
 
     private void ShowAiDetail(SwingSignal signal)

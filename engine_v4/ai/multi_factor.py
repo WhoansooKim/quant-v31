@@ -42,11 +42,15 @@ class MultiFactorScorer:
     """
 
     def __init__(self, pg: PostgresStore, finnhub: FinnhubClient,
-                 anthropic_key: str = ""):
+                 anthropic_key: str = "",
+                 ollama_url: str = "", ollama_model: str = ""):
         self.pg = pg
         self.finnhub = finnhub
         self.anthropic_key = anthropic_key
         self._claude = None
+        self._ollama_url = ollama_url or "http://localhost:11434"
+        self._ollama_model = ollama_model or "qwen2.5:3b"
+        self._ollama_available = False
 
         if anthropic_key and anthropic_key not in ("", "your_anthropic_key_here"):
             try:
@@ -55,6 +59,23 @@ class MultiFactorScorer:
                 logger.info("MultiFactorScorer: Claude API ready")
             except (ImportError, Exception) as e:
                 logger.warning(f"MultiFactorScorer: Claude unavailable: {e}")
+
+        if not self._claude:
+            self._ollama_available = self._check_ollama()
+            if self._ollama_available:
+                logger.info(f"MultiFactorScorer: Ollama ({self._ollama_model}) ready")
+
+    def _check_ollama(self) -> bool:
+        """Ollama 서버 + 모델 사용 가능 여부 확인."""
+        import requests
+        try:
+            resp = requests.get(f"{self._ollama_url}/api/tags", timeout=5)
+            if resp.status_code != 200:
+                return False
+            models = [m.get("name", "") for m in resp.json().get("models", [])]
+            return any(self._ollama_model in m for m in models)
+        except Exception:
+            return False
 
     def score_signal(self, signal_id: int) -> dict:
         """단일 시그널 멀티팩터 스코어링.
@@ -189,6 +210,10 @@ class MultiFactorScorer:
         if self._claude:
             return self._claude_sentiment(symbol, news)
 
+        # Ollama 로컬 LLM으로 뉴스 감성분석
+        if self._ollama_available:
+            return self._ollama_sentiment(symbol, news)
+
         # Fallback: 뉴스 개수 기반 간이 점수 (뉴스 많으면 약간 긍정)
         score = min(70, 40 + len(news) * 3)
         return {
@@ -232,6 +257,52 @@ class MultiFactorScorer:
             return {
                 "score": 50,
                 "source": "claude_error",
+                "news_count": len(news),
+                "summary": str(e)[:100],
+            }
+
+    def _ollama_sentiment(self, symbol: str, news: list[dict]) -> dict:
+        """Ollama 로컬 LLM으로 뉴스 감성분석."""
+        import requests
+
+        headlines = "\n".join(
+            f"- {n['headline']} ({n['source']})" for n in news[:8]
+        )
+        prompt = SENTIMENT_PROMPT.format(symbol=symbol, headlines=headlines)
+
+        try:
+            resp = requests.post(
+                f"{self._ollama_url}/api/generate",
+                json={
+                    "model": self._ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": 120, "temperature": 0.3},
+                },
+                timeout=300,
+            )
+            text = resp.json().get("response", "").strip()
+
+            import re
+            match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+            if match:
+                data = json.loads(match.group())
+            else:
+                data = json.loads(text)
+
+            score = max(0, min(100, int(data.get("sentiment_score", 50))))
+            return {
+                "score": score,
+                "source": f"ollama/{self._ollama_model}",
+                "news_count": len(news),
+                "summary": data.get("summary", ""),
+            }
+        except Exception as e:
+            logger.warning(f"Ollama sentiment failed for {symbol}: {e}")
+            score = min(70, 40 + len(news) * 3)
+            return {
+                "score": score,
+                "source": "ollama_error",
                 "news_count": len(news),
                 "summary": str(e)[:100],
             }

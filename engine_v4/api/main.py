@@ -51,9 +51,13 @@ exit_mgr = ExitManager(pg)
 backtester = BacktestRunner(pg)
 kis = KisClient(config)
 notifier = TelegramNotifier(config)
-sentiment = SentimentAnalyzer(pg, config.anthropic_key)
+sentiment = SentimentAnalyzer(pg, config.anthropic_key,
+                              ollama_url=config.ollama_url,
+                              ollama_model=config.ollama_model)
 finnhub = FinnhubClient(config.finnhub_api_key)
-scorer = MultiFactorScorer(pg, finnhub, config.anthropic_key)
+scorer = MultiFactorScorer(pg, finnhub, config.anthropic_key,
+                           ollama_url=config.ollama_url,
+                           ollama_model=config.ollama_model)
 optimizer = StrategyOptimizer(pg, backtester, config.anthropic_key)
 event_collector = EventCollector(pg, finnhub)
 event_processor = EventProcessor(pg)
@@ -133,6 +137,14 @@ class WatchlistBacktestRequest(BaseModel):
     max_hold_days: int = 30
 
 
+class ReplayBacktestRequest(BaseModel):
+    initial_capital: float = 1000.0
+    position_pct: float = 0.20
+    max_positions: int = 3
+    trailing_stop_pct: float = 0.05
+    max_hold_days: int = 30
+
+
 class OptimizeRequest(BaseModel):
     start_date: date = date(2022, 1, 1)
     end_date: date = date(2025, 12, 31)
@@ -172,6 +184,7 @@ async def health():
         "redis": cache.ping(),
         "kis": kis.is_connected,
         "telegram": notifier.is_enabled,
+        "ai_mode": sentiment.mode,
         "scheduler_jobs": len(swing_scheduler.get_jobs()),
     }
 
@@ -335,33 +348,72 @@ async def reject_signal(signal_id: int):
 
 
 @app.post("/signals/{signal_id}/analyze")
-async def analyze_signal(signal_id: int):
-    """단일 시그널 AI 분석."""
+async def analyze_signal(signal_id: int, bg: BackgroundTasks):
+    """단일 시그널 AI 분석 (백그라운드)."""
     sig = pg.get_signal(signal_id)
     if not sig:
         raise HTTPException(404, "Signal not found")
-    try:
-        result = sentiment.analyze_signal(signal_id)
-        return result
-    except Exception as e:
-        logger.error(f"AI analysis failed for signal {signal_id}: {e}", exc_info=True)
-        raise HTTPException(500, str(e))
+
+    def _run():
+        try:
+            result = sentiment.analyze_signal(signal_id)
+            cache.set_json("ai_analyze_result", {
+                "status": "done", "analyzed": 1,
+                "mode": sentiment.mode, "results": [result],
+            }, ttl=600)
+        except Exception as e:
+            logger.error(f"AI analysis failed for signal {signal_id}: {e}", exc_info=True)
+            cache.set_json("ai_analyze_result", {
+                "status": "error", "message": str(e),
+            }, ttl=600)
+
+    # 진행 상태 초기화
+    cache.set_json("ai_analyze_result", {
+        "status": "running", "total": 1, "done": 0, "mode": sentiment.mode,
+    }, ttl=600)
+    bg.add_task(_run)
+    return {"status": "started", "mode": sentiment.mode, "total": 1}
 
 
 @app.post("/signals/analyze-pending")
-async def analyze_pending_signals():
-    """모든 pending 시그널 일괄 AI 분석."""
-    try:
-        results = sentiment.analyze_pending()
-        return {
-            "status": "ok",
-            "analyzed": len(results),
-            "mode": "live" if sentiment.is_live else "mock",
-            "results": results,
-        }
-    except Exception as e:
-        logger.error(f"Batch AI analysis failed: {e}", exc_info=True)
-        raise HTTPException(500, str(e))
+async def analyze_pending_signals(bg: BackgroundTasks):
+    """모든 pending 시그널 일괄 AI 분석 (백그라운드)."""
+    signals = pg.get_signals(status="pending", limit=20)
+    todo = [s for s in signals if s.get("llm_score") is None]
+    if not todo:
+        return {"status": "done", "analyzed": 0, "mode": sentiment.mode, "results": []}
+
+    def _run():
+        results = []
+        for i, sig in enumerate(todo):
+            try:
+                cache.set_json("ai_analyze_result", {
+                    "status": "running", "total": len(todo),
+                    "done": i, "current": sig["symbol"], "mode": sentiment.mode,
+                }, ttl=600)
+                result = sentiment.analyze_signal(sig["signal_id"])
+                results.append(result)
+            except Exception as e:
+                logger.error(f"AI analysis failed for signal {sig['signal_id']}: {e}")
+        cache.set_json("ai_analyze_result", {
+            "status": "done", "analyzed": len(results),
+            "mode": sentiment.mode, "results": results,
+        }, ttl=600)
+
+    cache.set_json("ai_analyze_result", {
+        "status": "running", "total": len(todo), "done": 0, "mode": sentiment.mode,
+    }, ttl=600)
+    bg.add_task(_run)
+    return {"status": "started", "mode": sentiment.mode, "total": len(todo)}
+
+
+@app.get("/ai/analyze-status")
+async def analyze_status():
+    """AI 분석 진행 상태 폴링."""
+    data = cache.get_json("ai_analyze_result")
+    if not data:
+        return {"status": "idle"}
+    return data
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1601,6 +1653,33 @@ def _analyze_watchlist():
             }
             pg.insert_watchlist_alert(alert)
 
+            # Log signal for replay backtest
+            from datetime import date as _date_type
+            pg.upsert_watchlist_signal_log({
+                "symbol": sym,
+                "signal_date": _date_type.today(),
+                "direction": direction,
+                "weighted_score": round(weighted_final, 4),
+                "confidence": confidence,
+                "current_price": current_price,
+                "regime": regime,
+                "category_scores": {
+                    "trend": round(trend_score, 3),
+                    "momentum": round(momentum_score, 3),
+                    "macd": round(macd_score, 3),
+                    "mean_reversion": round(meanrev_score, 3),
+                    "volume": round(vol_score, 3),
+                },
+                "category_weights": {
+                    "trend": w_trend, "momentum": w_mom,
+                    "macd": w_macd, "mean_reversion": w_mr, "volume": w_vol,
+                },
+                "vol_ratio": round(vol_ratio, 2),
+                "vol_factor": vol_factor,
+                "target_price": target_price,
+                "stop_price": stop_price,
+            })
+
             # Telegram for STRONG signals or high-confidence directional
             if "STRONG" in direction or (direction != "NEUTRAL" and confidence >= 65):
                 emoji = "\U0001f7e2" if "BUY" in direction else "\U0001f534"
@@ -1761,6 +1840,311 @@ async def get_watchlist_backtest():
 
 
 # ═══════════════════════════════════════════════════════════
+# Signal Log & Replay Backtest
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/watchlist/signal-log")
+async def get_signal_log(symbol: str = None, limit: int = 200):
+    """워치리스트 시그널 로그 조회."""
+    logs = pg.get_watchlist_signal_logs(symbol=symbol, limit=limit)
+    # Convert dates to strings for JSON
+    for log in logs:
+        for k in ("signal_date", "created_at"):
+            if log.get(k):
+                log[k] = str(log[k])
+    return {"logs": logs, "count": len(logs)}
+
+
+@app.get("/watchlist/signal-log/stats")
+async def get_signal_log_stats():
+    """시그널 로그 통계."""
+    stats = pg.get_watchlist_signal_log_stats()
+    for k in ("first_date", "last_date"):
+        if stats.get(k):
+            stats[k] = str(stats[k])
+    return stats
+
+
+@app.post("/watchlist/replay-backtest")
+async def run_replay_backtest(req: ReplayBacktestRequest, bg: BackgroundTasks):
+    """실제 기록된 시그널 로그 기반 리플레이 백테스트."""
+    stats = pg.get_watchlist_signal_log_stats()
+    days = stats.get("days", 0) or 0
+    if days < 2:
+        return {"status": "error", "message": f"Signal log has only {days} days. Need at least 2 days of logged signals. Run 'Analyze All' daily to accumulate data."}
+    cache.set_json("watchlist_replay_backtest", {"status": "running"}, ttl=600)
+    bg.add_task(_run_replay_backtest, req)
+    return {"status": "running", "days_logged": days}
+
+
+def _run_replay_backtest(req: ReplayBacktestRequest):
+    """리플레이 백테스트 실행 (background task)."""
+    import numpy as np
+
+    logs = pg.get_watchlist_signal_logs(limit=50000)
+    if not logs:
+        cache.set_json("watchlist_replay_backtest", {"status": "error", "message": "No signal logs"}, ttl=60)
+        return
+
+    # Group logs by date
+    from collections import defaultdict
+    daily_signals = defaultdict(list)
+    for log in logs:
+        d = str(log["signal_date"])
+        daily_signals[d].append(log)
+
+    dates = sorted(daily_signals.keys())
+    cash = req.initial_capital
+    positions = {}  # symbol -> {entry_price, qty, entry_date, high_water_mark}
+    equity_curve = []
+    trades_log = []
+    slippage = 0.001  # 0.1%
+
+    for day in dates:
+        signals = {s["symbol"]: s for s in daily_signals[day]}
+
+        # --- Exit phase ---
+        to_close = []
+        for sym, pos in list(positions.items()):
+            sig = signals.get(sym)
+            price = sig["current_price"] if sig else pos["last_price"]
+            pos["last_price"] = price
+
+            # Update high water mark
+            if price > pos.get("high_water_mark", 0):
+                pos["high_water_mark"] = price
+
+            # Check exit conditions
+            reason = None
+            # 1) Signal says SELL/STRONG_SELL/NEUTRAL
+            if sig and sig["direction"] in ("SELL", "STRONG_SELL", "NEUTRAL"):
+                reason = f"signal_{sig['direction'].lower()}"
+            # 2) Trailing stop
+            elif pos["high_water_mark"] > 0:
+                drawdown = (pos["high_water_mark"] - price) / pos["high_water_mark"]
+                if drawdown >= req.trailing_stop_pct:
+                    reason = "trailing_stop"
+            # 3) Max hold days
+            from datetime import datetime as _dt
+            hold_days = (_dt.strptime(day, "%Y-%m-%d") - _dt.strptime(pos["entry_date"], "%Y-%m-%d")).days
+            if hold_days >= req.max_hold_days:
+                reason = "max_hold_days"
+
+            if reason:
+                to_close.append((sym, price, reason))
+
+        for sym, price, reason in to_close:
+            pos = positions.pop(sym)
+            exit_price = price * (1 - slippage)
+            pnl = (exit_price - pos["entry_price"]) * pos["qty"]
+            pnl_pct = (exit_price / pos["entry_price"] - 1) if pos["entry_price"] > 0 else 0
+            cash += exit_price * pos["qty"]
+            hold = 0
+            try:
+                from datetime import datetime as _dt2
+                hold = (_dt2.strptime(day, "%Y-%m-%d") - _dt2.strptime(pos["entry_date"], "%Y-%m-%d")).days
+            except:
+                pass
+            trades_log.append({
+                "symbol": sym,
+                "side": "SELL",
+                "entry_date": pos["entry_date"],
+                "exit_date": day,
+                "entry_price": round(pos["entry_price"], 2),
+                "exit_price": round(exit_price, 2),
+                "qty": pos["qty"],
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct * 100, 2),
+                "hold_days": hold,
+                "reason": reason,
+            })
+
+        # --- Entry phase ---
+        candidates = []
+        for sym, sig in signals.items():
+            if sym in positions:
+                continue
+            if sig["direction"] in ("STRONG_BUY", "BUY"):
+                candidates.append(sig)
+
+        # Sort by score descending
+        candidates.sort(key=lambda s: s["weighted_score"], reverse=True)
+
+        for sig in candidates:
+            if len(positions) >= req.max_positions:
+                break
+            price = sig["current_price"] * (1 + slippage)
+            alloc = cash * req.position_pct
+            if alloc < 10 or price <= 0:
+                continue
+            qty = int(alloc / price)
+            if qty < 1:
+                continue
+            cost = price * qty
+            if cost > cash:
+                continue
+            cash -= cost
+            positions[sig["symbol"]] = {
+                "entry_price": price,
+                "qty": qty,
+                "entry_date": day,
+                "high_water_mark": price,
+                "last_price": sig["current_price"],
+            }
+            trades_log.append({
+                "symbol": sig["symbol"],
+                "side": "BUY",
+                "entry_date": day,
+                "exit_date": None,
+                "entry_price": round(price, 2),
+                "exit_price": None,
+                "qty": qty,
+                "pnl": 0,
+                "pnl_pct": 0,
+                "hold_days": 0,
+                "reason": f"signal_{sig['direction'].lower()}",
+            })
+
+        # --- Equity snapshot ---
+        invested = sum(pos["last_price"] * pos["qty"] for pos in positions.values())
+        equity_curve.append({
+            "date": day,
+            "value": round(cash + invested, 2),
+            "cash": round(cash, 2),
+            "positions": len(positions),
+        })
+
+    # Force-close remaining positions at last known price
+    if positions and equity_curve:
+        last_day = dates[-1]
+        for sym, pos in list(positions.items()):
+            exit_price = pos["last_price"] * (1 - slippage)
+            pnl = (exit_price - pos["entry_price"]) * pos["qty"]
+            pnl_pct = (exit_price / pos["entry_price"] - 1) if pos["entry_price"] > 0 else 0
+            cash += exit_price * pos["qty"]
+            try:
+                from datetime import datetime as _dt3
+                hold = (_dt3.strptime(last_day, "%Y-%m-%d") - _dt3.strptime(pos["entry_date"], "%Y-%m-%d")).days
+            except:
+                hold = 0
+            trades_log.append({
+                "symbol": sym,
+                "side": "SELL",
+                "entry_date": pos["entry_date"],
+                "exit_date": last_day,
+                "entry_price": round(pos["entry_price"], 2),
+                "exit_price": round(exit_price, 2),
+                "qty": pos["qty"],
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct * 100, 2),
+                "hold_days": hold,
+                "reason": "period_end",
+            })
+        positions.clear()
+
+    # --- Compute metrics ---
+    sell_trades = [t for t in trades_log if t["side"] == "SELL"]
+    wins = [t for t in sell_trades if t["pnl"] > 0]
+    losses = [t for t in sell_trades if t["pnl"] <= 0]
+    total_trades = len(sell_trades)
+    win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
+    gross_profit = sum(t["pnl"] for t in wins)
+    gross_loss = abs(sum(t["pnl"] for t in losses)) or 1
+    profit_factor = gross_profit / gross_loss
+    avg_hold = (sum(t["hold_days"] for t in sell_trades) / total_trades) if total_trades > 0 else 0
+
+    final_value = equity_curve[-1]["value"] if equity_curve else req.initial_capital
+    total_return = ((final_value / req.initial_capital) - 1) * 100
+
+    # Max drawdown
+    peak = 0
+    max_dd = 0
+    for pt in equity_curve:
+        if pt["value"] > peak:
+            peak = pt["value"]
+        dd = (peak - pt["value"]) / peak if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+
+    # Sharpe (daily returns)
+    if len(equity_curve) > 1:
+        values = [pt["value"] for pt in equity_curve]
+        returns = [(values[i] / values[i-1] - 1) for i in range(1, len(values))]
+        mean_r = np.mean(returns)
+        std_r = np.std(returns) or 1e-10
+        sharpe = (mean_r / std_r) * np.sqrt(252)
+    else:
+        sharpe = 0
+
+    # Monthly returns
+    monthly_returns = []
+    if equity_curve:
+        from itertools import groupby
+        for month_key, group in groupby(equity_curve, key=lambda x: x["date"][:7]):
+            pts = list(group)
+            monthly_returns.append({
+                "month": month_key,
+                "start_value": pts[0]["value"],
+                "end_value": pts[-1]["value"],
+                "return_pct": round(((pts[-1]["value"] / pts[0]["value"]) - 1) * 100, 2) if pts[0]["value"] > 0 else 0,
+            })
+
+    # Signal accuracy
+    signal_accuracy = {}
+    buy_trades = [t for t in trades_log if t["side"] == "BUY"]
+    sell_closures = {(t["symbol"], t["entry_date"]): t for t in sell_trades}
+    for bt in buy_trades:
+        key = (bt["symbol"], bt["entry_date"])
+        closure = sell_closures.get(key)
+        direction = bt["reason"].replace("signal_", "").upper() if bt["reason"] else "BUY"
+        if direction not in signal_accuracy:
+            signal_accuracy[direction] = {"total": 0, "profitable": 0}
+        signal_accuracy[direction]["total"] += 1
+        if closure and closure["pnl"] > 0:
+            signal_accuracy[direction]["profitable"] += 1
+    for k, v in signal_accuracy.items():
+        v["accuracy"] = round((v["profitable"] / v["total"]) * 100, 1) if v["total"] > 0 else 0
+
+    stats = pg.get_watchlist_signal_log_stats()
+
+    cache.set_json("watchlist_replay_backtest", {
+        "status": "done",
+        "days_logged": stats.get("days", 0),
+        "first_date": str(stats.get("first_date", "")),
+        "last_date": str(stats.get("last_date", "")),
+        "params": {
+            "initial_capital": req.initial_capital,
+            "position_pct": req.position_pct,
+            "max_positions": req.max_positions,
+            "trailing_stop_pct": req.trailing_stop_pct,
+            "max_hold_days": req.max_hold_days,
+        },
+        "total_return": round(total_return, 2),
+        "max_drawdown": round(max_dd * 100, 2),
+        "sharpe_ratio": round(float(sharpe), 2),
+        "win_rate": round(win_rate, 1),
+        "total_trades": total_trades,
+        "profit_factor": round(profit_factor, 2),
+        "avg_hold_days": round(avg_hold, 1),
+        "final_value": round(final_value, 2),
+        "equity_curve": equity_curve,
+        "trades_log": sell_trades[:200],
+        "monthly_returns": monthly_returns,
+        "signal_accuracy": signal_accuracy,
+    }, ttl=86400)
+    logger.info(f"Replay backtest done: {total_trades} trades, {total_return:+.1f}% return")
+
+
+@app.get("/watchlist/replay-backtest")
+async def get_replay_backtest():
+    """리플레이 백테스트 결과 조회."""
+    result = cache.get_json("watchlist_replay_backtest")
+    if not result:
+        return {"status": "no_results", "message": "Run POST /watchlist/replay-backtest first"}
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
 # Ticker
 # ═══════════════════════════════════════════════════════════
 
@@ -1854,6 +2238,219 @@ async def check_extended_hours_now():
         "data": data,
     }
     cache.set_json("extended_hours", result, ttl=7200)
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
+# Market Overview (Sector Heatmap)
+# ═══════════════════════════════════════════════════════════
+
+_SECTOR_ETFS = {
+    "XLK":  {"name": "기술",         "name_en": "Technology",       "weight": 30},
+    "XLF":  {"name": "금융",         "name_en": "Financials",       "weight": 13},
+    "XLV":  {"name": "헬스케어",     "name_en": "Healthcare",       "weight": 13},
+    "XLY":  {"name": "경기소비재",   "name_en": "Consumer Disc.",   "weight": 10},
+    "XLC":  {"name": "커뮤니케이션", "name_en": "Communication",    "weight": 9},
+    "XLI":  {"name": "산업재",       "name_en": "Industrials",      "weight": 8},
+    "XLP":  {"name": "필수소비재",   "name_en": "Consumer Staples", "weight": 7},
+    "XLE":  {"name": "에너지",       "name_en": "Energy",           "weight": 4},
+    "XLB":  {"name": "소재",         "name_en": "Materials",        "weight": 3},
+    "XLRE": {"name": "부동산",       "name_en": "Real Estate",      "weight": 3},
+    "XLU":  {"name": "유틸리티",     "name_en": "Utilities",        "weight": 3},
+}
+_INDICES = {
+    "SPY": {"name": "S&P 500"},
+    "QQQ": {"name": "NASDAQ 100"},
+    "DIA": {"name": "다우존스"},
+    "IWM": {"name": "러셀 2000"},
+}
+
+
+@app.get("/market/overview")
+async def get_market_overview():
+    """섹터 ETF + 주요 지수 일일 변동률."""
+    cached = cache.get_json("market_overview")
+    if cached:
+        return cached
+
+    import yfinance as yf
+
+    all_syms = list(_SECTOR_ETFS.keys()) + list(_INDICES.keys())
+    sectors = []
+    index_data = []
+
+    try:
+        df = yf.download(all_syms, period="2d", progress=False)
+        close = df["Close"] if "Close" in df.columns else df.get(("Close",), df)
+
+        for sym, info in _SECTOR_ETFS.items():
+            try:
+                col = close[sym].dropna()
+                if len(col) >= 2:
+                    pct = round(((float(col.iloc[-1]) - float(col.iloc[-2])) / float(col.iloc[-2])) * 100, 2)
+                else:
+                    pct = 0.0
+                sectors.append({**info, "symbol": sym, "change_pct": pct})
+            except Exception:
+                sectors.append({**info, "symbol": sym, "change_pct": 0.0})
+
+        for sym, info in _INDICES.items():
+            try:
+                col = close[sym].dropna()
+                if len(col) >= 2:
+                    pct = round(((float(col.iloc[-1]) - float(col.iloc[-2])) / float(col.iloc[-2])) * 100, 2)
+                else:
+                    pct = 0.0
+                index_data.append({**info, "symbol": sym, "change_pct": pct})
+            except Exception:
+                index_data.append({**info, "symbol": sym, "change_pct": 0.0})
+    except Exception as e:
+        logger.warning(f"Market overview fetch failed: {e}")
+
+    # 상승/하락 카운트
+    up = sum(1 for s in sectors if s["change_pct"] > 0)
+    down = sum(1 for s in sectors if s["change_pct"] < 0)
+
+    result = {
+        "sectors": sectors, "indices": index_data,
+        "advance": up, "decline": down, "unchanged": len(sectors) - up - down,
+        "updated_at": datetime.now().isoformat(),
+    }
+    cache.set_json("market_overview", result, ttl=600)
+    return result
+
+
+# 섹터 ETF 상위 보유 종목 (근사 비중)
+_SECTOR_HOLDINGS = {
+    "XLK": [
+        ("AAPL", "Apple", 22), ("MSFT", "Microsoft", 20), ("NVDA", "NVIDIA", 18),
+        ("AVGO", "Broadcom", 6), ("CRM", "Salesforce", 3), ("ORCL", "Oracle", 3),
+        ("ADBE", "Adobe", 3), ("AMD", "AMD", 3), ("CSCO", "Cisco", 2), ("ACN", "Accenture", 2),
+        ("INTC", "Intel", 2), ("IBM", "IBM", 2), ("INTU", "Intuit", 2),
+        ("NOW", "ServiceNow", 2), ("QCOM", "Qualcomm", 2),
+    ],
+    "XLF": [
+        ("BRK-B", "Berkshire", 14), ("JPM", "JPMorgan", 11), ("V", "Visa", 8),
+        ("MA", "Mastercard", 7), ("BAC", "BofA", 5), ("WFC", "Wells Fargo", 4),
+        ("GS", "Goldman Sachs", 4), ("MS", "Morgan Stanley", 3), ("SPGI", "S&P Global", 3),
+        ("AXP", "Amex", 3), ("BLK", "BlackRock", 3), ("C", "Citigroup", 3),
+        ("SCHW", "Schwab", 2), ("PGR", "Progressive", 2), ("CB", "Chubb", 2),
+    ],
+    "XLV": [
+        ("LLY", "Eli Lilly", 13), ("UNH", "UnitedHealth", 10), ("JNJ", "J&J", 7),
+        ("ABBV", "AbbVie", 7), ("MRK", "Merck", 5), ("TMO", "Thermo Fisher", 4),
+        ("ABT", "Abbott", 4), ("PFE", "Pfizer", 3), ("AMGN", "Amgen", 3),
+        ("DHR", "Danaher", 3), ("ISRG", "Intuitive Surg.", 3), ("BMY", "BMS", 3),
+        ("SYK", "Stryker", 2), ("GILD", "Gilead", 2), ("VRTX", "Vertex", 2),
+    ],
+    "XLY": [
+        ("AMZN", "Amazon", 23), ("TSLA", "Tesla", 15), ("HD", "Home Depot", 9),
+        ("MCD", "McDonald's", 5), ("LOW", "Lowe's", 4), ("NKE", "Nike", 3),
+        ("BKNG", "Booking", 4), ("SBUX", "Starbucks", 3), ("TJX", "TJX Cos", 3),
+        ("CMG", "Chipotle", 2), ("ORLY", "O'Reilly", 2), ("MAR", "Marriott", 2),
+        ("GM", "GM", 2), ("F", "Ford", 1), ("ROST", "Ross Stores", 1),
+    ],
+    "XLC": [
+        ("META", "Meta", 23), ("GOOGL", "Alphabet A", 22), ("GOOG", "Alphabet C", 5),
+        ("NFLX", "Netflix", 6), ("T", "AT&T", 5), ("CMCSA", "Comcast", 4),
+        ("DIS", "Disney", 4), ("TMUS", "T-Mobile", 4), ("VZ", "Verizon", 3),
+        ("CHTR", "Charter", 3), ("EA", "EA", 2), ("WBD", "Warner Bros", 2),
+    ],
+    "XLI": [
+        ("GE", "GE Aerospace", 8), ("CAT", "Caterpillar", 5), ("RTX", "RTX", 5),
+        ("UNP", "Union Pacific", 5), ("HON", "Honeywell", 4), ("DE", "Deere", 4),
+        ("BA", "Boeing", 4), ("LMT", "Lockheed", 3), ("UPS", "UPS", 3),
+        ("ADP", "ADP", 3), ("ETN", "Eaton", 3), ("MMM", "3M", 2),
+        ("GD", "General Dynamics", 2), ("WM", "Waste Mgmt", 2), ("FDX", "FedEx", 2),
+    ],
+    "XLP": [
+        ("PG", "Procter&Gamble", 15), ("COST", "Costco", 13), ("WMT", "Walmart", 10),
+        ("KO", "Coca-Cola", 9), ("PEP", "PepsiCo", 8), ("PM", "Philip Morris", 5),
+        ("MDLZ", "Mondelez", 4), ("MO", "Altria", 3), ("CL", "Colgate", 3),
+        ("TGT", "Target", 3), ("KR", "Kroger", 2), ("STZ", "Constellation", 2),
+    ],
+    "XLE": [
+        ("XOM", "Exxon", 23), ("CVX", "Chevron", 16), ("COP", "ConocoPhillips", 8),
+        ("EOG", "EOG Resources", 5), ("SLB", "Schlumberger", 5), ("MPC", "Marathon Petro", 4),
+        ("PSX", "Phillips 66", 4), ("WMB", "Williams", 4), ("VLO", "Valero", 3),
+        ("OKE", "ONEOK", 3), ("PXD", "Pioneer", 3), ("HES", "Hess", 3),
+    ],
+    "XLB": [
+        ("LIN", "Linde", 18), ("SHW", "Sherwin-Williams", 10), ("FCX", "Freeport", 7),
+        ("APD", "Air Products", 6), ("ECL", "Ecolab", 5), ("NEM", "Newmont", 5),
+        ("DOW", "Dow Inc", 5), ("NUE", "Nucor", 4), ("DD", "DuPont", 4),
+        ("VMC", "Vulcan", 3), ("MLM", "Martin Mar.", 3), ("PPG", "PPG", 3),
+    ],
+    "XLRE": [
+        ("PLD", "Prologis", 14), ("AMT", "Amer Tower", 10), ("EQIX", "Equinix", 9),
+        ("WELL", "Welltower", 6), ("SPG", "Simon Prop", 5), ("DLR", "Digital Realty", 5),
+        ("O", "Realty Income", 5), ("PSA", "Public Storage", 4), ("CCI", "Crown Castle", 4),
+        ("VICI", "VICI Prop", 3), ("CBRE", "CBRE", 3), ("AVB", "AvalonBay", 2),
+    ],
+    "XLU": [
+        ("NEE", "NextEra", 15), ("SO", "Southern Co", 9), ("DUK", "Duke Energy", 8),
+        ("CEG", "Constellation E", 7), ("SRE", "Sempra", 5), ("AEP", "AEP", 5),
+        ("D", "Dominion", 4), ("PCG", "PG&E", 4), ("XEL", "Xcel", 3),
+        ("EXC", "Exelon", 3), ("ED", "Con Edison", 3), ("WEC", "WEC Energy", 2),
+    ],
+}
+
+
+@app.get("/market/sector/{etf_symbol}")
+async def get_sector_detail(etf_symbol: str):
+    """섹터 ETF 상위 종목 일일 변동률."""
+    etf = etf_symbol.upper()
+    if etf not in _SECTOR_HOLDINGS:
+        raise HTTPException(404, f"Unknown sector ETF: {etf}")
+
+    cache_key = f"sector_detail_{etf}"
+    cached = cache.get_json(cache_key)
+    if cached:
+        return cached
+
+    import yfinance as yf
+
+    holdings = _SECTOR_HOLDINGS[etf]
+    symbols = [h[0] for h in holdings]
+    name_map = {h[0]: h[1] for h in holdings}
+    weight_map = {h[0]: h[2] for h in holdings}
+
+    stocks = []
+    try:
+        df = yf.download(symbols, period="2d", progress=False)
+        close = df["Close"] if "Close" in df.columns else df
+
+        for sym in symbols:
+            try:
+                col = close[sym].dropna()
+                if len(col) >= 2:
+                    pct = round(((float(col.iloc[-1]) - float(col.iloc[-2])) / float(col.iloc[-2])) * 100, 2)
+                    price = round(float(col.iloc[-1]), 2)
+                else:
+                    pct, price = 0.0, 0.0
+                stocks.append({
+                    "symbol": sym, "name": name_map[sym],
+                    "weight": weight_map[sym], "change_pct": pct, "price": price,
+                })
+            except Exception:
+                stocks.append({
+                    "symbol": sym, "name": name_map[sym],
+                    "weight": weight_map[sym], "change_pct": 0.0, "price": 0.0,
+                })
+    except Exception as e:
+        logger.warning(f"Sector detail fetch failed for {etf}: {e}")
+
+    up = sum(1 for s in stocks if s["change_pct"] > 0)
+    down = sum(1 for s in stocks if s["change_pct"] < 0)
+
+    result = {
+        "etf": etf, "sector": _SECTOR_ETFS[etf]["name"],
+        "sector_en": _SECTOR_ETFS[etf]["name_en"],
+        "stocks": stocks, "advance": up, "decline": down,
+        "unchanged": len(stocks) - up - down,
+        "updated_at": datetime.now().isoformat(),
+    }
+    cache.set_json(cache_key, result, ttl=600)
     return result
 
 

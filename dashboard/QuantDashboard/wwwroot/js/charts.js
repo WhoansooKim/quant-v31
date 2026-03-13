@@ -9,12 +9,25 @@ window.chartHelper = {
     _instances: {},
 
     /**
-     * Zoom plugin config — drag DISABLED (handled by custom _setupZoomable).
-     * Only programmatic zoom/pan via chart.zoomScale() / chart.pan().
+     * Zoom plugin config.
+     * Pinch zoom enabled for touch devices.
+     * Pan enabled for touch (one-finger when zoomed).
+     * Drag zoom handled by custom _setupZoomable (mouse + touch).
      */
     _zoomOpts: {
-        zoom: { mode: 'x' },
-        pan: { enabled: false },
+        zoom: {
+            mode: 'x',
+            pinch: { enabled: true }
+        },
+        pan: {
+            enabled: true,
+            mode: 'x',
+            // Only allow pan on touch when zoomed (checked via onPanStart)
+            onPanStart: function(ctx) {
+                // Allow pan only when zoomed in
+                return ctx.chart.__zoomed === true;
+            }
+        },
         limits: { x: { minRange: 10 } }
     },
 
@@ -62,7 +75,8 @@ window.chartHelper = {
      * Full custom drag zoom: left-drag + selection overlay
      *   left→right = zoom into selection
      *   right→left = zoom out one step (expand range by 2x)
-     * Also: double-click = reset, right-click drag = pan
+     * Also: double-click/double-tap = reset, right-click drag = pan
+     * Touch: single-finger drag = zoom selection, pinch = zoom (via plugin), pan when zoomed (via plugin)
      */
     _setupZoomable: function(canvas, chart) {
         var self = this;
@@ -87,12 +101,67 @@ window.chartHelper = {
             return el;
         }
 
+        function updateOverlay(currentX) {
+            if (!overlay) return;
+            var rect = canvas.getBoundingClientRect();
+            var dx = currentX - startX;
+            if (dx >= 0) {
+                overlay.style.left = (startX - rect.left) + 'px';
+                overlay.style.width = dx + 'px';
+                overlay.style.background = 'rgba(25,127,230,0.15)';
+                overlay.style.border = '1px solid rgba(25,127,230,0.4)';
+            } else {
+                overlay.style.left = (currentX - rect.left) + 'px';
+                overlay.style.width = (-dx) + 'px';
+                overlay.style.background = 'rgba(249,115,22,0.15)';
+                overlay.style.border = '1px solid rgba(249,115,22,0.4)';
+            }
+        }
+
+        function applyZoom(endX) {
+            var dx = endX - startX;
+            var threshold = 30;
+
+            if (dx > threshold) {
+                var rect = canvas.getBoundingClientRect();
+                var scale = chart.scales.x;
+                var chartArea = chart.chartArea;
+                var pixelStart = Math.max(startX - rect.left, chartArea.left);
+                var pixelEnd = Math.min(endX - rect.left, chartArea.right);
+                var idxStart = scale.getValueForPixel(pixelStart);
+                var idxEnd = scale.getValueForPixel(pixelEnd);
+                var minIdx = Math.max(0, Math.round(Math.min(idxStart, idxEnd)));
+                var maxIdx = Math.min(chart.data.labels.length - 1, Math.round(Math.max(idxStart, idxEnd)));
+                if (maxIdx - minIdx >= 2) {
+                    chart.zoomScale('x', { min: minIdx, max: maxIdx }, 'default');
+                    self._updateZoomFlag(chart);
+                }
+            } else if (dx < -threshold && chart.__zoomed) {
+                var scale = chart.scales.x;
+                var currentMin = Math.round(scale.min);
+                var currentMax = Math.round(scale.max);
+                var currentRange = currentMax - currentMin;
+                var expand = Math.max(Math.round(currentRange * 0.5), 5);
+                var totalLabels = chart.data.labels.length;
+                var newMin = Math.max(0, currentMin - expand);
+                var newMax = Math.min(totalLabels - 1, currentMax + expand);
+                chart.zoomScale('x', { min: newMin, max: newMax }, 'default');
+                self._updateZoomFlag(chart);
+            }
+        }
+
+        function removeOverlay() {
+            if (overlay && overlay.parentElement) {
+                overlay.parentElement.removeChild(overlay);
+            }
+            overlay = null;
+        }
+
+        // ─── Mouse events (desktop) ───
         canvas.addEventListener('mousedown', function(e) {
-            if (e.button !== 0) return;  // left-click only
+            if (e.button !== 0) return;
             dragging = true;
             startX = e.clientX;
-
-            // Create overlay
             overlay = createOverlay();
             var rect = canvas.getBoundingClientRect();
             overlay.style.left = (e.clientX - rect.left) + 'px';
@@ -102,76 +171,14 @@ window.chartHelper = {
 
         window.addEventListener('mousemove', function(e) {
             if (!dragging || !overlay) return;
-            var rect = canvas.getBoundingClientRect();
-            var dx = e.clientX - startX;
-
-            if (dx >= 0) {
-                // Left→right: zoom in selection (blue)
-                overlay.style.left = (startX - rect.left) + 'px';
-                overlay.style.width = dx + 'px';
-                overlay.style.background = 'rgba(25,127,230,0.15)';
-                overlay.style.border = '1px solid rgba(25,127,230,0.4)';
-            } else {
-                // Right→left: zoom out indicator (orange)
-                overlay.style.left = (e.clientX - rect.left) + 'px';
-                overlay.style.width = (-dx) + 'px';
-                overlay.style.background = 'rgba(249,115,22,0.15)';
-                overlay.style.border = '1px solid rgba(249,115,22,0.4)';
-            }
+            updateOverlay(e.clientX);
         });
 
         window.addEventListener('mouseup', function(e) {
             if (!dragging) return;
             dragging = false;
-            var dx = e.clientX - startX;
-
-            // Remove overlay
-            if (overlay && overlay.parentElement) {
-                overlay.parentElement.removeChild(overlay);
-            }
-            overlay = null;
-
-            var threshold = 30;
-
-            if (dx > threshold) {
-                // ─── Zoom IN: left→right drag ───
-                var rect = canvas.getBoundingClientRect();
-                var scale = chart.scales.x;
-                var chartArea = chart.chartArea;
-
-                // Convert pixel to category index
-                var pixelStart = startX - rect.left;
-                var pixelEnd = e.clientX - rect.left;
-                // Clamp to chart area
-                pixelStart = Math.max(pixelStart, chartArea.left);
-                pixelEnd = Math.min(pixelEnd, chartArea.right);
-
-                var idxStart = scale.getValueForPixel(pixelStart);
-                var idxEnd = scale.getValueForPixel(pixelEnd);
-
-                var minIdx = Math.max(0, Math.round(Math.min(idxStart, idxEnd)));
-                var maxIdx = Math.min(chart.data.labels.length - 1, Math.round(Math.max(idxStart, idxEnd)));
-
-                if (maxIdx - minIdx >= 2) {
-                    chart.zoomScale('x', { min: minIdx, max: maxIdx }, 'default');
-                    self._updateZoomFlag(chart);
-                }
-
-            } else if (dx < -threshold && chart.__zoomed) {
-                // ─── Zoom OUT: right→left drag ───
-                var scale = chart.scales.x;
-                var currentMin = Math.round(scale.min);
-                var currentMax = Math.round(scale.max);
-                var currentRange = currentMax - currentMin;
-                var expand = Math.max(Math.round(currentRange * 0.5), 5);
-                var totalLabels = chart.data.labels.length;
-
-                var newMin = Math.max(0, currentMin - expand);
-                var newMax = Math.min(totalLabels - 1, currentMax + expand);
-
-                chart.zoomScale('x', { min: newMin, max: newMax }, 'default');
-                self._updateZoomFlag(chart);
-            }
+            applyZoom(e.clientX);
+            removeOverlay();
         });
 
         // Double-click to reset zoom
@@ -184,6 +191,106 @@ window.chartHelper = {
 
         // Right-click drag to pan
         this._bindRightClickPan(canvas, chart);
+
+        // ─── Touch events (mobile) ───
+        var touchDragging = false;
+        var touchStartX = 0;
+        var touchStartY = 0;
+        var touchLocked = false;   // true once we confirm horizontal drag
+        var lastTapTime = 0;
+
+        canvas.addEventListener('touchstart', function(e) {
+            if (e.touches.length !== 1) {
+                // Multi-touch: let plugin handle pinch
+                touchDragging = false;
+                touchLocked = false;
+                removeOverlay();
+                return;
+            }
+
+            // Double-tap detection
+            var now = Date.now();
+            if (now - lastTapTime < 300) {
+                // Double tap — reset zoom
+                e.preventDefault();
+                if (chart.__zoomed) {
+                    chart.resetZoom('default');
+                    chart.__zoomed = false;
+                }
+                touchDragging = false;
+                lastTapTime = 0;
+                return;
+            }
+            lastTapTime = now;
+
+            // If already zoomed, let plugin handle pan (don't start drag)
+            if (chart.__zoomed) return;
+
+            var touch = e.touches[0];
+            touchStartX = touch.clientX;
+            touchStartY = touch.clientY;
+            touchDragging = true;
+            touchLocked = false;
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', function(e) {
+            if (!touchDragging || e.touches.length !== 1) return;
+            var touch = e.touches[0];
+            var dx = touch.clientX - touchStartX;
+            var dy = touch.clientY - touchStartY;
+
+            // Direction lock: first 10px of movement determines horizontal vs vertical
+            if (!touchLocked) {
+                if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        // Horizontal — lock for chart zoom
+                        touchLocked = true;
+                        startX = touchStartX;
+                        overlay = createOverlay();
+                        var rect = canvas.getBoundingClientRect();
+                        overlay.style.left = (touchStartX - rect.left) + 'px';
+                        overlay.style.width = '0px';
+                        canvas.parentElement.appendChild(overlay);
+                    } else {
+                        // Vertical — cancel, let page scroll
+                        touchDragging = false;
+                        return;
+                    }
+                } else {
+                    return; // Not enough movement yet
+                }
+            }
+
+            e.preventDefault();
+            updateOverlay(touch.clientX);
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', function(e) {
+            if (!touchDragging || !touchLocked) {
+                touchDragging = false;
+                touchLocked = false;
+                return;
+            }
+            var touch = e.changedTouches[0];
+            applyZoom(touch.clientX);
+            removeOverlay();
+            touchDragging = false;
+            touchLocked = false;
+        });
+
+        canvas.addEventListener('touchcancel', function() {
+            touchDragging = false;
+            touchLocked = false;
+            removeOverlay();
+        });
+
+        // Update zoom flag after plugin pinch/pan events
+        chart.options.plugins.zoom.zoom.onZoomComplete = function(ctx) {
+            self._updateZoomFlag(ctx.chart);
+        };
+        chart.options.plugins.zoom.pan.onPanComplete = function(ctx) {
+            self._updateZoomFlag(ctx.chart);
+        };
     },
 
     /**

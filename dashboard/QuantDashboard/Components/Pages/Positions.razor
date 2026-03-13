@@ -12,11 +12,11 @@
 
 <!-- Tabs -->
 <div class="tab-bar">
-    <button class="tab-btn @(showOpen ? "active" : "")" @onclick="() => showOpen = true">
-        Open (@openPositions.Count)
+    <button class="tab-btn @(showOpen ? "active" : "")" @onclick="SwitchToOpen">
+        Open (@openTotalCount)
     </button>
-    <button class="tab-btn @(!showOpen ? "active" : "")" @onclick="() => showOpen = false">
-        Closed (@closedPositions.Count)
+    <button class="tab-btn @(!showOpen ? "active" : "")" @onclick="SwitchToClosed">
+        Closed (@closedTotalCount)
     </button>
 </div>
 
@@ -88,6 +88,22 @@
                     </tbody>
                 </table>
             </div>
+            <!-- Pagination -->
+            @if (openTotalPages > 1)
+            {
+                <div class="pagination-bar">
+                    <button class="btn-page" disabled="@(openCurrentPage <= 1)" @onclick="() => GoToOpenPage(1)">«</button>
+                    <button class="btn-page" disabled="@(openCurrentPage <= 1)" @onclick="() => GoToOpenPage(openCurrentPage - 1)">‹</button>
+                    @for (int pg = openPageStart; pg <= openPageEnd; pg++)
+                    {
+                        var p = pg;
+                        <button class="btn-page @(p == openCurrentPage ? "btn-page-active" : "")" @onclick="() => GoToOpenPage(p)">@p</button>
+                    }
+                    <button class="btn-page" disabled="@(openCurrentPage >= openTotalPages)" @onclick="() => GoToOpenPage(openCurrentPage + 1)">›</button>
+                    <button class="btn-page" disabled="@(openCurrentPage >= openTotalPages)" @onclick="() => GoToOpenPage(openTotalPages)">»</button>
+                    <span class="text-muted" style="font-size:0.72rem; margin-left:0.5rem">@openTotalCount items</span>
+                </div>
+            }
         }
         else
         {
@@ -143,6 +159,22 @@
                     </tbody>
                 </table>
             </div>
+            <!-- Pagination -->
+            @if (closedTotalPages > 1)
+            {
+                <div class="pagination-bar">
+                    <button class="btn-page" disabled="@(closedCurrentPage <= 1)" @onclick="() => GoToClosedPage(1)">«</button>
+                    <button class="btn-page" disabled="@(closedCurrentPage <= 1)" @onclick="() => GoToClosedPage(closedCurrentPage - 1)">‹</button>
+                    @for (int pg = closedPageStart; pg <= closedPageEnd; pg++)
+                    {
+                        var p = pg;
+                        <button class="btn-page @(p == closedCurrentPage ? "btn-page-active" : "")" @onclick="() => GoToClosedPage(p)">@p</button>
+                    }
+                    <button class="btn-page" disabled="@(closedCurrentPage >= closedTotalPages)" @onclick="() => GoToClosedPage(closedCurrentPage + 1)">›</button>
+                    <button class="btn-page" disabled="@(closedCurrentPage >= closedTotalPages)" @onclick="() => GoToClosedPage(closedTotalPages)">»</button>
+                    <span class="text-muted" style="font-size:0.72rem; margin-left:0.5rem">@closedTotalCount items</span>
+                </div>
+            }
         }
         else
         {
@@ -157,6 +189,20 @@
     private List<SwingPosition> openPositions = new();
     private List<SwingPosition> closedPositions = new();
     private bool showOpen = true;
+
+    // Pagination
+    private const int PageSize = 10;
+    private int openCurrentPage = 1;
+    private int openTotalCount;
+    private int openTotalPages => Math.Max(1, (int)Math.Ceiling((double)openTotalCount / PageSize));
+    private int openPageStart => Math.Max(1, openCurrentPage - 2);
+    private int openPageEnd => Math.Min(openTotalPages, openPageStart + 4);
+
+    private int closedCurrentPage = 1;
+    private int closedTotalCount;
+    private int closedTotalPages => Math.Max(1, (int)Math.Ceiling((double)closedTotalCount / PageSize));
+    private int closedPageStart => Math.Max(1, closedCurrentPage - 2);
+    private int closedPageEnd => Math.Min(closedTotalPages, closedPageStart + 4);
 
     // Sort state
     private SortState openSort = new();
@@ -194,15 +240,52 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadPositions();
+    }
+
+    private async Task LoadPositions()
+    {
         try
         {
-            var openTask = Db.GetOpenPositionsAsync();
-            var closedTask = Db.GetClosedPositionsAsync(100);
+            var openOffset = (openCurrentPage - 1) * PageSize;
+            var closedOffset = (closedCurrentPage - 1) * PageSize;
+            var openTask = Db.GetPositionsPagedAsync("open", openOffset, PageSize);
+            var closedTask = Db.GetPositionsPagedAsync("closed", closedOffset, PageSize);
             await Task.WhenAll(openTask, closedTask);
-            openPositions = openTask.Result;
-            closedPositions = closedTask.Result;
+            openPositions = openTask.Result.Items;
+            openTotalCount = openTask.Result.TotalCount;
+            closedPositions = closedTask.Result.Items;
+            closedTotalCount = closedTask.Result.TotalCount;
         }
         catch { }
+    }
+
+    private async Task SwitchToOpen()
+    {
+        showOpen = true;
+        openCurrentPage = 1;
+        await LoadPositions();
+    }
+
+    private async Task SwitchToClosed()
+    {
+        showOpen = false;
+        closedCurrentPage = 1;
+        await LoadPositions();
+    }
+
+    private async Task GoToOpenPage(int pg)
+    {
+        if (pg < 1 || pg > openTotalPages || pg == openCurrentPage) return;
+        openCurrentPage = pg;
+        await LoadPositions();
+    }
+
+    private async Task GoToClosedPage(int pg)
+    {
+        if (pg < 1 || pg > closedTotalPages || pg == closedCurrentPage) return;
+        closedCurrentPage = pg;
+        await LoadPositions();
     }
 
     private string GetExitReasonClass(string? reason) => reason switch

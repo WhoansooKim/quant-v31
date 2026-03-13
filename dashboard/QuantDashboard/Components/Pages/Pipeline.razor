@@ -479,6 +479,7 @@
     <h4 class="section-title">
         <span class="material-symbols-outlined" style="font-size:18px">receipt_long</span>
         Pipeline Logs
+        <span class="text-muted" style="font-size:0.78rem; font-weight:400; margin-left:0.5rem">(@logTotalCount 건)</span>
     </h4>
     @if (pipelineLogs.Any())
     {
@@ -515,6 +516,34 @@
                 </tbody>
             </table>
         </div>
+
+        <!-- Pagination -->
+        @if (logTotalPages > 1)
+        {
+            <div class="pagination-bar">
+                <button class="btn-page" disabled="@(logCurrentPage <= 1)" @onclick="() => GoToLogPage(1)">
+                    <span class="material-symbols-outlined" style="font-size:16px">first_page</span>
+                </button>
+                <button class="btn-page" disabled="@(logCurrentPage <= 1)" @onclick="() => GoToLogPage(logCurrentPage - 1)">
+                    <span class="material-symbols-outlined" style="font-size:16px">chevron_left</span>
+                </button>
+
+                @for (int p = logPageStart; p <= logPageEnd; p++)
+                {
+                    var pg = p;
+                    <button class="btn-page @(pg == logCurrentPage ? "btn-page-active" : "")"
+                            @onclick="() => GoToLogPage(pg)">@pg</button>
+                }
+
+                <button class="btn-page" disabled="@(logCurrentPage >= logTotalPages)" @onclick="() => GoToLogPage(logCurrentPage + 1)">
+                    <span class="material-symbols-outlined" style="font-size:16px">chevron_right</span>
+                </button>
+                <button class="btn-page" disabled="@(logCurrentPage >= logTotalPages)" @onclick="() => GoToLogPage(logTotalPages)">
+                    <span class="material-symbols-outlined" style="font-size:16px">last_page</span>
+                </button>
+                <span class="text-muted" style="font-size:0.75rem; margin-left:0.5rem">@logCurrentPage / @logTotalPages</span>
+            </div>
+        }
     }
     else
     {
@@ -533,6 +562,14 @@
     private double? cumulativeReturn;
     private List<SwingPipelineLog> pipelineLogs = new();
     private bool showDesc;
+
+    // ── Log Pagination ──
+    private const int LogPageSize = 10;
+    private int logCurrentPage = 1;
+    private int logTotalCount;
+    private int logTotalPages => Math.Max(1, (int)Math.Ceiling((double)logTotalCount / LogPageSize));
+    private int logPageStart => Math.Max(1, logCurrentPage - 2);
+    private int logPageEnd => Math.Min(logTotalPages, logPageStart + 4);
 
     // ── UI State ──
     private string? runningStep;
@@ -558,14 +595,16 @@
     {
         try
         {
+            var offset = (logCurrentPage - 1) * LogPageSize;
             var t1 = CheckEngineHealth();
             var t2 = Db.GetUniverseCountAsync();
             var t3 = Db.GetIndicatorStatusAsync();
             var t4 = Db.GetSignalCountsByStatusAsync();
             var t5 = Db.GetLatestSnapshotAsync();
-            var t6 = Db.GetPipelineLogsAsync(20);
+            var t6 = Db.GetPipelineLogsAsync(offset, LogPageSize);
+            var t7 = Db.GetPipelineLogCountAsync();
 
-            await Task.WhenAll(t1, t2, t3, t4, t5, t6);
+            await Task.WhenAll(t1, t2, t3, t4, t5, t6, t7);
 
             universeCount = t2.Result;
             (indicatorCount, indicatorLastUpdated) = t3.Result;
@@ -576,11 +615,20 @@
             cumulativeReturn = snap?.CumulativeReturn;
 
             pipelineLogs = t6.Result;
+            logTotalCount = t7.Result;
         }
         catch (Exception ex)
         {
             statusMsg = $"Error loading data: {ex.Message}";
         }
+    }
+
+    private async Task GoToLogPage(int page)
+    {
+        logCurrentPage = Math.Max(1, Math.Min(page, logTotalPages));
+        var offset = (logCurrentPage - 1) * LogPageSize;
+        pipelineLogs = await Db.GetPipelineLogsAsync(offset, LogPageSize);
+        logTotalCount = await Db.GetPipelineLogCountAsync();
     }
 
     private async Task CheckEngineHealth()
@@ -754,7 +802,8 @@
         for (int i = 0; i < maxSeconds / 3; i++)
         {
             await Task.Delay(3000);
-            pipelineLogs = await Db.GetPipelineLogsAsync(20);
+            logCurrentPage = 1;
+            pipelineLogs = await Db.GetPipelineLogsAsync(0, LogPageSize);
             StateHasChanged();
 
             // Find the latest log for this step that was created after we started

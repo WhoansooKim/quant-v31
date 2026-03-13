@@ -85,6 +85,63 @@ public class SwingService
         return signals;
     }
 
+    public async Task<(List<SwingSignal> Items, int TotalCount)> GetSignalsPagedAsync(string? status, int offset, int limit)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        var where = status != null ? "WHERE status = @status" : "";
+        await using var countCmd = new NpgsqlCommand($"SELECT count(*) FROM swing_signals {where}", conn);
+        if (status != null) countCmd.Parameters.AddWithValue("@status", status);
+        var total = Convert.ToInt32(await countCmd.ExecuteScalarAsync());
+
+        var sql = $@"SELECT signal_id, time, symbol, signal_type, entry_price,
+                       stop_loss, take_profit, return_20d_rank, trend_aligned,
+                       breakout_5d, volume_surge, exit_reason, position_id,
+                       status, approved_at, executed_at,
+                       llm_score, llm_analysis, llm_analyzed_at,
+                       technical_score, sentiment_score, flow_score,
+                       composite_score, factor_detail, factor_scored_at
+                FROM swing_signals {where}
+                ORDER BY time DESC LIMIT @limit OFFSET @offset";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        if (status != null) cmd.Parameters.AddWithValue("@status", status);
+        cmd.Parameters.AddWithValue("@limit", limit);
+        cmd.Parameters.AddWithValue("@offset", offset);
+
+        var signals = new List<SwingSignal>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            signals.Add(new SwingSignal(
+                SignalId: r.GetInt64(0), Time: r.GetDateTime(1), Symbol: r.GetString(2),
+                SignalType: r.GetString(3),
+                EntryPrice: r.IsDBNull(4) ? null : r.GetDecimal(4),
+                StopLoss: r.IsDBNull(5) ? null : r.GetDecimal(5),
+                TakeProfit: r.IsDBNull(6) ? null : r.GetDecimal(6),
+                Return20dRank: r.IsDBNull(7) ? null : r.GetDouble(7),
+                TrendAligned: !r.IsDBNull(8) && r.GetBoolean(8),
+                Breakout5d: !r.IsDBNull(9) && r.GetBoolean(9),
+                VolumeSurge: !r.IsDBNull(10) && r.GetBoolean(10),
+                ExitReason: r.IsDBNull(11) ? null : r.GetString(11),
+                PositionId: r.IsDBNull(12) ? null : r.GetInt64(12),
+                Status: r.GetString(13),
+                ApprovedAt: r.IsDBNull(14) ? null : r.GetDateTime(14),
+                ExecutedAt: r.IsDBNull(15) ? null : r.GetDateTime(15),
+                LlmScore: r.IsDBNull(16) ? null : r.GetInt32(16),
+                LlmAnalysis: r.IsDBNull(17) ? null : r.GetString(17),
+                LlmAnalyzedAt: r.IsDBNull(18) ? null : r.GetDateTime(18),
+                TechnicalScore: r.IsDBNull(19) ? null : r.GetDouble(19),
+                SentimentScore: r.IsDBNull(20) ? null : r.GetDouble(20),
+                FlowScore: r.IsDBNull(21) ? null : r.GetDouble(21),
+                CompositeScore: r.IsDBNull(22) ? null : r.GetDouble(22),
+                FactorDetail: r.IsDBNull(23) ? null : r.GetString(23),
+                FactorScoredAt: r.IsDBNull(24) ? null : r.GetDateTime(24)
+            ));
+        }
+        return (signals, total);
+    }
+
     public async Task<bool> RevertToPendingAsync(long signalId)
     {
         await using var conn = new NpgsqlConnection(_connStr);
@@ -119,6 +176,56 @@ public class SwingService
     public async Task<List<SwingPosition>> GetClosedPositionsAsync(int limit = 50)
     {
         return await GetPositionsAsync("closed", limit);
+    }
+
+    public async Task<(List<SwingPosition> Items, int TotalCount)> GetPositionsPagedAsync(string status, int offset, int limit)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var countCmd = new NpgsqlCommand("SELECT count(*) FROM swing_positions WHERE status = @status", conn);
+        countCmd.Parameters.AddWithValue("@status", status);
+        var total = Convert.ToInt32(await countCmd.ExecuteScalarAsync());
+
+        var orderCol = status == "open" ? "entry_time" : "exit_time";
+        await using var cmd = new NpgsqlCommand($@"
+            SELECT position_id, symbol, side, qty, entry_price, entry_time,
+                   stop_loss, take_profit, current_price, unrealized_pnl,
+                   unrealized_pct, status, exit_price, exit_time, exit_reason,
+                   realized_pnl, realized_pct, hold_days, signal_id, is_paper,
+                   partial_exited, trailing_stop_active, high_water_mark
+            FROM swing_positions WHERE status = @status
+            ORDER BY {orderCol} DESC LIMIT @limit OFFSET @offset", conn);
+        cmd.Parameters.AddWithValue("@status", status);
+        cmd.Parameters.AddWithValue("@limit", limit);
+        cmd.Parameters.AddWithValue("@offset", offset);
+
+        var positions = new List<SwingPosition>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            positions.Add(new SwingPosition(
+                PositionId: r.GetInt64(0), Symbol: r.GetString(1), Side: r.GetString(2),
+                Qty: r.GetDecimal(3), EntryPrice: r.GetDecimal(4), EntryTime: r.GetDateTime(5),
+                StopLoss: r.IsDBNull(6) ? null : r.GetDecimal(6),
+                TakeProfit: r.IsDBNull(7) ? null : r.GetDecimal(7),
+                CurrentPrice: r.IsDBNull(8) ? null : r.GetDecimal(8),
+                UnrealizedPnl: r.IsDBNull(9) ? null : r.GetDecimal(9),
+                UnrealizedPct: r.IsDBNull(10) ? null : r.GetDouble(10),
+                Status: r.GetString(11),
+                ExitPrice: r.IsDBNull(12) ? null : r.GetDecimal(12),
+                ExitTime: r.IsDBNull(13) ? null : r.GetDateTime(13),
+                ExitReason: r.IsDBNull(14) ? null : r.GetString(14),
+                RealizedPnl: r.IsDBNull(15) ? null : r.GetDecimal(15),
+                RealizedPct: r.IsDBNull(16) ? null : r.GetDouble(16),
+                HoldDays: r.IsDBNull(17) ? null : r.GetInt32(17),
+                SignalId: r.IsDBNull(18) ? null : r.GetInt64(18),
+                IsPaper: r.GetBoolean(19),
+                PartialExited: !r.IsDBNull(20) && r.GetBoolean(20),
+                TrailingStopActive: !r.IsDBNull(21) && r.GetBoolean(21),
+                HighWaterMark: r.IsDBNull(22) ? null : r.GetDecimal(22)
+            ));
+        }
+        return (positions, total);
     }
 
     private async Task<List<SwingPosition>> GetPositionsAsync(string status, int limit = 50)
@@ -357,6 +464,45 @@ public class SwingService
         return runs;
     }
 
+    public async Task<(List<SwingBacktestRun> Items, int TotalCount)> GetBacktestRunsPagedAsync(int offset, int limit)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var countCmd = new NpgsqlCommand("SELECT count(*) FROM swing_backtest_runs", conn);
+        var total = Convert.ToInt32(await countCmd.ExecuteScalarAsync());
+
+        var runs = new List<SwingBacktestRun>();
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT run_id, start_date, end_date, initial_capital, final_value,
+                   total_return, cagr, max_drawdown, sharpe_ratio, win_rate,
+                   total_trades, profit_factor, avg_hold_days, created_at
+            FROM swing_backtest_runs ORDER BY created_at DESC LIMIT @limit OFFSET @offset", conn);
+        cmd.Parameters.AddWithValue("@limit", limit);
+        cmd.Parameters.AddWithValue("@offset", offset);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            runs.Add(new SwingBacktestRun(
+                RunId: r.GetInt64(0),
+                StartDate: r.GetDateTime(1),
+                EndDate: r.GetDateTime(2),
+                InitialCapital: r.IsDBNull(3) ? null : r.GetDecimal(3),
+                FinalValue: r.IsDBNull(4) ? null : r.GetDecimal(4),
+                TotalReturn: r.IsDBNull(5) ? null : r.GetDouble(5),
+                Cagr: r.IsDBNull(6) ? null : r.GetDouble(6),
+                MaxDrawdown: r.IsDBNull(7) ? null : r.GetDouble(7),
+                SharpeRatio: r.IsDBNull(8) ? null : r.GetDouble(8),
+                WinRate: r.IsDBNull(9) ? null : r.GetDouble(9),
+                TotalTrades: r.IsDBNull(10) ? null : r.GetInt32(10),
+                ProfitFactor: r.IsDBNull(11) ? null : r.GetDouble(11),
+                AvgHoldDays: r.IsDBNull(12) ? null : r.GetDouble(12),
+                CreatedAt: r.GetDateTime(13)
+            ));
+        }
+        return (runs, total);
+    }
+
     public async Task<SwingBacktestRun?> GetLatestBacktestRunAsync()
     {
         await using var conn = new NpgsqlConnection(_connStr);
@@ -393,7 +539,10 @@ public class SwingService
     // Pipeline Log
     // ═══════════════════════════════════════
 
-    public async Task<List<SwingPipelineLog>> GetPipelineLogsAsync(int limit = 20)
+    public async Task<List<SwingPipelineLog>> GetPipelineLogsAsync(int limit = 20) =>
+        await GetPipelineLogsAsync(0, limit);
+
+    public async Task<List<SwingPipelineLog>> GetPipelineLogsAsync(int offset, int limit)
     {
         var logs = new List<SwingPipelineLog>();
         await using var conn = new NpgsqlConnection(_connStr);
@@ -402,8 +551,9 @@ public class SwingService
         await using var cmd = new NpgsqlCommand(@"
             SELECT log_id, step_name, status, elapsed_sec, details::text,
                    error_msg, created_at
-            FROM swing_pipeline_log ORDER BY created_at DESC LIMIT @limit", conn);
+            FROM swing_pipeline_log ORDER BY created_at DESC LIMIT @limit OFFSET @offset", conn);
         cmd.Parameters.AddWithValue("@limit", limit);
+        cmd.Parameters.AddWithValue("@offset", offset);
 
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
@@ -419,6 +569,14 @@ public class SwingService
             ));
         }
         return logs;
+    }
+
+    public async Task<int> GetPipelineLogCountAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand("SELECT COUNT(*) FROM swing_pipeline_log", conn);
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
     // ═══════════════════════════════════════
