@@ -1774,6 +1774,66 @@ async def get_watchlist_intraday(symbol: str):
         return {"symbol": symbol, "points": [], "prev_close": None, "error": str(e)}
 
 
+@app.get("/watchlist/chart/{symbol}")
+async def get_watchlist_chart(symbol: str, period: str = "1d"):
+    """워치리스트 종목 차트 데이터 (1d/5d/1mo/6mo)."""
+    import yfinance as yf
+
+    _PERIOD_MAP = {
+        "1d":  {"period": "1d",  "interval": "5m",  "prepost": True},
+        "5d":  {"period": "5d",  "interval": "30m", "prepost": False},
+        "1mo": {"period": "1mo", "interval": "1d",  "prepost": False},
+        "6mo": {"period": "6mo", "interval": "1d",  "prepost": False},
+    }
+    params = _PERIOD_MAP.get(period, _PERIOD_MAP["1d"])
+
+    try:
+        tkr = yf.Ticker(symbol)
+        df = tkr.history(**params)
+        if df.empty and period == "1d":
+            df = tkr.history(period="2d", interval="5m", prepost=True)
+        if df.empty:
+            return {"symbol": symbol, "period": period, "points": [], "prev_close": None}
+
+        prev_close = None
+        if period == "1d":
+            info = tkr.info
+            prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
+            if prev_close:
+                prev_close = round(float(prev_close), 2)
+            # 오늘 날짜만
+            last_date = df.index[-1].date()
+            df = df[df.index.date == last_date]
+            if df.empty:
+                return {"symbol": symbol, "period": period, "points": [], "prev_close": prev_close}
+
+        points = []
+        for idx, row in df.iterrows():
+            p = round(float(row["Close"]), 2)
+            if period == "1d":
+                ts = idx.tz_convert("US/Eastern") if idx.tzinfo else idx
+                hour, minute = ts.hour, ts.minute
+                t = hour * 60 + minute
+                session = "pre" if t < 570 else ("regular" if t < 960 else "post")
+                points.append({"time": ts.strftime("%H:%M"), "price": p, "session": session})
+            elif period == "5d":
+                ts = idx.tz_convert("US/Eastern") if idx.tzinfo else idx
+                points.append({"time": ts.strftime("%m/%d %H:%M"), "price": p})
+            else:
+                ts = idx
+                points.append({"time": ts.strftime("%m/%d"), "price": p})
+
+        return {
+            "symbol": symbol,
+            "period": period,
+            "prev_close": prev_close,
+            "points": points,
+        }
+    except Exception as e:
+        logger.error(f"Chart fetch failed for {symbol}/{period}: {e}")
+        return {"symbol": symbol, "period": period, "points": [], "prev_close": None, "error": str(e)}
+
+
 @app.post("/watchlist/backtest")
 async def run_watchlist_backtest(req: WatchlistBacktestRequest, bg: BackgroundTasks):
     """워치리스트 종목 가중 스코어링 백테스트."""

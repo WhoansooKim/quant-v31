@@ -1292,7 +1292,7 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
 
     /* Watchlist: level2 row stack */
     .wl-level2-row { flex-direction: column !important; }
-    .wl-level2-left, .wl-level2-right { flex: none !important; width: 100% !important; min-height: 160px !important; }
+    .wl-level2-left, .wl-level2-right { flex: none !important; width: 100% !important; height: 200px !important; overflow: hidden !important; }
 
     /* Help page */
     .help-page { max-width: 100% !important; }
@@ -2443,10 +2443,26 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     flex: 1; min-width: 0;
 }
 .wl-level2-right {
-    flex: 1; min-width: 0; min-height: 180px;
+    flex: 1; min-width: 0; height: 220px;
     background: var(--s1); border: 1px solid var(--bd); border-radius: 8px;
-    padding: 0.4rem; display: flex; align-items: center; justify-content: center;
+    padding: 0.4rem; position: relative; overflow: hidden;
 }
+.wl-level2-right .chart-period-bar {
+    display: flex; gap: 2px; justify-content: flex-end; position: absolute;
+    top: 4px; right: 6px; z-index: 2;
+}
+.wl-level2-right canvas {
+    width: 100% !important; height: calc(100% - 4px) !important;
+}
+
+/* Period selector buttons */
+.btn-period {
+    background: var(--s2); border: 1px solid var(--bd); color: var(--text-secondary);
+    font-size: 0.68rem; font-weight: 600; padding: 2px 8px; border-radius: 3px;
+    cursor: pointer; transition: all 0.15s;
+}
+.btn-period:hover { background: var(--s3); color: var(--text-primary); }
+.btn-period-active { background: var(--primary); color: #fff; border-color: var(--primary); }
 
 .summary-gauge {
     background: var(--s1); border: 1px solid var(--bd); border-radius: 8px;
@@ -2482,8 +2498,11 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     cursor: pointer; padding: 0.2rem 0; user-select: none;
 }
 .analysis-compact-header:hover { opacity: 0.85; }
-.compact-left { display: flex; align-items: center; gap: 0.15rem; flex-wrap: wrap; }
-.compact-right { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.compact-left { display: flex; align-items: center; flex: 1; min-width: 0; }
+.compact-right { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; margin-left: auto; }
+.compact-right canvas { flex-shrink: 0; }
+.compact-right .compact-verdict { width: 62px; text-align: center; flex-shrink: 0; }
+.compact-right .compact-score { width: 52px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .compact-verdict {
     font-size: 0.78rem; font-weight: 700; padding: 0.15rem 0.5rem;
     border-radius: 4px;

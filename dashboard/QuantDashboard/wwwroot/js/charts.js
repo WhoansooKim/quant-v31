@@ -20,13 +20,8 @@ window.chartHelper = {
             pinch: { enabled: true }
         },
         pan: {
-            enabled: true,
+            enabled: false,
             mode: 'x',
-            // Only allow pan on touch when zoomed (checked via onPanStart)
-            onPanStart: function(ctx) {
-                // Allow pan only when zoomed in
-                return ctx.chart.__zoomed === true;
-            }
         },
         limits: { x: { minRange: 10 } }
     },
@@ -136,17 +131,20 @@ window.chartHelper = {
                     chart.zoomScale('x', { min: minIdx, max: maxIdx }, 'default');
                     self._updateZoomFlag(chart);
                 }
-            } else if (dx < -threshold && chart.__zoomed) {
-                var scale = chart.scales.x;
-                var currentMin = Math.round(scale.min);
-                var currentMax = Math.round(scale.max);
-                var currentRange = currentMax - currentMin;
-                var expand = Math.max(Math.round(currentRange * 0.5), 5);
-                var totalLabels = chart.data.labels.length;
-                var newMin = Math.max(0, currentMin - expand);
-                var newMax = Math.min(totalLabels - 1, currentMax + expand);
-                chart.zoomScale('x', { min: newMin, max: newMax }, 'default');
-                self._updateZoomFlag(chart);
+            } else if (dx < -threshold) {
+                if (chart.__zoomed) {
+                    var scale = chart.scales.x;
+                    var currentMin = Math.round(scale.min);
+                    var currentMax = Math.round(scale.max);
+                    var currentRange = currentMax - currentMin;
+                    var expand = Math.max(Math.round(currentRange * 0.5), 5);
+                    var totalLabels = chart.data.labels.length;
+                    var newMin = Math.max(0, currentMin - expand);
+                    var newMax = Math.min(totalLabels - 1, currentMax + expand);
+                    chart.zoomScale('x', { min: newMin, max: newMax }, 'default');
+                    self._updateZoomFlag(chart);
+                }
+                // If not zoomed, right→left drag is a no-op (nothing to zoom out from)
             }
         }
 
@@ -160,6 +158,8 @@ window.chartHelper = {
         // ─── Mouse events (desktop) ───
         canvas.addEventListener('mousedown', function(e) {
             if (e.button !== 0) return;
+            // Clean up any stale overlay from a previous drag
+            removeOverlay();
             dragging = true;
             startX = e.clientX;
             overlay = createOverlay();
@@ -179,6 +179,12 @@ window.chartHelper = {
             dragging = false;
             applyZoom(e.clientX);
             removeOverlay();
+            // Safety: remove any stale overlay children from parent
+            var parent = canvas.parentElement;
+            if (parent) {
+                var stale = parent.querySelectorAll('div[style*="pointer-events: none"]');
+                stale.forEach(function(el) { el.remove(); });
+            }
         });
 
         // Double-click to reset zoom
@@ -200,11 +206,12 @@ window.chartHelper = {
         var lastTapTime = 0;
 
         canvas.addEventListener('touchstart', function(e) {
+            // Always clean up stale overlay on new touch
+            removeOverlay();
             if (e.touches.length !== 1) {
                 // Multi-touch: let plugin handle pinch
                 touchDragging = false;
                 touchLocked = false;
-                removeOverlay();
                 return;
             }
 
@@ -222,9 +229,6 @@ window.chartHelper = {
                 return;
             }
             lastTapTime = now;
-
-            // If already zoomed, let plugin handle pan (don't start drag)
-            if (chart.__zoomed) return;
 
             var touch = e.touches[0];
             touchStartX = touch.clientX;
@@ -808,6 +812,118 @@ window.chartHelper = {
                         },
                         grid: { color: 'rgba(255,255,255,0.06)' },
                     }
+                }
+            }
+        });
+        this._instances[canvasId] = chart;
+    },
+
+    /** Simple period chart — single color line, no legend, compact axes */
+    createPeriodChart: function(canvasId, labels, prices, prevClose) {
+        this.destroy(canvasId);
+        var ctx = document.getElementById(canvasId);
+        if (!ctx || !prices || prices.length < 2) return;
+
+        var first = prevClose || prices[0];
+        var last = prices[prices.length - 1];
+        var lineColor = last >= first ? 'rgba(34,197,94,0.8)' : 'rgba(239,68,68,0.8)';
+        var fillColor = last >= first ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)';
+
+        var datasets = [{
+            data: prices,
+            borderColor: lineColor,
+            backgroundColor: fillColor,
+            fill: true,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.1
+        }];
+
+        // Prev close dashed line
+        if (prevClose) {
+            datasets.push({
+                data: prices.map(function() { return prevClose; }),
+                borderColor: 'rgba(255,255,255,0.25)',
+                borderDash: [4, 3],
+                borderWidth: 1,
+                pointRadius: 0,
+                fill: false,
+            });
+        }
+
+        var step = Math.max(1, Math.floor(labels.length / 8));
+        var chart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(c) {
+                                if (c.datasetIndex === 0) return '$' + c.raw.toFixed(2);
+                                return 'Prev: $' + c.raw.toFixed(2);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            callback: function(val, idx) { return idx % step === 0 ? labels[idx] : ''; },
+                            font: { size: 9 }, color: 'rgba(255,255,255,0.4)', maxRotation: 0,
+                        },
+                        grid: { display: false },
+                    },
+                    y: {
+                        position: 'right',
+                        ticks: { font: { size: 9 }, color: 'rgba(255,255,255,0.5)',
+                                 callback: function(v) { return '$' + v.toFixed(1); } },
+                        grid: { color: 'rgba(255,255,255,0.06)' },
+                    }
+                }
+            }
+        });
+        this._instances[canvasId] = chart;
+    },
+
+    /** Mini sparkline — no axes, no legend, just a colored line */
+    createSparkline: function(canvasId, prices) {
+        this.destroy(canvasId);
+        var ctx = document.getElementById(canvasId);
+        if (!ctx || !prices || prices.length < 2) return;
+
+        var first = prices[0];
+        var last = prices[prices.length - 1];
+        var color = last >= first ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)';
+        var fill = last >= first ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)';
+
+        var chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: prices.map(function(_, i) { return i; }),
+                datasets: [{
+                    data: prices,
+                    borderColor: color,
+                    backgroundColor: fill,
+                    fill: true,
+                    borderWidth: 1.2,
+                    pointRadius: 0,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: false,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: {
+                    x: { display: false },
+                    y: { display: false }
                 }
             }
         });

@@ -72,26 +72,30 @@
         <div class="section-card analysis-card" style="margin-bottom:0.3rem">
             <!-- Level 1: Compact Header -->
             <div class="analysis-compact-header" @onclick="() => ToggleCard(sym)">
-                <div class="compact-left">
+                <div style="display:flex; align-items:center; flex:1; min-width:0">
                     <span class="material-symbols-outlined collapse-chevron @(expandedCards.Contains(sym) ? "" : "collapsed")"
-                          style="font-size:16px; vertical-align:middle; transition:transform 0.2s">expand_more</span>
+                          style="font-size:16px; width:20px; flex-shrink:0; transition:transform 0.2s">expand_more</span>
                     <a href="https://edition.cnn.com/markets/stocks/@sym" target="_blank" rel="noopener"
                        @onclick:stopPropagation="true"
-                       style="font-weight:700; font-size:1.05rem; color:var(--primary); text-decoration:none"
+                       style="display:inline-block; width:58px; flex:0 0 58px; font-weight:700; font-size:1.05rem; color:var(--primary); text-decoration:none; white-space:nowrap; overflow:hidden"
                        title="CNN Markets — @sym">@sym</a>
-                    @if (r.TryGetProperty("company_name", out var cn) && cn.GetString() is string cname && cname.Length > 0)
-                    {
-                        <span class="text-muted" style="font-size:0.75rem; margin-left:0.3rem">@cname</span>
-                    }
-                    <span style="font-size:0.88rem; margin-left:0.5rem; font-weight:600">$@price.ToString("F2")</span>
+                    @{  var compName = r.TryGetProperty("company_name", out var cn) ? cn.GetString() ?? "" : ""; }
+                    <span style="display:inline-block; width:100px; flex:0 0 100px; font-size:0.72rem; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:2px">@compName</span>
+                    <span style="display:inline-block; width:78px; flex:0 0 78px; text-align:right; font-size:0.88rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap">$@price.ToString("F2")</span>
                     @if (pnl.HasValue)
                     {
-                        <span class="@(pnl > 0 ? "text-green" : "text-red")" style="font-size:0.8rem; margin-left:0.3rem; font-weight:600">
+                        <span style="display:inline-block; width:65px; flex:0 0 65px; text-align:right; font-size:0.8rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; color:@(pnl > 0 ? "var(--accent-green,#22c55e)" : "var(--accent-red,#ef4444)")">
                             @(pnl > 0 ? "+" : "")@pnl.Value.ToString("F2")%
                         </span>
                     }
+                    else
+                    {
+                        <span style="display:inline-block; width:65px; flex:0 0 65px"></span>
+                    }
                 </div>
                 <div class="compact-right">
+                    <canvas id="spark-@sym" width="80" height="28"
+                            style="vertical-align:middle; flex-shrink:0"></canvas>
                     <span class="compact-verdict @dirCss">@dirLabel</span>
                     <span class="compact-score" style="color:var(--text-secondary)">@(wScore >= 0 ? "+" : "")@wScore.ToString("F3")</span>
                 </div>
@@ -184,13 +188,23 @@
                         </div>
                     </div>
 
-                    <!-- RIGHT: Intraday Chart (50%) -->
+                    <!-- RIGHT: Chart with Period Selector (50%) -->
                     <div class="wl-level2-right">
+                        <div class="chart-period-bar">
+                            @foreach (var p in new[] { ("1D","1d"), ("5D","5d"), ("1M","1mo"), ("6M","6mo") })
+                            {
+                                var pVal = p.Item2;
+                                var isActive = (selectedPeriod.GetValueOrDefault(sym, "1d") == pVal);
+                                <button class="btn-period @(isActive ? "btn-period-active" : "")"
+                                        @onclick="() => SwitchPeriod(sym, pVal)"
+                                        @onclick:stopPropagation="true">@p.Item1</button>
+                            }
+                        </div>
                         @if (!intradayLoaded.Contains(sym))
                         {
-                            <span class="text-muted" style="font-size:0.8rem">Loading...</span>
+                            <span class="text-muted" style="font-size:0.8rem; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%)">Loading...</span>
                         }
-                        <canvas id="intraday-@sym" style="width:100%; height:100%; @(!intradayLoaded.Contains(sym) ? "display:none" : "")"></canvas>
+                        <canvas id="intraday-@sym" style="@(!intradayLoaded.Contains(sym) ? "display:none" : "")"></canvas>
                     </div>
                 </div>
 
@@ -719,6 +733,7 @@ else
     private bool showHeatmap = true;
     private HashSet<string> expandedCards = new();
     private HashSet<string> expandedDetails = new();
+    private Dictionary<string, string> selectedPeriod = new();
 
     // Market Heatmap
     private bool heatmapLoading = false;
@@ -756,11 +771,20 @@ else
         else
         {
             expandedCards.Add(sym);
-            intradayLoaded.Remove(sym); // show Loading...
+            intradayLoaded.Remove(sym);
             StateHasChanged();
             await Task.Delay(200);
-            await FetchAndRenderIntraday(sym);
+            await FetchAndRenderChart(sym, selectedPeriod.GetValueOrDefault(sym, "1d"));
         }
+    }
+
+    private async Task SwitchPeriod(string sym, string period)
+    {
+        selectedPeriod[sym] = period;
+        intradayLoaded.Remove(sym);
+        StateHasChanged();
+        await Task.Delay(100);
+        await FetchAndRenderChart(sym, period);
     }
 
     private void ToggleDetail(string sym)
@@ -776,9 +800,43 @@ else
     private double newQty;
     private string newNotes = "";
 
+    private bool sparklineRendered;
+
     protected override async Task OnInitializedAsync()
     {
         await LoadAll();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!sparklineRendered && analysisResults.Any())
+        {
+            sparklineRendered = true;
+            await Task.Delay(300);
+            foreach (var r in analysisResults)
+            {
+                var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(sym)) continue;
+                _ = FetchAndRenderSparkline(sym);
+            }
+        }
+    }
+
+    private async Task FetchAndRenderSparkline(string sym)
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            client.Timeout = TimeSpan.FromSeconds(15);
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/watchlist/chart/{sym}?period=1d");
+            if (resp.TryGetProperty("points", out var pts) && pts.GetArrayLength() > 0)
+            {
+                var prices = pts.EnumerateArray()
+                    .Select(p => p.GetProperty("price").GetDouble()).ToArray();
+                await JS.InvokeVoidAsync("chartHelper.createSparkline", $"spark-{sym}", prices);
+            }
+        }
+        catch { }
     }
 
     private async Task LoadAll()
@@ -1033,31 +1091,40 @@ else
 
     private HashSet<string> intradayLoaded = new();
 
-    private async Task FetchAndRenderIntraday(string sym)
+    private async Task FetchAndRenderChart(string sym, string period = "1d")
     {
         try
         {
             var client = HttpFactory.CreateClient("Engine");
             client.Timeout = TimeSpan.FromSeconds(30);
-            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/watchlist/intraday/{sym}");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/watchlist/chart/{sym}?period={period}");
             if (resp.TryGetProperty("points", out var pts) && pts.GetArrayLength() > 0)
             {
                 var labels = pts.EnumerateArray()
-                    .Select(p => p.TryGetProperty("time", out var t) ? t.GetString() ?? "" : "").ToArray();
+                    .Select(p => p.GetProperty("time").GetString() ?? "").ToArray();
                 var prices = pts.EnumerateArray()
-                    .Select(p => p.TryGetProperty("price", out var v) ? v.GetDouble() : 0).ToArray();
-                var sessions = pts.EnumerateArray()
-                    .Select(p => p.TryGetProperty("session", out var s) ? s.GetString() ?? "" : "").ToArray();
-                double? prevClose = resp.TryGetProperty("prev_close", out var pc) && pc.ValueKind != System.Text.Json.JsonValueKind.Null
-                    ? pc.GetDouble() : null;
+                    .Select(p => p.GetProperty("price").GetDouble()).ToArray();
 
-                // Mark loaded → hide "Loading..." and show canvas
                 intradayLoaded.Add(sym);
                 StateHasChanged();
                 await Task.Delay(50);
 
-                await JS.InvokeVoidAsync("chartHelper.createIntraday",
-                    $"intraday-{sym}", labels, prices, sessions, prevClose);
+                if (period == "1d")
+                {
+                    var sessions = pts.EnumerateArray()
+                        .Select(p => p.TryGetProperty("session", out var s) ? s.GetString() ?? "regular" : "regular").ToArray();
+                    double? prevClose = resp.TryGetProperty("prev_close", out var pc) && pc.ValueKind != System.Text.Json.JsonValueKind.Null
+                        ? pc.GetDouble() : null;
+                    await JS.InvokeVoidAsync("chartHelper.createIntraday",
+                        $"intraday-{sym}", labels, prices, sessions, prevClose);
+                }
+                else
+                {
+                    double? prevClose = resp.TryGetProperty("prev_close", out var pc2) && pc2.ValueKind != System.Text.Json.JsonValueKind.Null
+                        ? pc2.GetDouble() : null;
+                    await JS.InvokeVoidAsync("chartHelper.createPeriodChart",
+                        $"intraday-{sym}", labels, prices, prevClose);
+                }
             }
             else
             {
