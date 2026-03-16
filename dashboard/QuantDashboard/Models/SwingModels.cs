@@ -24,6 +24,8 @@ public record SwingSignal(
     double? TechnicalScore,   // Multi-factor: technical (0-100)
     double? SentimentScore,   // Multi-factor: sentiment (0-100)
     double? FlowScore,        // Multi-factor: flow (0-100)
+    double? QualityScore,     // Multi-factor: quality (0-100)
+    double? ValueScore,       // Multi-factor: value (0-100)
     double? CompositeScore,   // Multi-factor: composite (0-100)
     string? FactorDetail,     // Factor breakdown JSON
     DateTime? FactorScoredAt

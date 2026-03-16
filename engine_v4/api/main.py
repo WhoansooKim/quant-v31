@@ -15,7 +15,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from engine_v4.ai.data_feeds import FinnhubClient
+from engine_v4.ai.factor_crowding import FactorCrowdingMonitor
+from engine_v4.ai.fundamental import FundamentalAnalyzer
+from engine_v4.ai.lstm_predictor import LSTMPredictor
 from engine_v4.ai.multi_factor import MultiFactorScorer
+from engine_v4.ai.social_sentiment import SocialSentimentCollector
 from engine_v4.ai.optimizer import StrategyOptimizer
 from engine_v4.ai.sentiment import SentimentAnalyzer
 from engine_v4.backtest.runner import BacktestParams, BacktestRunner
@@ -45,7 +49,8 @@ pg = PostgresStore(config.pg_dsn)
 cache = RedisCache(config.redis_url)
 universe_mgr = UniverseManager(pg, cache)
 collector = DataCollector(pg, cache, config)
-strategy = SwingStrategy(pg, config)
+finnhub_client = FinnhubClient(config.finnhub_api_key)
+strategy = SwingStrategy(pg, config, finnhub=finnhub_client)
 pos_mgr = PositionManager(pg, config)
 exit_mgr = ExitManager(pg)
 backtester = BacktestRunner(pg)
@@ -54,14 +59,29 @@ notifier = TelegramNotifier(config)
 sentiment = SentimentAnalyzer(pg, config.anthropic_key,
                               ollama_url=config.ollama_url,
                               ollama_model=config.ollama_model)
-finnhub = FinnhubClient(config.finnhub_api_key)
-scorer = MultiFactorScorer(pg, finnhub, config.anthropic_key,
+social_collector = SocialSentimentCollector(
+    pg, cache,
+    reddit_client_id=config.reddit_client_id,
+    reddit_client_secret=config.reddit_client_secret,
+    ollama_url=config.ollama_url,
+    ollama_model=config.ollama_model,
+)
+lstm_predictor = LSTMPredictor(pg, cache)
+scorer = MultiFactorScorer(pg, finnhub_client, config.anthropic_key,
                            ollama_url=config.ollama_url,
-                           ollama_model=config.ollama_model)
+                           ollama_model=config.ollama_model,
+                           cache=cache,
+                           social_collector=social_collector,
+                           lstm_predictor=lstm_predictor)
 optimizer = StrategyOptimizer(pg, backtester, config.anthropic_key)
-event_collector = EventCollector(pg, finnhub)
+event_collector = EventCollector(pg, finnhub_client)
 event_processor = EventProcessor(pg)
 edgar = EdgarRssMonitor()
+fundamental_analyzer = FundamentalAnalyzer(
+    finnhub_client, edgar, config.anthropic_key,
+    ollama_url=config.ollama_url,
+    ollama_model=config.ollama_model)
+crowding_monitor = FactorCrowdingMonitor(pg, cache)
 swing_scheduler = SwingScheduler(
     pg, cache, config, universe_mgr, collector, strategy, notifier)
 
@@ -442,12 +462,87 @@ async def score_pending_signals():
         return {
             "status": "ok",
             "scored": len(results),
-            "finnhub": finnhub.is_available,
+            "finnhub": finnhub_client.is_available,
             "claude": scorer._claude is not None,
             "results": results,
         }
     except Exception as e:
         logger.error(f"Batch factor scoring failed: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════
+# Tier 2.1: Fundamental Analysis (SEC 10-Q/10-K + LLM)
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/signals/{signal_id}/fundamental")
+async def analyze_signal_fundamental(signal_id: int):
+    """시그널 펀더멘탈 분석 (SEC 10-Q/10-K + Finnhub → LLM 스코어링).
+
+    Redis 캐시 7일 TTL. 캐시 히트 시 즉시 반환.
+    """
+    sig = pg.get_signal(signal_id)
+    if not sig:
+        raise HTTPException(404, "Signal not found")
+
+    symbol = sig["symbol"]
+    cache_key = f"fundamental:{symbol}"
+
+    # 캐시 확인
+    cached = cache.get_json(cache_key)
+    if cached:
+        cached["cache_hit"] = True
+        cached["signal_id"] = signal_id
+        return cached
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, fundamental_analyzer.analyze, symbol)
+        result["signal_id"] = signal_id
+        result["symbol"] = symbol
+        result["cache_hit"] = False
+
+        # Redis 캐시 저장 (7일 TTL)
+        cache.set_json(cache_key, result, ttl=7 * 86400)
+
+        return result
+    except Exception as e:
+        logger.error(f"Fundamental analysis failed for signal {signal_id} ({symbol}): {e}",
+                     exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/fundamental/{symbol}")
+async def get_fundamental(symbol: str):
+    """종목 펀더멘탈 분석 조회 (캐시 or 신규 분석).
+
+    Redis 캐시 7일 TTL. 캐시 없으면 실시간 분석.
+    """
+    symbol = symbol.upper()
+    cache_key = f"fundamental:{symbol}"
+
+    # 캐시 확인
+    cached = cache.get_json(cache_key)
+    if cached:
+        cached["cache_hit"] = True
+        return cached
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, fundamental_analyzer.analyze, symbol)
+        result["symbol"] = symbol
+        result["cache_hit"] = False
+
+        # Redis 캐시 저장 (7일 TTL)
+        cache.set_json(cache_key, result, ttl=7 * 86400)
+
+        return result
+    except Exception as e:
+        logger.error(f"Fundamental analysis failed for {symbol}: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
 
@@ -2302,6 +2397,110 @@ async def check_extended_hours_now():
 
 
 # ═══════════════════════════════════════════════════════════
+# Short Interest
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/short-interest/{symbol}")
+async def get_short_interest(symbol: str):
+    """공매도 잔고 데이터 조회 (Finnhub)."""
+    if not finnhub_client.is_available:
+        raise HTTPException(400, "Finnhub API key not configured")
+
+    si_data = finnhub_client.get_short_interest(symbol.upper())
+    return {
+        "symbol": symbol.upper(),
+        **si_data,
+        "fetched_at": datetime.now().isoformat(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# Social Sentiment (Reddit + StockTwits)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/social/{symbol}")
+async def get_social_sentiment(symbol: str):
+    """종목별 소셜 감성 데이터 (Reddit + StockTwits)."""
+    data = social_collector.get_social_sentiment(symbol.upper())
+    return data
+
+
+@app.post("/social/collect")
+async def collect_social_all(bg: BackgroundTasks):
+    """유니버스 전체 소셜 감성 수집 (백그라운드)."""
+    bg.add_task(_run_social_collect)
+    return {"status": "started", "message": "Social sentiment collection started"}
+
+
+def _run_social_collect():
+    try:
+        result = social_collector.collect_all()
+        logger.info(f"Social collect done: {result}")
+    except Exception as e:
+        logger.error(f"Social collect failed: {e}", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# LSTM Momentum Prediction
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/lstm/info")
+async def lstm_model_info():
+    """LSTM 모델 정보 조회."""
+    return lstm_predictor.get_model_info()
+
+
+@app.get("/lstm/predict/{symbol}")
+async def lstm_predict(symbol: str):
+    """종목별 LSTM 5일 후 상승 확률 예측."""
+    result = lstm_predictor.predict(symbol.upper())
+    return result
+
+
+@app.post("/lstm/train")
+async def lstm_train(bg: BackgroundTasks):
+    """LSTM 모델 학습 시작 (백그라운드)."""
+    bg.add_task(_run_lstm_train)
+    return {"status": "started", "message": "LSTM training started in background"}
+
+
+_lstm_train_result = {}
+
+
+def _run_lstm_train():
+    global _lstm_train_result
+    _lstm_train_result = {"status": "running"}
+    try:
+        result = lstm_predictor.train()
+        _lstm_train_result = {"status": "done", **result}
+        logger.info(f"LSTM training done: {result}")
+    except Exception as e:
+        _lstm_train_result = {"status": "error", "error": str(e)}
+        logger.error(f"LSTM training failed: {e}", exc_info=True)
+
+
+@app.get("/lstm/train-status")
+async def lstm_train_status():
+    """LSTM 학습 상태 조회."""
+    return _lstm_train_result
+
+
+@app.post("/lstm/predict-all")
+async def lstm_predict_all(bg: BackgroundTasks):
+    """유니버스 전체 LSTM 예측 (백그라운드)."""
+    bg.add_task(_run_lstm_predict_all)
+    return {"status": "started", "message": "LSTM prediction started"}
+
+
+def _run_lstm_predict_all():
+    try:
+        results = lstm_predictor.predict_universe()
+        logger.info(f"LSTM predict-all done: {len(results)} predictions")
+    except Exception as e:
+        logger.error(f"LSTM predict-all failed: {e}", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════
 # Market Overview (Sector Heatmap)
 # ═══════════════════════════════════════════════════════════
 
@@ -2512,6 +2711,43 @@ async def get_sector_detail(etf_symbol: str):
     }
     cache.set_json(cache_key, result, ttl=600)
     return result
+
+
+# ═══════════════════════════════════════════════════════════
+# Factor Crowding — 팩터 크라우딩 모니터
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/factor-crowding")
+def get_factor_crowding():
+    """현재 오픈 포지션 + pending 시그널의 팩터 크라우딩 분석."""
+    try:
+        result = crowding_monitor.get_portfolio_crowding()
+        return result
+    except Exception as e:
+        logger.error(f"팩터 크라우딩 분석 실패: {e}")
+        raise HTTPException(500, f"Factor crowding analysis failed: {e}")
+
+
+@app.post("/factor-crowding/refresh")
+def refresh_factor_crowding():
+    """ETF 보유 종목 데이터 갱신 (yfinance + 시드 폴백)."""
+    try:
+        result = crowding_monitor.refresh_etf_holdings()
+        return {"status": "ok", "refreshed": result}
+    except Exception as e:
+        logger.error(f"ETF 보유 종목 갱신 실패: {e}")
+        raise HTTPException(500, f"ETF holdings refresh failed: {e}")
+
+
+@app.get("/factor-crowding/{symbol}")
+def get_symbol_crowding(symbol: str):
+    """단일 종목의 팩터 크라우딩 점수 조회."""
+    try:
+        result = crowding_monitor.get_crowding_score(symbol)
+        return result
+    except Exception as e:
+        logger.error(f"종목 크라우딩 조회 실패: {symbol} — {e}")
+        raise HTTPException(500, f"Symbol crowding check failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════

@@ -144,6 +144,24 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 9) 매일 06:50 KST — 소셜 감성 수집 (파이프라인 전)
+        self.scheduler.add_job(
+            self._job_social_collect,
+            CronTrigger(day_of_week="mon-sat", hour=6, minute=50, timezone=KST),
+            id="social_collect",
+            name="Daily Social Sentiment Collection",
+            replace_existing=True,
+        )
+
+        # 10) 토 09:00 KST — LSTM 주간 재학습
+        self.scheduler.add_job(
+            self._job_lstm_retrain,
+            CronTrigger(day_of_week="sat", hour=9, minute=0, timezone=KST),
+            id="lstm_retrain",
+            name="Weekly LSTM Retrain",
+            replace_existing=True,
+        )
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()
@@ -323,20 +341,94 @@ class SwingScheduler:
             logger.error(f"Exit check failed: {e}", exc_info=True)
 
     def _job_refresh_universe(self):
-        """유니버스 주간 갱신."""
+        """유니버스 주간 갱신 + 팩터 모멘텀 계산."""
         start = time.time()
         self.pg.insert_pipeline_log("refresh_universe", "started")
         try:
             universe = self.universe_mgr.refresh_universe()
+
+            # Factor momentum 계산
+            momentum_data = self._calc_factor_momentum()
+            if momentum_data:
+                self.cache.set_json("factor_momentum", momentum_data, ttl=604800)
+                logger.info(f"Factor momentum cached: {momentum_data['ranked']}")
+
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("refresh_universe", "completed", elapsed, {
                 "symbols": len(universe),
+                "factor_momentum": momentum_data.get("ranked") if momentum_data else None,
             })
             logger.info(f"Universe refreshed: {len(universe)} symbols in {elapsed:.1f}s")
         except Exception as e:
             self.pg.insert_pipeline_log("refresh_universe", "failed",
                                         time.time() - start, error_msg=str(e))
             logger.error(f"Universe refresh failed: {e}", exc_info=True)
+
+    def _calc_factor_momentum(self) -> dict | None:
+        """팩터 모멘텀 계산 — 최근 30일 시그널의 팩터별 승률 상관관계.
+
+        각 팩터(technical, sentiment, flow, quality, value)의
+        승리 포지션 평균 점수 vs 패배 포지션 평균 점수 차이로 성과 측정.
+        """
+        try:
+            # 최근 30일 내 청산된 포지션 + 해당 시그널 팩터 점수 조회
+            with self.pg.get_conn() as conn:
+                rows = conn.execute("""
+                    SELECT s.technical_score, s.sentiment_score, s.flow_score,
+                           s.quality_score, s.value_score,
+                           p.realized_pnl
+                    FROM swing_positions p
+                    JOIN swing_signals s ON s.position_id = p.position_id
+                    WHERE p.status = 'closed'
+                      AND p.exit_time >= now() - interval '30 days'
+                      AND s.composite_score IS NOT NULL
+                """).fetchall()
+
+            if len(rows) < 3:
+                logger.info("Factor momentum: insufficient data "
+                            f"({len(rows)} closed positions in 30d)")
+                return None
+
+            factors = ["technical", "sentiment", "flow", "quality", "value"]
+            factor_keys = {
+                "technical": "technical_score",
+                "sentiment": "sentiment_score",
+                "flow": "flow_score",
+                "quality": "quality_score",
+                "value": "value_score",
+            }
+
+            performance = {}
+            for factor in factors:
+                key = factor_keys[factor]
+                win_scores = []
+                lose_scores = []
+                for r in rows:
+                    score = float(r.get(key) or 50)
+                    pnl = float(r.get("realized_pnl") or 0)
+                    if pnl > 0:
+                        win_scores.append(score)
+                    else:
+                        lose_scores.append(score)
+
+                # Performance = avg win score - avg lose score (higher = better predictor)
+                avg_win = sum(win_scores) / len(win_scores) if win_scores else 50
+                avg_lose = sum(lose_scores) / len(lose_scores) if lose_scores else 50
+                performance[factor] = round(avg_win - avg_lose, 2)
+
+            # Rank by performance (highest difference = best predictor)
+            ranked = sorted(performance, key=lambda f: performance[f], reverse=True)
+
+            return {
+                "ranked": ranked,
+                "performance": performance,
+                "positions_analyzed": len(rows),
+                "calculated_at": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"Factor momentum calculation failed: {e}", exc_info=True)
+            return None
 
     def _job_expire_signals(self):
         """만료 시그널 정리."""
@@ -612,6 +704,40 @@ class SwingScheduler:
         except Exception as e:
             logger.error(f"Snapshot generation failed: {e}", exc_info=True)
             return None
+
+    def _job_lstm_retrain(self):
+        """LSTM 주간 재학습 (토요일)."""
+        import requests
+        try:
+            lstm_enabled = self.pg.get_config_value("lstm_enabled", "true")
+            if lstm_enabled != "true":
+                logger.info("LSTM retrain skipped: disabled in config")
+                return
+
+            resp = requests.post("http://localhost:8001/lstm/train", timeout=10)
+            if resp.status_code == 200:
+                logger.info("LSTM retrain triggered via API")
+            else:
+                logger.warning(f"LSTM retrain trigger failed: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.error(f"LSTM retrain job failed: {e}", exc_info=True)
+
+    def _job_social_collect(self):
+        """소셜 감성 수집 (Reddit + StockTwits)."""
+        import requests
+        try:
+            social_enabled = self.pg.get_config_value("social_enabled", "true")
+            if social_enabled != "true":
+                logger.info("Social collect skipped: disabled in config")
+                return
+
+            resp = requests.post("http://localhost:8001/social/collect", timeout=10)
+            if resp.status_code == 200:
+                logger.info("Social collect triggered via API")
+            else:
+                logger.warning(f"Social collect trigger failed: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.error(f"Social collect job failed: {e}", exc_info=True)
 
     def _job_watchlist_analysis(self):
         """매일 워치리스트 자동 분석 → 시그널 로그 기록."""

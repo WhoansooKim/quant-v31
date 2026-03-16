@@ -1,6 +1,7 @@
 @page "/positions"
 @attribute [Authorize]
 @inject SwingService Db
+@inject IHttpClientFactory HttpFactory
 @inject IJSRuntime JS
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
@@ -9,6 +10,90 @@
 <div class="page-header">
     <h3>Positions</h3>
 </div>
+
+<!-- Factor Crowding + Short Interest Panel -->
+@if (crowdingLoaded && crowdingData.HasValue)
+{
+    var cd = crowdingData.Value;
+    <div class="section-card" style="margin-bottom:0.75rem; padding:0.75rem">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.5rem">
+            <h4 style="margin:0; font-size:0.9rem">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">monitoring</span>
+                Factor Crowding & Short Interest
+            </h4>
+            <button class="btn-sm" style="font-size:0.7rem; padding:2px 8px" @onclick="LoadCrowding" disabled="@crowdingLoading">
+                @(crowdingLoading ? "..." : "Refresh")
+            </button>
+        </div>
+        <!-- ETF Overlap Bars -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.4rem">
+            @if (cd.TryGetProperty("crowding", out var cw) && cw.TryGetProperty("factors", out var factors))
+            {
+                @foreach (var etf in new[] { "momentum", "quality", "value", "low_vol", "growth" })
+                {
+                    if (factors.TryGetProperty(etf, out var f))
+                    {
+                        var pct = f.TryGetProperty("overlap_pct", out var op) ? op.GetDouble() * 100 : 0;
+                        var risk = f.TryGetProperty("risk_level", out var rl) ? rl.GetString() : "low";
+                        var etfName = f.TryGetProperty("etf", out var en) ? en.GetString() : etf.ToUpper();
+                        var barColor = risk == "high" ? "#ef4444" : risk == "moderate" ? "#eab308" : "#22c55e";
+                        <div>
+                            <div style="display:flex; justify-content:space-between; font-size:0.72rem; margin-bottom:2px">
+                                <span>@etfName <span class="text-muted">(@etf)</span></span>
+                                <span style="color:@barColor; font-weight:600">@pct.ToString("F0")%</span>
+                            </div>
+                            <div style="height:6px; background:var(--bg-secondary); border-radius:3px; overflow:hidden">
+                                <div style="width:@pct%; height:100%; background:@barColor; border-radius:3px; transition:width 0.3s"></div>
+                            </div>
+                        </div>
+                    }
+                }
+            }
+        </div>
+        <!-- Per-Symbol Detail -->
+        @if (cd.TryGetProperty("per_symbol", out var perSym))
+        {
+            <div style="margin-top:0.5rem; display:flex; flex-wrap:wrap; gap:0.3rem">
+                @foreach (var item in perSym.EnumerateArray())
+                {
+                    var sym = item.TryGetProperty("symbol", out var s) ? s.GetString() : "";
+                    var risk = item.TryGetProperty("risk_level", out var r) ? r.GetString() : "low";
+                    var factors2 = item.TryGetProperty("factor_count", out var fc) ? fc.GetInt32() : 0;
+                    var badgeColor = risk == "high" ? "badge-red" : risk == "moderate" ? "badge-yellow" : "badge-green";
+                    <span class="badge @badgeColor" style="font-size:0.7rem; padding:2px 6px" title="@sym: @factors2 factor ETF overlap">
+                        @sym @(factors2 > 0 ? $"({factors2})" : "")
+                    </span>
+                }
+            </div>
+        }
+        <!-- Short Interest -->
+        @if (shortInterestData.Count > 0)
+        {
+            <div style="margin-top:0.5rem; border-top:1px solid var(--border); padding-top:0.4rem">
+                <div style="font-size:0.75rem; font-weight:600; margin-bottom:0.3rem">Short Interest (Days to Cover)</div>
+                <div style="display:flex; flex-wrap:wrap; gap:0.5rem; font-size:0.72rem">
+                    @foreach (var kv in shortInterestData)
+                    {
+                        var sir = kv.Value;
+                        var ratio = sir.TryGetProperty("short_ratio", out var sr) ? sr.GetDouble() : 0;
+                        var changePct = sir.TryGetProperty("change_pct", out var cp) ? cp.GetDouble() : 0;
+                        var sirColor = ratio > 10 ? "#ef4444" : ratio > 5 ? "#eab308" : "#22c55e";
+                        <span style="display:inline-flex; align-items:center; gap:3px">
+                            <b>@kv.Key</b>
+                            <span style="color:@sirColor; font-weight:600">@ratio.ToString("F1")d</span>
+                            @if (changePct != 0)
+                            {
+                                <span style="color:@(changePct < 0 ? "#22c55e" : "#ef4444"); font-size:0.65rem">
+                                    @(changePct > 0 ? "+" : "")@changePct.ToString("F0")%
+                                </span>
+                            }
+                        </span>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+}
 
 <!-- Tabs -->
 <div class="tab-bar">
@@ -238,9 +323,56 @@
     private void OpenModal(string symbol) { modalSymbol = symbol; modalVisible = true; }
     private void CloseModal() { modalVisible = false; }
 
+    // Crowding + Short Interest
+    private bool crowdingLoaded;
+    private bool crowdingLoading;
+    private System.Text.Json.JsonElement? crowdingData;
+    private Dictionary<string, System.Text.Json.JsonElement> shortInterestData = new();
+
     protected override async Task OnInitializedAsync()
     {
         await LoadPositions();
+        _ = LoadCrowding();  // fire and forget
+    }
+
+    private async Task LoadCrowding()
+    {
+        crowdingLoading = true;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+
+            // Factor Crowding
+            var crowdResp = await client.GetAsync("/factor-crowding");
+            if (crowdResp.IsSuccessStatusCode)
+            {
+                crowdingData = await crowdResp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+            }
+
+            // Short Interest for each open position
+            shortInterestData.Clear();
+            foreach (var p in openPositions)
+            {
+                try
+                {
+                    var siResp = await client.GetAsync($"/short-interest/{p.Symbol}");
+                    if (siResp.IsSuccessStatusCode)
+                    {
+                        var si = await siResp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                        shortInterestData[p.Symbol] = si;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+        finally
+        {
+            crowdingLoaded = true;
+            crowdingLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task LoadPositions()

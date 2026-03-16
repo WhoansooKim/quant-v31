@@ -186,8 +186,21 @@ class FinnhubClient:
             "52w_high_date": metric.get("52WeekHighDate"),
             "revenue_growth_3y": metric.get("revenueGrowth3Y"),
             "eps_growth_3y": metric.get("epsGrowth3Y"),
+            "eps_growth_5y": metric.get("epsGrowth5Y"),
             "net_margin": metric.get("netMarginTTM"),
             "roe": metric.get("roeTTM"),
+            # Quality factor metrics
+            "gross_margin": metric.get("grossMarginTTM"),
+            "operating_margin": metric.get("operatingMarginTTM"),
+            "debt_equity": metric.get("totalDebt/totalEquityAnnual"),
+            "current_ratio": metric.get("currentRatioAnnual"),
+            "roe_annual": metric.get("roeRfy"),
+            # Value factor metrics
+            "pe_ttm": metric.get("peTTM"),
+            "ps_ratio": metric.get("psTTM"),
+            "pcf_ratio": metric.get("pfcfShareTTM"),
+            "ev_ebitda": metric.get("enterpriseValue/ebitdaTTM"),
+            "fcf_yield": metric.get("freeCashFlowYieldTTM"),
         }
 
     # ─── Recommendation Trends ───────────────────────────
@@ -207,6 +220,68 @@ class FinnhubClient:
             "strong_buy": latest.get("strongBuy", 0),
             "strong_sell": latest.get("strongSell", 0),
             "period": latest.get("period", ""),
+        }
+
+    # ─── Short Interest ────────────────────────────────────
+
+    def get_short_interest(self, symbol: str) -> dict:
+        """공매도 잔고 데이터 조회.
+
+        Returns: {short_interest, short_ratio, short_pct_float, change_pct}
+        Finnhub free tier에서 미지원 시 neutral defaults 반환.
+        """
+        defaults = {
+            "short_interest": 0,
+            "short_ratio": 0.0,
+            "short_pct_float": 0.0,
+            "change_pct": 0.0,
+            "available": False,
+        }
+
+        if not self.api_key:
+            return defaults
+
+        to_date = date.today()
+        from_date = to_date - timedelta(days=30)
+
+        data = self._get("stock/short-interest", {
+            "symbol": symbol,
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+        })
+
+        if not data or not isinstance(data, dict):
+            return defaults
+
+        records = data.get("data", [])
+        if not records:
+            return defaults
+
+        # Most recent entry
+        latest = records[0]
+        short_interest = latest.get("shortInterest", 0)
+        avg_vol = latest.get("avgDailyShareTradeVolume", 0)
+
+        # Short Interest Ratio (days to cover) = short_interest / avg_daily_volume
+        short_ratio = (short_interest / avg_vol) if avg_vol > 0 else 0.0
+
+        # Short % of float (if available)
+        short_pct_float = latest.get("shortPercentFloat", 0.0) or 0.0
+
+        # Change % vs previous period
+        change_pct = 0.0
+        if len(records) >= 2:
+            prev_si = records[1].get("shortInterest", 0)
+            if prev_si > 0:
+                change_pct = ((short_interest - prev_si) / prev_si) * 100
+
+        return {
+            "short_interest": short_interest,
+            "short_ratio": round(short_ratio, 2),
+            "short_pct_float": round(short_pct_float, 2),
+            "change_pct": round(change_pct, 2),
+            "available": True,
+            "date": latest.get("date", ""),
         }
 
     # ─── Batch: All data for a symbol ────────────────────

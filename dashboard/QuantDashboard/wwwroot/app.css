@@ -695,6 +695,11 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     color: var(--bear);
     border: 1px solid rgba(239,68,68,0.20);
 }
+.badge-yellow {
+    background: rgba(234,179,8,0.12);
+    color: #ca8a04;
+    border: 1px solid rgba(234,179,8,0.25);
+}
 
 .status-chip {
     display: inline-flex;

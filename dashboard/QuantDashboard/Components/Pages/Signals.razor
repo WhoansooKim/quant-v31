@@ -63,7 +63,7 @@
                         <th title="5d Breakout">Break</th>
                         <th title="Volume Surge">Vol</th>
                         <th class="sortable" title="AI Sentiment Score" @onclick='() => ToggleSort("ai")'>AI@(sigSort.Arrow("ai"))</th>
-                        <th class="sortable" title="Multi-Factor Composite Score (T40+S30+F30)" @onclick='() => ToggleSort("composite")'>Score@(sigSort.Arrow("composite"))</th>
+                        <th class="sortable" title="5-Factor Composite (T+S+F+Q+V, Regime-Adaptive)" @onclick='() => ToggleSort("composite")'>Score@(sigSort.Arrow("composite"))</th>
                         <th class="sortable" @onclick='() => ToggleSort("status")'>Status@(sigSort.Arrow("status"))</th>
                         <th>Actions</th>
                     </tr>
@@ -71,9 +71,9 @@
                 <tbody>
                     @foreach (var s in SortedSignals)
                     {
-                        <tr class="@(s.Status == "pending" ? "row-highlight" : "")">
+                        <tr class="@(s.Status == "pending" ? "row-highlight" : "")" @ondblclick="() => OpenModal(s.Symbol)" style="cursor:pointer">
                             <td>@s.Time.ToString("MM/dd HH:mm")</td>
-                            <td><SymbolLink Symbol="@s.Symbol" OnSymbolClick="OpenModal" /></td>
+                            <td style="font-weight:700"><a href="https://edition.cnn.com/markets/stocks/@s.Symbol" target="_blank" rel="noopener" @onclick:stopPropagation="true" style="color:var(--primary); text-decoration:none">@s.Symbol</a></td>
                             <td>
                                 <span class="badge @(s.SignalType == "ENTRY" ? "badge-green" : "badge-red")">
                                     @s.SignalType
@@ -114,7 +114,7 @@
                                 @if (s.CompositeScore != null)
                                 {
                                     <span class="composite-score composite-@GetCompositeClass(s.CompositeScore.Value)"
-                                          title="T:@(s.TechnicalScore?.ToString("F0") ?? "-") S:@(s.SentimentScore?.ToString("F0") ?? "-") F:@(s.FlowScore?.ToString("F0") ?? "-")"
+                                          title="T:@(s.TechnicalScore?.ToString("F0") ?? "-") S:@(s.SentimentScore?.ToString("F0") ?? "-") F:@(s.FlowScore?.ToString("F0") ?? "-") Q:@(s.QualityScore?.ToString("F0") ?? "-") V:@(s.ValueScore?.ToString("F0") ?? "-")"
                                           style="cursor:pointer"
                                           @onclick="() => ShowFactorDetail(s)">
                                         @(s.CompositeScore?.ToString("F0"))
@@ -256,39 +256,103 @@
                         <div style="font-size:0.85rem">@GetCompositeLabel(factorDetailSignal.CompositeScore ?? 0)</div>
                     </div>
                 </div>
+                <!-- Regime Badge -->
+                @if (factorParsed != null && factorParsed.TryGetValue("regime", out var regimeObj))
+                {
+                    var regime = regimeObj?.ToString() ?? "MIXED";
+                    <div style="margin-bottom:0.5rem">
+                        <span class="badge" style="background:@(regime == "TRENDING" ? "#22c55e" : regime == "SIDEWAYS" ? "#eab308" : regime == "HIGH_VOL" ? "#ef4444" : "#60a5fa"); font-size:0.7rem; padding:2px 8px">
+                            @regime
+                        </span>
+                        <span class="text-muted" style="font-size:0.7rem; margin-left:0.3rem">Regime-Adaptive Weights</span>
+                    </div>
+                }
                 <!-- Factor Bars -->
                 <div class="factor-bars">
                     <div class="factor-row">
-                        <span class="factor-label">Technical (40%)</span>
+                        <span class="factor-label">Technical</span>
                         <div class="factor-bar-bg">
                             <div class="factor-bar factor-bar-tech" style="width:@(factorDetailSignal.TechnicalScore ?? 0)%"></div>
                         </div>
                         <span class="factor-val">@(factorDetailSignal.TechnicalScore?.ToString("F0") ?? "-")</span>
                     </div>
                     <div class="factor-row">
-                        <span class="factor-label">Sentiment (30%)</span>
+                        <span class="factor-label">Sentiment</span>
                         <div class="factor-bar-bg">
                             <div class="factor-bar factor-bar-sent" style="width:@(factorDetailSignal.SentimentScore ?? 0)%"></div>
                         </div>
                         <span class="factor-val">@(factorDetailSignal.SentimentScore?.ToString("F0") ?? "-")</span>
                     </div>
                     <div class="factor-row">
-                        <span class="factor-label">Flow (30%)</span>
+                        <span class="factor-label">Flow</span>
                         <div class="factor-bar-bg">
                             <div class="factor-bar factor-bar-flow" style="width:@(factorDetailSignal.FlowScore ?? 0)%"></div>
                         </div>
                         <span class="factor-val">@(factorDetailSignal.FlowScore?.ToString("F0") ?? "-")</span>
                     </div>
+                    <div class="factor-row">
+                        <span class="factor-label">Quality</span>
+                        <div class="factor-bar-bg">
+                            <div class="factor-bar" style="width:@(factorDetailSignal.QualityScore ?? 0)%; background:#a78bfa"></div>
+                        </div>
+                        <span class="factor-val">@(factorDetailSignal.QualityScore?.ToString("F0") ?? "-")</span>
+                    </div>
+                    <div class="factor-row">
+                        <span class="factor-label">Value</span>
+                        <div class="factor-bar-bg">
+                            <div class="factor-bar" style="width:@(factorDetailSignal.ValueScore ?? 0)%; background:#f59e0b"></div>
+                        </div>
+                        <span class="factor-val">@(factorDetailSignal.ValueScore?.ToString("F0") ?? "-")</span>
+                    </div>
                 </div>
                 @if (factorParsed != null)
                 {
+                    <!-- LSTM Detail (inside Technical) -->
+                    @if (factorParsed.TryGetValue("technical", out var techObj) && techObj is System.Text.Json.JsonElement techEl && techEl.TryGetProperty("lstm", out var lstmEl) && lstmEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                    {
+                        <div class="ai-section" style="margin-top:0.75rem">
+                            <div class="ai-section-label">LSTM Prediction</div>
+                            <div class="ai-section-text">
+                                @{
+                                    var upProb = lstmEl.TryGetProperty("up_probability", out var up) ? up.GetDouble() : 0.5;
+                                    var conf = lstmEl.TryGetProperty("confidence", out var cf) ? cf.GetDouble() : 0;
+                                    var lstmSc = lstmEl.TryGetProperty("lstm_score", out var ls) ? ls.GetDouble() : 50;
+                                    var lstmW = lstmEl.TryGetProperty("weight", out var lw) ? lw.GetDouble() : 0;
+                                }
+                                <span style="color:@(upProb > 0.6 ? "#22c55e" : upProb < 0.4 ? "#ef4444" : "#eab308")">
+                                    상승 확률 @(upProb.ToString("P0"))
+                                </span>
+                                <span class="text-muted"> (신뢰도 @(conf.ToString("P0")), LSTM 점수 @(lstmSc.ToString("F0")), 비중 @(lstmW.ToString("P0")))</span>
+                            </div>
+                        </div>
+                    }
+                    <!-- Sentiment Detail (News + Social) -->
                     @if (factorParsed.TryGetValue("sentiment", out var sentObj) && sentObj is System.Text.Json.JsonElement sentEl)
                     {
                         <div class="ai-section" style="margin-top:0.75rem">
                             <div class="ai-section-label">Sentiment Detail</div>
                             <div class="ai-section-text">
-                                @(sentEl.TryGetProperty("summary", out var sum) ? sum.GetString() : "N/A")
-                                <span class="text-muted"> (@(sentEl.TryGetProperty("news_count", out var nc) ? nc.GetInt32().ToString() : "0") articles, @(sentEl.TryGetProperty("source", out var src) ? src.GetString() : ""))</span>
+                                @(sentEl.TryGetProperty("source", out var src) ? src.GetString() : "")
+                                @if (sentEl.TryGetProperty("news", out var newsEl) && newsEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                                {
+                                    <span> | 뉴스: @(newsEl.TryGetProperty("news_count", out var nc) ? nc.GetInt32().ToString() : "0")건</span>
+                                    @if (newsEl.TryGetProperty("summary", out var nsum) && nsum.ValueKind == System.Text.Json.JsonValueKind.String)
+                                    {
+                                        <span> — @nsum.GetString()</span>
+                                    }
+                                }
+                                @if (sentEl.TryGetProperty("social", out var socEl) && socEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                                {
+                                    <br/>
+                                    <span style="color:#8b5cf6">소셜: 멘션 @(socEl.TryGetProperty("mention_count", out var mc) ? mc.GetInt32().ToString() : "0")건</span>
+                                    @if (socEl.TryGetProperty("combined_raw", out var craw))
+                                    {
+                                        var rawScore = craw.GetDouble();
+                                        <span style="color:@(rawScore > 20 ? "#22c55e" : rawScore < -20 ? "#ef4444" : "#eab308")">
+                                            (점수 @(rawScore.ToString("F0")))
+                                        </span>
+                                    }
+                                }
                             </div>
                         </div>
                     }
@@ -308,7 +372,114 @@
                             </div>
                         </div>
                     }
+                    @if (factorParsed.TryGetValue("quality", out var qualObj) && qualObj is System.Text.Json.JsonElement qualEl)
+                    {
+                        <div class="ai-section">
+                            <div class="ai-section-label">Quality Detail</div>
+                            <div class="ai-section-text">
+                                ROE: @(qualEl.TryGetProperty("roe_pts", out var rp) ? rp.ToString() : "-")pt
+                                | Margin: @(qualEl.TryGetProperty("gross_margin_pts", out var gp) ? gp.ToString() : "-")pt
+                                | D/E: @(qualEl.TryGetProperty("debt_equity_pts", out var dp) ? dp.ToString() : "-")pt
+                                | Stability: @(qualEl.TryGetProperty("stability_pts", out var sp) ? sp.ToString() : "-")pt
+                            </div>
+                        </div>
+                    }
+                    @if (factorParsed.TryGetValue("value", out var valObj) && valObj is System.Text.Json.JsonElement valEl)
+                    {
+                        <div class="ai-section">
+                            <div class="ai-section-label">Value Detail</div>
+                            <div class="ai-section-text">
+                                P/E: @(valEl.TryGetProperty("pe_pts", out var pp) ? pp.ToString() : "-")pt
+                                | P/B: @(valEl.TryGetProperty("pb_pts", out var pbp) ? pbp.ToString() : "-")pt
+                                | FCF: @(valEl.TryGetProperty("fcf_yield_pts", out var fp) ? fp.ToString() : "-")pt
+                                | EV/EBITDA: @(valEl.TryGetProperty("ev_ebitda_pts", out var ep) ? ep.ToString() : "-")pt
+                            </div>
+                        </div>
+                    }
                 }
+                <!-- Crowding + Short Interest -->
+                @if (symbolCrowding.HasValue)
+                {
+                    var sc = symbolCrowding.Value;
+                    <div class="ai-section" style="margin-top:0.5rem">
+                        <div class="ai-section-label">Factor Crowding</div>
+                        <div class="ai-section-text">
+                            @if (sc.TryGetProperty("factor_memberships", out var fm))
+                            {
+                                var members = fm.EnumerateArray().Select(x => x.GetString()).ToList();
+                                if (members.Any())
+                                {
+                                    @foreach (var m in members)
+                                    {
+                                        <span class="badge badge-yellow" style="font-size:0.68rem; padding:1px 5px; margin-right:3px">@m</span>
+                                    }
+                                    var risk = sc.TryGetProperty("risk_level", out var rl) ? rl.GetString() : "low";
+                                    <span class="text-muted" style="font-size:0.7rem"> — @risk risk</span>
+                                }
+                                else
+                                {
+                                    <span class="text-muted">No factor ETF overlap</span>
+                                }
+                            }
+                        </div>
+                    </div>
+                }
+                @if (symbolShortInterest.HasValue)
+                {
+                    var si = symbolShortInterest.Value;
+                    var ratio = si.TryGetProperty("short_ratio", out var sr) ? sr.GetDouble() : 0;
+                    var change = si.TryGetProperty("change_pct", out var cp) ? cp.GetDouble() : 0;
+                    var available = si.TryGetProperty("available", out var av) && av.GetBoolean();
+                    if (available)
+                    {
+                        <div class="ai-section">
+                            <div class="ai-section-label">Short Interest</div>
+                            <div class="ai-section-text">
+                                SIR: <b style="color:@(ratio > 10 ? "#ef4444" : ratio > 5 ? "#eab308" : "#22c55e")">@ratio.ToString("F1") days</b>
+                                @if (change != 0)
+                                {
+                                    <span> | Change: <span style="color:@(change < 0 ? "#22c55e" : "#ef4444")">@(change > 0 ? "+" : "")@change.ToString("F1")%</span></span>
+                                }
+                                @if (si.TryGetProperty("short_pct_float", out var spf) && spf.GetDouble() > 0)
+                                {
+                                    <span> | Float: @spf.GetDouble().ToString("F1")%</span>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+
+                <!-- Fundamental Analysis -->
+                <div style="margin-top:0.75rem; padding-top:0.5rem; border-top:1px solid var(--border)">
+                    @if (fundamentalResult.HasValue)
+                    {
+                        var fr = fundamentalResult.Value;
+                        <div class="ai-section">
+                            <div class="ai-section-label">
+                                Fundamental Score
+                                <span class="composite-score composite-@GetCompositeClass(fundamentalScore)" style="margin-left:0.5rem">@fundamentalScore</span>
+                            </div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.3rem; font-size:0.78rem; margin-top:0.3rem">
+                                <span>Revenue Growth: <b>@(fr.TryGetProperty("revenue_growth", out var rg) ? rg.ToString() : "-")</b></span>
+                                <span>Margin Trend: <b>@(fr.TryGetProperty("margin_trend", out var mt) ? mt.ToString() : "-")</b></span>
+                                <span>Debt Health: <b>@(fr.TryGetProperty("debt_health", out var dh) ? dh.ToString() : "-")</b></span>
+                                <span>Guidance: <b>@(fr.TryGetProperty("guidance", out var gu) ? gu.ToString() : "-")</b></span>
+                            </div>
+                            @if (fr.TryGetProperty("summary", out var fsum))
+                            {
+                                <div class="ai-section-text" style="margin-top:0.3rem; font-size:0.75rem">@fsum.GetString()</div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <button class="btn-sm btn-ai" style="width:100%" @onclick="() => RunFundamental(factorDetailSignal!.Symbol)" disabled="@analyzingFundamental">
+                            <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">lab_research</span>
+                            @(analyzingFundamental ? "Analyzing..." : "Run Fundamental Analysis")
+                        </button>
+                    }
+                </div>
+
                 <div class="text-muted" style="font-size:0.7rem; margin-top:0.5rem">
                     @if (factorDetailSignal.FactorScoredAt != null)
                     {
@@ -350,6 +521,15 @@
     private SwingSignal? factorDetailSignal;
     private Dictionary<string, object>? factorParsed;
 
+    // Fundamental analysis
+    private bool analyzingFundamental;
+    private System.Text.Json.JsonElement? fundamentalResult;
+    private int fundamentalScore;
+
+    // Crowding + Short Interest (per-symbol, in factor popup)
+    private System.Text.Json.JsonElement? symbolCrowding;
+    private System.Text.Json.JsonElement? symbolShortInterest;
+
     // Sort state
     private SortState sigSort = new();
 
@@ -390,7 +570,7 @@
             sigTotalCount = result.TotalCount;
             pendingCount = await Db.GetPendingSignalCountAsync();
         }
-        catch { }
+        catch (Exception ex) { statusMsg = $"Load error: {ex.Message}"; }
     }
 
     private async Task SetTab(string tab)
@@ -717,10 +897,14 @@
         }
     }
 
-    private void ShowFactorDetail(SwingSignal signal)
+    private async Task ShowFactorDetail(SwingSignal signal)
     {
         factorDetailSignal = signal;
         factorParsed = null;
+        fundamentalResult = null;
+        fundamentalScore = 0;
+        symbolCrowding = null;
+        symbolShortInterest = null;
         if (!string.IsNullOrEmpty(signal.FactorDetail))
         {
             try
@@ -731,9 +915,61 @@
             catch { }
         }
         factorDetailVisible = true;
+        StateHasChanged();
+
+        // Load crowding + short interest in background
+        _ = LoadSymbolExtras(signal.Symbol);
     }
 
-    private void CloseFactorDetail() { factorDetailVisible = false; }
+    private async Task LoadSymbolExtras(string symbol)
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var crowdTask = client.GetAsync($"/factor-crowding/{symbol}");
+            var siTask = client.GetAsync($"/short-interest/{symbol}");
+            await Task.WhenAll(crowdTask, siTask);
+
+            if (crowdTask.Result.IsSuccessStatusCode)
+                symbolCrowding = await crowdTask.Result.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+            if (siTask.Result.IsSuccessStatusCode)
+                symbolShortInterest = await siTask.Result.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+
+            StateHasChanged();
+        }
+        catch { }
+    }
+
+    private void CloseFactorDetail()
+    {
+        factorDetailVisible = false;
+        fundamentalResult = null;
+        fundamentalScore = 0;
+        symbolCrowding = null;
+        symbolShortInterest = null;
+    }
+
+    private async Task RunFundamental(string symbol)
+    {
+        analyzingFundamental = true;
+        StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetAsync($"/fundamental/{symbol}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                fundamentalResult = json;
+                fundamentalScore = json.TryGetProperty("fundamental_score", out var fs) ? fs.GetInt32() : 0;
+            }
+        }
+        catch { }
+        finally
+        {
+            analyzingFundamental = false;
+        }
+    }
 
     private static string GetCompositeClass(double score)
         => score >= 70 ? "high" : score >= 50 ? "mid" : "low";
