@@ -1974,6 +1974,32 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
 .factor-bar-flow { background: linear-gradient(90deg, #22c55e, #4ade80); }
 .factor-val { width: 28px; text-align: right; font-size: 0.75rem; font-weight: 600; color: var(--tb); }
 
+/* ─── Factor Detail 2-Column Grid ─── */
+.fd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 640px) { .fd-grid { grid-template-columns: 1fr; } }
+.fd-col { display: flex; flex-direction: column; gap: 0.6rem; }
+.fd-card {
+    background: var(--s2); border-radius: 8px; padding: 0.6rem 0.75rem;
+    border: 1px solid rgba(255,255,255,0.04);
+}
+.fd-card-title {
+    display: flex; align-items: center; gap: 0.4rem;
+    font-size: 0.72rem; font-weight: 600; color: var(--tm);
+    text-transform: uppercase; margin-bottom: 0.4rem; letter-spacing: 0.03em;
+}
+.fd-icon { font-size: 15px; }
+.fd-mini-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem; }
+.fd-mini-label { width: 65px; font-size: 0.68rem; color: var(--t); flex-shrink: 0; }
+.fd-mini-bar-bg { flex: 1; height: 10px; background: rgba(255,255,255,0.06); border-radius: 5px; overflow: hidden; }
+.fd-mini-bar { height: 100%; border-radius: 5px; transition: width 0.5s ease; min-width: 2px; }
+.fd-mini-val { width: 32px; text-align: right; font-size: 0.68rem; font-weight: 600; color: var(--tb); flex-shrink: 0; }
+.fd-stacked-bar { flex: 1; height: 10px; border-radius: 5px; overflow: hidden; display: flex; }
+.fd-stacked-bar > div { height: 100%; min-width: 1px; }
+.fd-risk-adj {
+    font-size: 0.65rem; margin-top: 0.3rem; padding: 0.25rem 0.4rem;
+    background: rgba(6,182,212,0.08); border-radius: 4px;
+}
+
 /* ─── Exit Strategy Flags ─── */
 .exit-flag {
     display: inline-flex; align-items: center; justify-content: center;

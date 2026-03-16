@@ -239,7 +239,7 @@
 @if (factorDetailVisible && factorDetailSignal != null)
 {
     <div class="modal-overlay" @onclick="CloseFactorDetail">
-        <div class="modal-panel" style="max-width:520px" @onclick:stopPropagation="true">
+        <div class="modal-panel" style="max-width:860px; width:95vw" @onclick:stopPropagation="true">
             <div class="modal-header">
                 <h4>Factor Score — @factorDetailSignal.Symbol</h4>
                 <button class="btn-close" @onclick="CloseFactorDetail">
@@ -247,7 +247,8 @@
                 </button>
             </div>
             <div class="modal-body">
-                <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem">
+                <!-- Header: Composite Score + Regime -->
+                <div style="display:flex; align-items:center; gap:1rem; margin-bottom:0.75rem">
                     <span class="composite-score-large composite-@GetCompositeClass(factorDetailSignal.CompositeScore ?? 0)">
                         @(factorDetailSignal.CompositeScore?.ToString("F0") ?? "—")
                     </span>
@@ -255,297 +256,369 @@
                         <div class="text-muted" style="font-size:0.75rem">Composite Score</div>
                         <div style="font-size:0.85rem">@GetCompositeLabel(factorDetailSignal.CompositeScore ?? 0)</div>
                     </div>
-                </div>
-                <!-- Regime Badge -->
-                @if (factorParsed != null && factorParsed.TryGetValue("regime", out var regimeObj))
-                {
-                    var regime = regimeObj?.ToString() ?? "MIXED";
-                    <div style="margin-bottom:0.5rem">
-                        <span class="badge" style="background:@(regime == "TRENDING" ? "#22c55e" : regime == "SIDEWAYS" ? "#eab308" : regime == "HIGH_VOL" ? "#ef4444" : "#60a5fa"); font-size:0.7rem; padding:2px 8px">
+                    @if (factorParsed != null && factorParsed.TryGetValue("regime", out var regimeObj))
+                    {
+                        var regime = regimeObj?.ToString() ?? "MIXED";
+                        <span class="badge" style="background:@(regime == "TRENDING" ? "#22c55e" : regime == "SIDEWAYS" ? "#eab308" : regime == "HIGH_VOL" ? "#ef4444" : "#60a5fa"); font-size:0.7rem; padding:2px 8px; margin-left:auto">
                             @regime
                         </span>
-                        <span class="text-muted" style="font-size:0.7rem; margin-left:0.3rem">Regime-Adaptive Weights</span>
-                    </div>
-                }
-                <!-- Factor Bars -->
-                <div class="factor-bars">
-                    <div class="factor-row">
-                        <span class="factor-label">Technical</span>
-                        <div class="factor-bar-bg">
-                            <div class="factor-bar factor-bar-tech" style="width:@(factorDetailSignal.TechnicalScore ?? 0)%"></div>
-                        </div>
-                        <span class="factor-val">@(factorDetailSignal.TechnicalScore?.ToString("F0") ?? "-")</span>
-                    </div>
-                    <div class="factor-row">
-                        <span class="factor-label">Sentiment</span>
-                        <div class="factor-bar-bg">
-                            <div class="factor-bar factor-bar-sent" style="width:@(factorDetailSignal.SentimentScore ?? 0)%"></div>
-                        </div>
-                        <span class="factor-val">@(factorDetailSignal.SentimentScore?.ToString("F0") ?? "-")</span>
-                    </div>
-                    <div class="factor-row">
-                        <span class="factor-label">Flow</span>
-                        <div class="factor-bar-bg">
-                            <div class="factor-bar factor-bar-flow" style="width:@(factorDetailSignal.FlowScore ?? 0)%"></div>
-                        </div>
-                        <span class="factor-val">@(factorDetailSignal.FlowScore?.ToString("F0") ?? "-")</span>
-                    </div>
-                    <div class="factor-row">
-                        <span class="factor-label">Quality</span>
-                        <div class="factor-bar-bg">
-                            <div class="factor-bar" style="width:@(factorDetailSignal.QualityScore ?? 0)%; background:#a78bfa"></div>
-                        </div>
-                        <span class="factor-val">@(factorDetailSignal.QualityScore?.ToString("F0") ?? "-")</span>
-                    </div>
-                    <div class="factor-row">
-                        <span class="factor-label">Value</span>
-                        <div class="factor-bar-bg">
-                            <div class="factor-bar" style="width:@(factorDetailSignal.ValueScore ?? 0)%; background:#f59e0b"></div>
-                        </div>
-                        <span class="factor-val">@(factorDetailSignal.ValueScore?.ToString("F0") ?? "-")</span>
-                    </div>
-                    <div class="factor-row">
-                        <span class="factor-label">Macro</span>
-                        <div class="factor-bar-bg">
-                            <div class="factor-bar" style="width:@(factorDetailSignal.MacroScore ?? 0)%; background:#06b6d4"></div>
-                        </div>
-                        <span class="factor-val">@(factorDetailSignal.MacroScore?.ToString("F0") ?? "-")</span>
-                    </div>
+                    }
                 </div>
-                @if (factorParsed != null)
-                {
-                    <!-- LSTM Detail (inside Technical) -->
-                    @if (factorParsed.TryGetValue("technical", out var techObj) && techObj is System.Text.Json.JsonElement techEl && techEl.TryGetProperty("lstm", out var lstmEl) && lstmEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+
+                <!-- ═══ 6 Factor Overview Bars ═══ -->
+                <div class="factor-bars" style="margin-bottom:1rem">
+                    @{
+                        var factors = new (string label, double? score, string color)[] {
+                            ("Technical", factorDetailSignal.TechnicalScore, "#3b82f6"),
+                            ("Sentiment", factorDetailSignal.SentimentScore, "#a78bfa"),
+                            ("Flow", factorDetailSignal.FlowScore, "#22c55e"),
+                            ("Quality", factorDetailSignal.QualityScore, "#c084fc"),
+                            ("Value", factorDetailSignal.ValueScore, "#f59e0b"),
+                            ("Macro", factorDetailSignal.MacroScore, "#06b6d4"),
+                        };
+                    }
+                    @foreach (var f in factors)
                     {
-                        <div class="ai-section" style="margin-top:0.75rem">
-                            <div class="ai-section-label">LSTM Prediction</div>
-                            <div class="ai-section-text">
+                        <div class="factor-row">
+                            <span class="factor-label">@f.label</span>
+                            <div class="factor-bar-bg">
+                                <div class="factor-bar" style="width:@(f.score ?? 0)%; background:@f.color"></div>
+                            </div>
+                            <span class="factor-val">@(f.score?.ToString("F0") ?? "-")</span>
+                        </div>
+                    }
+                </div>
+
+                <!-- ═══ Two-Column Detail Grid ═══ -->
+                <div class="fd-grid">
+                    <!-- ──── LEFT COLUMN ──── -->
+                    <div class="fd-col">
+                        @if (factorParsed != null)
+                        {
+                            <!-- LSTM -->
+                            @if (factorParsed.TryGetValue("technical", out var techObj) && techObj is System.Text.Json.JsonElement techEl && techEl.TryGetProperty("lstm", out var lstmEl) && lstmEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                            {
+                                var upProb = lstmEl.TryGetProperty("up_probability", out var up) ? up.GetDouble() : 0.5;
+                                var conf = lstmEl.TryGetProperty("confidence", out var cf) ? cf.GetDouble() : 0;
+                                var lstmSc = lstmEl.TryGetProperty("lstm_score", out var ls) ? ls.GetDouble() : 50;
+                                <div class="fd-card">
+                                    <div class="fd-card-title">
+                                        <span class="material-symbols-outlined fd-icon" style="color:#8b5cf6">neurology</span>
+                                        LSTM Prediction
+                                    </div>
+                                    <div class="fd-mini-row">
+                                        <span class="fd-mini-label">상승확률</span>
+                                        <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@(upProb*100)%; background:@(upProb > 0.6 ? "#22c55e" : upProb < 0.4 ? "#ef4444" : "#eab308")"></div></div>
+                                        <span class="fd-mini-val" style="color:@(upProb > 0.6 ? "#22c55e" : upProb < 0.4 ? "#ef4444" : "#eab308")">@(upProb.ToString("P0"))</span>
+                                    </div>
+                                    <div class="fd-mini-row">
+                                        <span class="fd-mini-label">신뢰도</span>
+                                        <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@(conf*100)%; background:#60a5fa"></div></div>
+                                        <span class="fd-mini-val">@(conf.ToString("P0"))</span>
+                                    </div>
+                                    <div class="fd-mini-row">
+                                        <span class="fd-mini-label">LSTM점수</span>
+                                        <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@lstmSc%; background:#818cf8"></div></div>
+                                        <span class="fd-mini-val">@lstmSc.ToString("F0")</span>
+                                    </div>
+                                </div>
+                            }
+
+                            <!-- Sentiment Detail -->
+                            @if (factorParsed.TryGetValue("sentiment", out var sentObj) && sentObj is System.Text.Json.JsonElement sentEl)
+                            {
+                                <div class="fd-card">
+                                    <div class="fd-card-title">
+                                        <span class="material-symbols-outlined fd-icon" style="color:#a78bfa">sentiment_satisfied</span>
+                                        Sentiment
+                                        <span class="text-muted" style="font-size:0.65rem; margin-left:auto">@(sentEl.TryGetProperty("source", out var src) ? src.GetString() : "")</span>
+                                    </div>
+                                    @if (sentEl.TryGetProperty("news", out var newsEl) && newsEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                                    {
+                                        var newsScore = sentEl.TryGetProperty("news_score", out var ns) ? ns.GetDouble() : 50;
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">뉴스 (@(newsEl.TryGetProperty("news_count", out var nc2) ? nc2.GetInt32().ToString() : "0")건)</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@newsScore%; background:@(newsScore >= 60 ? "#22c55e" : newsScore <= 40 ? "#ef4444" : "#eab308")"></div></div>
+                                            <span class="fd-mini-val">@newsScore.ToString("F0")</span>
+                                        </div>
+                                    }
+                                    @if (sentEl.TryGetProperty("social", out var socEl) && socEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                                    {
+                                        var socialScore = socEl.TryGetProperty("social_score", out var ss) ? ss.GetDouble() : 50;
+                                        var mentions = socEl.TryGetProperty("mention_count", out var mc3) ? mc3.GetInt32() : 0;
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">소셜 (@(mentions)건)</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@socialScore%; background:@(socialScore >= 60 ? "#22c55e" : socialScore <= 40 ? "#ef4444" : "#eab308")"></div></div>
+                                            <span class="fd-mini-val">@socialScore.ToString("F0")</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+
+                            <!-- Flow Detail -->
+                            @if (factorParsed.TryGetValue("flow", out var flowObj) && flowObj is System.Text.Json.JsonElement flowEl)
+                            {
+                                <div class="fd-card">
+                                    <div class="fd-card-title">
+                                        <span class="material-symbols-outlined fd-icon" style="color:#22c55e">swap_vert</span>
+                                        Flow
+                                    </div>
+                                    @if (flowEl.TryGetProperty("insider", out var ins))
+                                    {
+                                        var buys = ins.TryGetProperty("buys", out var b2) ? b2.GetInt32() : 0;
+                                        var sells = ins.TryGetProperty("sells", out var sl2) ? sl2.GetInt32() : 0;
+                                        var total = Math.Max(buys + sells, 1);
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">Insider</span>
+                                            <div class="fd-mini-bar-bg">
+                                                <div class="fd-mini-bar" style="width:@((double)buys/total*100)%; background:#22c55e"></div>
+                                            </div>
+                                            <span class="fd-mini-val" style="font-size:0.65rem">B@(buys)/S@(sells)</span>
+                                        </div>
+                                    }
+                                    @if (flowEl.TryGetProperty("recommendations", out var rec))
+                                    {
+                                        var rb2 = rec.TryGetProperty("buy", out var bv) ? bv.GetInt32() : 0;
+                                        var rh2 = rec.TryGetProperty("hold", out var hv) ? hv.GetInt32() : 0;
+                                        var rs2 = rec.TryGetProperty("sell", out var sv2) ? sv2.GetInt32() : 0;
+                                        var at = Math.Max(rb2 + rh2 + rs2, 1);
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">Analyst</span>
+                                            <div class="fd-stacked-bar">
+                                                <div style="width:@((double)rb2/at*100)%; background:#22c55e" title="Buy @rb2"></div>
+                                                <div style="width:@((double)rh2/at*100)%; background:#eab308" title="Hold @rh2"></div>
+                                                <div style="width:@((double)rs2/at*100)%; background:#ef4444" title="Sell @rs2"></div>
+                                            </div>
+                                            <span class="fd-mini-val" style="font-size:0.6rem">@(rb2)/@(rh2)/@(rs2)</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+
+                            <!-- Quality Detail -->
+                            @if (factorParsed.TryGetValue("quality", out var qualObj) && qualObj is System.Text.Json.JsonElement qualEl)
+                            {
+                                <div class="fd-card">
+                                    <div class="fd-card-title">
+                                        <span class="material-symbols-outlined fd-icon" style="color:#c084fc">verified</span>
+                                        Quality
+                                    </div>
+                                    @{
+                                        var qItems = new (string key, string label, string color)[] {
+                                            ("roe_pts", "ROE", "#c084fc"),
+                                            ("gross_margin_pts", "Margin", "#a78bfa"),
+                                            ("debt_equity_pts", "D/E", "#8b5cf6"),
+                                            ("stability_pts", "Stability", "#7c3aed"),
+                                        };
+                                    }
+                                    @foreach (var (qk, ql, qc) in qItems)
+                                    {
+                                        var qv = qualEl.TryGetProperty(qk, out var qp) ? qp.GetDouble() : 0;
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">@ql</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@(qv/25*100)%; background:@qc"></div></div>
+                                            <span class="fd-mini-val">@qv.ToString("F0")</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+
+                    <!-- ──── RIGHT COLUMN ──── -->
+                    <div class="fd-col">
+                        @if (factorParsed != null)
+                        {
+                            <!-- Value Detail -->
+                            @if (factorParsed.TryGetValue("value", out var valObj) && valObj is System.Text.Json.JsonElement valEl)
+                            {
+                                <div class="fd-card">
+                                    <div class="fd-card-title">
+                                        <span class="material-symbols-outlined fd-icon" style="color:#f59e0b">paid</span>
+                                        Value
+                                    </div>
+                                    @{
+                                        var vItems = new (string key, string label, string color)[] {
+                                            ("pe_pts", "P/E", "#f59e0b"),
+                                            ("pb_pts", "P/B", "#eab308"),
+                                            ("fcf_yield_pts", "FCF Yield", "#d97706"),
+                                            ("ev_ebitda_pts", "EV/EBITDA", "#b45309"),
+                                        };
+                                    }
+                                    @foreach (var (vk, vl, vc) in vItems)
+                                    {
+                                        var vv = valEl.TryGetProperty(vk, out var vp2) ? vp2.GetDouble() : 0;
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">@vl</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@(vv/25*100)%; background:@vc"></div></div>
+                                            <span class="fd-mini-val">@vv.ToString("F0")</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        }
+
+                        <!-- Macro Overlay -->
+                        @if (macroData.HasValue)
+                        {
+                            var md = macroData.Value;
+                            var mRegime = md.TryGetProperty("regime", out var rg2) ? rg2.GetString() : "NEUTRAL";
+                            var mColor = mRegime switch { "RISK_ON" => "#22c55e", "NEUTRAL" => "#eab308", "RISK_OFF" => "#f97316", "CRISIS" => "#ef4444", _ => "#94a3b8" };
+                            <div class="fd-card">
+                                <div class="fd-card-title">
+                                    <span class="material-symbols-outlined fd-icon" style="color:#06b6d4">public</span>
+                                    Macro Overlay
+                                    <span style="margin-left:auto; padding:1px 6px; border-radius:4px; font-size:0.65rem; color:white; background:@mColor">@mRegime</span>
+                                </div>
                                 @{
-                                    var upProb = lstmEl.TryGetProperty("up_probability", out var up) ? up.GetDouble() : 0.5;
-                                    var conf = lstmEl.TryGetProperty("confidence", out var cf) ? cf.GetDouble() : 0;
-                                    var lstmSc = lstmEl.TryGetProperty("lstm_score", out var ls) ? ls.GetDouble() : 50;
-                                    var lstmW = lstmEl.TryGetProperty("weight", out var lw) ? lw.GetDouble() : 0;
+                                    var macroSubs = new (string key, string label, string color)[] {
+                                        ("risk_off", "Risk-Off", "#ef4444"),
+                                        ("yield_curve", "Yield", "#f59e0b"),
+                                        ("copper_gold", "Cu/Au", "#d97706"),
+                                        ("dollar_trend", "Dollar", "#22c55e"),
+                                        ("btc_momentum", "BTC", "#f97316"),
+                                    };
                                 }
-                                <span style="color:@(upProb > 0.6 ? "#22c55e" : upProb < 0.4 ? "#ef4444" : "#eab308")">
-                                    상승 확률 @(upProb.ToString("P0"))
-                                </span>
-                                <span class="text-muted"> (신뢰도 @(conf.ToString("P0")), LSTM 점수 @(lstmSc.ToString("F0")), 비중 @(lstmW.ToString("P0")))</span>
-                            </div>
-                        </div>
-                    }
-                    <!-- Sentiment Detail (News + Social) -->
-                    @if (factorParsed.TryGetValue("sentiment", out var sentObj) && sentObj is System.Text.Json.JsonElement sentEl)
-                    {
-                        <div class="ai-section" style="margin-top:0.75rem">
-                            <div class="ai-section-label">Sentiment Detail</div>
-                            <div class="ai-section-text">
-                                @(sentEl.TryGetProperty("source", out var src) ? src.GetString() : "")
-                                @if (sentEl.TryGetProperty("news", out var newsEl) && newsEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                                @foreach (var (mk, ml, mc) in macroSubs)
                                 {
-                                    <span> | 뉴스: @(newsEl.TryGetProperty("news_count", out var nc) ? nc.GetInt32().ToString() : "0")건</span>
-                                    @if (newsEl.TryGetProperty("summary", out var nsum) && nsum.ValueKind == System.Text.Json.JsonValueKind.String)
+                                    if (md.TryGetProperty(mk, out var msub) && msub.TryGetProperty("score", out var msc))
                                     {
-                                        <span> — @nsum.GetString()</span>
+                                        var msv = msc.GetDouble();
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">@ml</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@msv%; background:@(msv >= 60 ? "#22c55e" : msv >= 40 ? "#eab308" : "#ef4444")"></div></div>
+                                            <span class="fd-mini-val">@msv.ToString("F0")</span>
+                                        </div>
                                     }
                                 }
-                                @if (sentEl.TryGetProperty("social", out var socEl) && socEl.ValueKind != System.Text.Json.JsonValueKind.Null)
+                                @if (md.TryGetProperty("raw_data", out var raw))
                                 {
-                                    <br/>
-                                    <span style="color:#8b5cf6">소셜: 멘션 @(socEl.TryGetProperty("mention_count", out var mc) ? mc.GetInt32().ToString() : "0")건</span>
-                                    @if (socEl.TryGetProperty("combined_raw", out var craw))
-                                    {
-                                        var rawScore = craw.GetDouble();
-                                        <span style="color:@(rawScore > 20 ? "#22c55e" : rawScore < -20 ? "#ef4444" : "#eab308")">
-                                            (점수 @(rawScore.ToString("F0")))
-                                        </span>
-                                    }
+                                    <div class="text-muted" style="font-size:0.65rem; margin-top:0.3rem">
+                                        VIX=@(raw.TryGetProperty("vix", out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null ? v.GetDouble().ToString("F1") : "-")
+                                        · 10Y=@(raw.TryGetProperty("yield_10y", out var y) && y.ValueKind != System.Text.Json.JsonValueKind.Null ? y.GetDouble().ToString("F2") + "%" : "-")
+                                        · DXY=@(raw.TryGetProperty("dxy", out var d) && d.ValueKind != System.Text.Json.JsonValueKind.Null ? d.GetDouble().ToString("F1") : "-")
+                                    </div>
                                 }
-                            </div>
-                        </div>
-                    }
-                    @if (factorParsed.TryGetValue("flow", out var flowObj) && flowObj is System.Text.Json.JsonElement flowEl)
-                    {
-                        <div class="ai-section">
-                            <div class="ai-section-label">Flow Detail</div>
-                            <div class="ai-section-text">
-                                @if (flowEl.TryGetProperty("insider", out var ins))
+                                @if (macroRiskAdj.HasValue)
                                 {
-                                    <span>Insider: Buy @(ins.TryGetProperty("buys", out var b) ? b.ToString() : "0") / Sell @(ins.TryGetProperty("sells", out var sl) ? sl.ToString() : "0")</span>
-                                }
-                                @if (flowEl.TryGetProperty("recommendations", out var rec))
-                                {
-                                    <span> | Analyst: Buy @(rec.TryGetProperty("buy", out var rb) ? rb.ToString() : "0") Hold @(rec.TryGetProperty("hold", out var rh) ? rh.ToString() : "0") Sell @(rec.TryGetProperty("sell", out var rs) ? rs.ToString() : "0")</span>
-                                }
-                            </div>
-                        </div>
-                    }
-                    @if (factorParsed.TryGetValue("quality", out var qualObj) && qualObj is System.Text.Json.JsonElement qualEl)
-                    {
-                        <div class="ai-section">
-                            <div class="ai-section-label">Quality Detail</div>
-                            <div class="ai-section-text">
-                                ROE: @(qualEl.TryGetProperty("roe_pts", out var rp) ? rp.ToString() : "-")pt
-                                | Margin: @(qualEl.TryGetProperty("gross_margin_pts", out var gp) ? gp.ToString() : "-")pt
-                                | D/E: @(qualEl.TryGetProperty("debt_equity_pts", out var dp) ? dp.ToString() : "-")pt
-                                | Stability: @(qualEl.TryGetProperty("stability_pts", out var sp) ? sp.ToString() : "-")pt
-                            </div>
-                        </div>
-                    }
-                    @if (factorParsed.TryGetValue("value", out var valObj) && valObj is System.Text.Json.JsonElement valEl)
-                    {
-                        <div class="ai-section">
-                            <div class="ai-section-label">Value Detail</div>
-                            <div class="ai-section-text">
-                                P/E: @(valEl.TryGetProperty("pe_pts", out var pp) ? pp.ToString() : "-")pt
-                                | P/B: @(valEl.TryGetProperty("pb_pts", out var pbp) ? pbp.ToString() : "-")pt
-                                | FCF: @(valEl.TryGetProperty("fcf_yield_pts", out var fp) ? fp.ToString() : "-")pt
-                                | EV/EBITDA: @(valEl.TryGetProperty("ev_ebitda_pts", out var ep) ? ep.ToString() : "-")pt
-                            </div>
-                        </div>
-                    }
-                }
-                <!-- Macro Overlay -->
-                @if (macroData.HasValue)
-                {
-                    var md = macroData.Value;
-                    var regime = md.TryGetProperty("regime", out var rg) ? rg.GetString() : "NEUTRAL";
-                    var regimeColor = regime switch { "RISK_ON" => "#22c55e", "NEUTRAL" => "#eab308", "RISK_OFF" => "#f97316", "CRISIS" => "#ef4444", _ => "#94a3b8" };
-                    <div class="ai-section" style="margin-top:0.75rem">
-                        <div class="ai-section-label">
-                            Macro Overlay
-                            <span style="margin-left:0.5rem; padding:1px 6px; border-radius:4px; font-size:0.7rem; color:white; background:@regimeColor">@regime</span>
-                        </div>
-                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.3rem; font-size:0.78rem; margin-top:0.3rem">
-                            @{
-                                var subs = new[] {
-                                    ("risk_off", "Risk-Off"), ("yield_curve", "Yield Curve"),
-                                    ("copper_gold", "Cu/Au"), ("dollar_trend", "Dollar"),
-                                    ("btc_momentum", "BTC Mom")
-                                };
-                            }
-                            @foreach (var (key, label) in subs)
-                            {
-                                if (md.TryGetProperty(key, out var sub) && sub.TryGetProperty("score", out var sc))
-                                {
-                                    var sv = sc.GetDouble();
-                                    <span>@label: <b style="color:@(sv >= 60 ? "#22c55e" : sv >= 40 ? "#eab308" : "#ef4444")">@sv.ToString("F0")</b></span>
-                                }
-                            }
-                        </div>
-                        @if (md.TryGetProperty("raw_data", out var raw))
-                        {
-                            <div class="text-muted" style="font-size:0.7rem; margin-top:0.25rem">
-                                VIX=@(raw.TryGetProperty("vix", out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null ? v.GetDouble().ToString("F1") : "-")
-                                | 10Y=@(raw.TryGetProperty("yield_10y", out var y) && y.ValueKind != System.Text.Json.JsonValueKind.Null ? y.GetDouble().ToString("F2") + "%" : "-")
-                                | DXY=@(raw.TryGetProperty("dxy", out var d) && d.ValueKind != System.Text.Json.JsonValueKind.Null ? d.GetDouble().ToString("F1") : "-")
-                            </div>
-                        }
-                        @if (macroRiskAdj.HasValue)
-                        {
-                            var ra = macroRiskAdj.Value;
-                            var ps = ra.GetProperty("position_sizing");
-                            var ts = ra.GetProperty("trailing_stop");
-                            var mult = ps.GetProperty("multiplier").GetDouble();
-                            var adjPct = ps.GetProperty("adjusted_position_pct").GetDouble();
-                            var blocked = ps.GetProperty("entry_blocked").GetBoolean();
-                            <div style="font-size:0.72rem; margin-top:0.4rem; padding:0.3rem 0.5rem; background:rgba(6,182,212,0.08); border-radius:4px">
-                                <span style="font-weight:600; color:#06b6d4">Risk Adjustment:</span>
-                                Position <b>@(adjPct.ToString("P0"))</b>
-                                <span class="text-muted">(×@mult.ToString("F0")%)</span>
-                                | Trail <b>@(ts.GetProperty("adjusted_activation").GetDouble().ToString("P1"))</b>/@(ts.GetProperty("adjusted_distance").GetDouble().ToString("P1"))
-                                | Partial <b>@(ts.GetProperty("adjusted_partial_threshold").GetDouble().ToString("P1"))</b>
-                                @if (blocked)
-                                {
-                                    <span style="color:#ef4444; font-weight:700"> | ENTRY BLOCKED</span>
+                                    var ra = macroRiskAdj.Value;
+                                    var ps = ra.GetProperty("position_sizing");
+                                    var ts = ra.GetProperty("trailing_stop");
+                                    var mult2 = ps.GetProperty("multiplier").GetDouble();
+                                    var adjPct = ps.GetProperty("adjusted_position_pct").GetDouble();
+                                    var blocked = ps.GetProperty("entry_blocked").GetBoolean();
+                                    <div class="fd-risk-adj">
+                                        <span style="font-weight:600; color:#06b6d4">Risk Adj:</span>
+                                        Pos <b>@(adjPct.ToString("P0"))</b><span class="text-muted">(×@(mult2.ToString("P0")))</span>
+                                        · Trail <b>@(ts.GetProperty("adjusted_activation").GetDouble().ToString("P1"))</b>/<b>@(ts.GetProperty("adjusted_distance").GetDouble().ToString("P1"))</b>
+                                        @if (blocked)
+                                        {
+                                            <span style="color:#ef4444; font-weight:700"> BLOCKED</span>
+                                        }
+                                    </div>
                                 }
                             </div>
                         }
-                    </div>
-                }
-                <!-- Crowding + Short Interest -->
-                @if (symbolCrowding.HasValue)
-                {
-                    var sc = symbolCrowding.Value;
-                    <div class="ai-section" style="margin-top:0.5rem">
-                        <div class="ai-section-label">Factor Crowding</div>
-                        <div class="ai-section-text">
-                            @if (sc.TryGetProperty("factor_memberships", out var fm))
-                            {
-                                var members = fm.EnumerateArray().Select(x => x.GetString()).ToList();
-                                if (members.Any())
-                                {
-                                    @foreach (var m in members)
-                                    {
-                                        <span class="badge badge-yellow" style="font-size:0.68rem; padding:1px 5px; margin-right:3px">@m</span>
-                                    }
-                                    var risk = sc.TryGetProperty("risk_level", out var rl) ? rl.GetString() : "low";
-                                    <span class="text-muted" style="font-size:0.7rem"> — @risk risk</span>
-                                }
-                                else
-                                {
-                                    <span class="text-muted">No factor ETF overlap</span>
-                                }
-                            }
-                        </div>
-                    </div>
-                }
-                @if (symbolShortInterest.HasValue)
-                {
-                    var si = symbolShortInterest.Value;
-                    var ratio = si.TryGetProperty("short_ratio", out var sr) ? sr.GetDouble() : 0;
-                    var change = si.TryGetProperty("change_pct", out var cp) ? cp.GetDouble() : 0;
-                    var available = si.TryGetProperty("available", out var av) && av.GetBoolean();
-                    if (available)
-                    {
-                        <div class="ai-section">
-                            <div class="ai-section-label">Short Interest</div>
-                            <div class="ai-section-text">
-                                SIR: <b style="color:@(ratio > 10 ? "#ef4444" : ratio > 5 ? "#eab308" : "#22c55e")">@ratio.ToString("F1") days</b>
-                                @if (change != 0)
-                                {
-                                    <span> | Change: <span style="color:@(change < 0 ? "#22c55e" : "#ef4444")">@(change > 0 ? "+" : "")@change.ToString("F1")%</span></span>
-                                }
-                                @if (si.TryGetProperty("short_pct_float", out var spf) && spf.GetDouble() > 0)
-                                {
-                                    <span> | Float: @spf.GetDouble().ToString("F1")%</span>
-                                }
-                            </div>
-                        </div>
-                    }
-                }
 
-                <!-- Fundamental Analysis -->
-                <div style="margin-top:0.75rem; padding-top:0.5rem; border-top:1px solid var(--border)">
-                    @if (fundamentalResult.HasValue)
-                    {
-                        var fr = fundamentalResult.Value;
-                        <div class="ai-section">
-                            <div class="ai-section-label">
-                                Fundamental Score
-                                <span class="composite-score composite-@GetCompositeClass(fundamentalScore)" style="margin-left:0.5rem">@fundamentalScore</span>
+                        <!-- Crowding + Short Interest -->
+                        <div class="fd-card">
+                            <div class="fd-card-title">
+                                <span class="material-symbols-outlined fd-icon" style="color:#f97316">groups</span>
+                                Crowding & Short
                             </div>
-                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.3rem; font-size:0.78rem; margin-top:0.3rem">
-                                <span>Revenue Growth: <b>@(fr.TryGetProperty("revenue_growth", out var rg) ? rg.ToString() : "-")</b></span>
-                                <span>Margin Trend: <b>@(fr.TryGetProperty("margin_trend", out var mt) ? mt.ToString() : "-")</b></span>
-                                <span>Debt Health: <b>@(fr.TryGetProperty("debt_health", out var dh) ? dh.ToString() : "-")</b></span>
-                                <span>Guidance: <b>@(fr.TryGetProperty("guidance", out var gu) ? gu.ToString() : "-")</b></span>
-                            </div>
-                            @if (fr.TryGetProperty("summary", out var fsum))
+                            @if (symbolCrowding.HasValue)
                             {
-                                <div class="ai-section-text" style="margin-top:0.3rem; font-size:0.75rem">@fsum.GetString()</div>
+                                var sc = symbolCrowding.Value;
+                                @if (sc.TryGetProperty("factor_memberships", out var fm))
+                                {
+                                    var members = fm.EnumerateArray().Select(x => x.GetString()).ToList();
+                                    if (members.Any())
+                                    {
+                                        var riskLvl = sc.TryGetProperty("risk_level", out var rl) ? rl.GetString() : "low";
+                                        <div style="margin-bottom:0.3rem">
+                                            @foreach (var m in members)
+                                            {
+                                                <span class="badge badge-yellow" style="font-size:0.62rem; padding:1px 4px; margin-right:2px">@m</span>
+                                            }
+                                            <span class="text-muted" style="font-size:0.65rem"> @riskLvl</span>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="text-muted" style="font-size:0.72rem; margin-bottom:0.3rem">No factor ETF overlap</div>
+                                    }
+                                }
+                            }
+                            @if (symbolShortInterest.HasValue)
+                            {
+                                var si = symbolShortInterest.Value;
+                                var ratio = si.TryGetProperty("short_ratio", out var sr) ? sr.GetDouble() : 0;
+                                var available = si.TryGetProperty("available", out var av) && av.GetBoolean();
+                                if (available)
+                                {
+                                    var siPct = si.TryGetProperty("short_pct_float", out var spf) ? spf.GetDouble() : 0;
+                                    <div class="fd-mini-row">
+                                        <span class="fd-mini-label">SIR</span>
+                                        <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@(Math.Min(ratio/15*100, 100))%; background:@(ratio > 10 ? "#ef4444" : ratio > 5 ? "#eab308" : "#22c55e")"></div></div>
+                                        <span class="fd-mini-val" style="color:@(ratio > 10 ? "#ef4444" : ratio > 5 ? "#eab308" : "#22c55e")">@ratio.ToString("F1")d</span>
+                                    </div>
+                                    @if (siPct > 0)
+                                    {
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">Float%</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@(Math.Min(siPct/30*100, 100))%; background:@(siPct > 20 ? "#ef4444" : siPct > 10 ? "#eab308" : "#22c55e")"></div></div>
+                                            <span class="fd-mini-val">@siPct.ToString("F1")%</span>
+                                        </div>
+                                    }
+                                }
                             }
                         </div>
-                    }
-                    else
-                    {
-                        <button class="btn-sm btn-ai" style="width:100%" @onclick="() => RunFundamental(factorDetailSignal!.Symbol)" disabled="@analyzingFundamental">
-                            <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">lab_research</span>
-                            @(analyzingFundamental ? "Analyzing..." : "Run Fundamental Analysis")
-                        </button>
-                    }
+
+                        <!-- Fundamental -->
+                        <div class="fd-card">
+                            <div class="fd-card-title">
+                                <span class="material-symbols-outlined fd-icon" style="color:#10b981">lab_research</span>
+                                Fundamental
+                                @if (fundamentalResult.HasValue)
+                                {
+                                    <span class="composite-score composite-@GetCompositeClass(fundamentalScore)" style="margin-left:auto; font-size:0.7rem">@fundamentalScore</span>
+                                }
+                            </div>
+                            @if (fundamentalResult.HasValue)
+                            {
+                                var fr = fundamentalResult.Value;
+                                var fItems = new (string key, string label, string color)[] {
+                                    ("revenue_growth", "Revenue", "#10b981"),
+                                    ("margin_trend", "Margin", "#14b8a6"),
+                                    ("debt_health", "Debt", "#0d9488"),
+                                    ("guidance", "Guidance", "#0f766e"),
+                                };
+                                @foreach (var (fk, fl, fc) in fItems)
+                                {
+                                    var fv = fr.TryGetProperty(fk, out var fp) ? fp.GetDouble() : 0;
+                                    <div class="fd-mini-row">
+                                        <span class="fd-mini-label">@fl</span>
+                                        <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@fv%; background:@fc"></div></div>
+                                        <span class="fd-mini-val">@fv.ToString("F0")</span>
+                                    </div>
+                                }
+                                @if (fr.TryGetProperty("summary", out var fsum))
+                                {
+                                    <div class="text-muted" style="font-size:0.65rem; margin-top:0.3rem; line-height:1.4">@fsum.GetString()</div>
+                                }
+                            }
+                            else
+                            {
+                                <button class="btn-sm btn-ai" style="width:100%; margin-top:0.3rem" @onclick="() => RunFundamental(factorDetailSignal!.Symbol)" disabled="@analyzingFundamental">
+                                    <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">lab_research</span>
+                                    @(analyzingFundamental ? "Analyzing..." : "Run Analysis")
+                                </button>
+                            }
+                        </div>
+                    </div>
                 </div>
 
-                <div class="text-muted" style="font-size:0.7rem; margin-top:0.5rem">
+                <div class="text-muted" style="font-size:0.65rem; margin-top:0.5rem; text-align:right">
                     @if (factorDetailSignal.FactorScoredAt != null)
                     {
                         <span>Scored: @factorDetailSignal.FactorScoredAt.Value.ToString("MM/dd HH:mm")</span>
