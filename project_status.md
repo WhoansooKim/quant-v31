@@ -124,7 +124,8 @@ engine_v4/
 | **Tier 3: Dual Sort** | COMPLETE | momentum+value combined rank filter in scan_entries |
 | **Tier 3: 5-Factor Enhancement** | COMPLETE | Technical+LSTM / Sentiment+Social / Flow / Quality / Value (레짐 적응형 가중치) |
 | **Help Page Rewrite** | COMPLETE | 12섹션 완전 재구성 — 용어사전 + 초보자 교육 + Tier 3 통합 |
-| **Macro Overlay** | COMPLETE | 5 sub-signal 매크로 스코어 (VIX+금리+구리/금+달러+BTC) → 6th factor 통합 |
+| **Macro Overlay Phase 1** | COMPLETE | 5 sub-signal 매크로 스코어 (VIX+금리+구리/금+달러+BTC) → 6th factor 통합 |
+| **Macro Overlay Phase 2** | COMPLETE | 레짐별 포지션 사이징 자동 축소 + CRISIS 진입 차단 + trailing stop 긴축 |
 | Broker 연동 | PARTIAL | KIS 시뮬레이션 모드(SIM-*). live 모드 toggle 가능 |
 
 ### Live Trading State

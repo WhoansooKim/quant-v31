@@ -53,8 +53,10 @@ universe_mgr = UniverseManager(pg, cache)
 collector = DataCollector(pg, cache, config)
 finnhub_client = FinnhubClient(config.finnhub_api_key)
 strategy = SwingStrategy(pg, config, finnhub=finnhub_client)
-pos_mgr = PositionManager(pg, config)
-exit_mgr = ExitManager(pg)
+macro_collector = MacroDataCollector(cache)
+macro_scorer_inst = MacroScorer(macro_collector, cache)
+pos_mgr = PositionManager(pg, config, macro_scorer=macro_scorer_inst)
+exit_mgr = ExitManager(pg, macro_scorer=macro_scorer_inst)
 backtester = BacktestRunner(pg)
 kis = KisClient(config)
 notifier = TelegramNotifier(config)
@@ -69,8 +71,6 @@ social_collector = SocialSentimentCollector(
     ollama_model=config.ollama_model,
 )
 lstm_predictor = LSTMPredictor(pg, cache)
-macro_collector = MacroDataCollector(cache)
-macro_scorer_inst = MacroScorer(macro_collector, cache)
 scorer = MultiFactorScorer(pg, finnhub_client, config.anthropic_key,
                            ollama_url=config.ollama_url,
                            ollama_model=config.ollama_model,
@@ -2492,6 +2492,17 @@ def _save_macro_snapshot(score_result: dict, raw_data: dict):
               raw_data.get("dxy_momentum_20d"),
               json.dumps(score_result, default=str)))
         conn.commit()
+
+
+@app.get("/macro/risk-adjustment")
+async def get_macro_risk_adjustment():
+    """현재 매크로 레짐 기반 리스크 조절 상태."""
+    position_adj = pos_mgr.get_risk_adjustment()
+    trailing_adj = exit_mgr.get_trailing_params()
+    return {
+        "position_sizing": position_adj,
+        "trailing_stop": trailing_adj,
+    }
 
 
 # ═══════════════════════════════════════════════════════════

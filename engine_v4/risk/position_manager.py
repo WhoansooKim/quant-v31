@@ -1,4 +1,4 @@
-"""PositionManager — 포지션 사이징 + 리스크 제한 체크."""
+"""PositionManager — 포지션 사이징 + 리스크 제한 체크 + 매크로 리스크 조절."""
 
 from __future__ import annotations
 
@@ -10,6 +10,14 @@ from engine_v4.data.storage import PostgresStore
 
 logger = logging.getLogger(__name__)
 
+# 매크로 레짐별 포지션 사이즈 배율
+MACRO_POSITION_MULTIPLIER = {
+    "RISK_ON":  1.0,    # 100% — 유리한 환경
+    "NEUTRAL":  0.85,   # 85%  — 약간 보수적
+    "RISK_OFF": 0.50,   # 50%  — 절반으로 축소
+    "CRISIS":   0.0,    # 0%   — 신규 진입 차단
+}
+
 
 class PositionManager:
     """
@@ -18,14 +26,24 @@ class PositionManager:
     - 동시 최대 4종목
     - 하루 최대 1건 진입
     - 가격 범위 $20~$80 (소액 계좌 대응)
+    - 매크로 레짐에 따라 포지션 사이즈 동적 조절
     """
 
-    def __init__(self, pg: PostgresStore, settings: SwingSettings):
+    def __init__(self, pg: PostgresStore, settings: SwingSettings,
+                 macro_scorer=None):
         self.pg = pg
         self.cfg = settings
+        self.macro_scorer = macro_scorer
 
     def can_open_position(self) -> tuple[bool, str]:
         """새 포지션 개시 가능 여부. (가능여부, 사유)"""
+        # 0) 매크로 CRISIS 체크 — 신규 진입 차단
+        macro_enabled = self.pg.get_config_value("macro_enabled", "true") == "true"
+        if macro_enabled:
+            regime = self._get_macro_regime()
+            if regime == "CRISIS":
+                return False, f"Macro regime CRISIS — new entries blocked"
+
         # 1) 최대 포지션 수 체크
         max_pos = int(self.pg.get_config_value("max_positions", str(self.cfg.max_positions)))
         open_count = self.pg.get_open_position_count()
@@ -43,11 +61,23 @@ class PositionManager:
     def calculate_position_size(self, account_value_usd: float,
                                 entry_price: float) -> dict:
         """
-        포지션 사이즈 계산.
-        반환: {qty, amount, pct_of_account}
+        포지션 사이즈 계산 (매크로 레짐 반영).
+        반환: {qty, amount, pct_of_account, macro_regime, macro_multiplier}
         """
         pct = float(self.pg.get_config_value("position_pct", str(self.cfg.position_pct)))
-        target_amount = account_value_usd * pct
+
+        # 매크로 레짐 기반 사이즈 조절
+        macro_enabled = self.pg.get_config_value("macro_enabled", "true") == "true"
+        regime = "NEUTRAL"
+        multiplier = 1.0
+        if macro_enabled:
+            regime = self._get_macro_regime()
+            multiplier = MACRO_POSITION_MULTIPLIER.get(regime, 1.0)
+            if multiplier < 1.0:
+                logger.info(f"Macro regime {regime}: position size ×{multiplier:.0%}")
+
+        adjusted_pct = pct * multiplier
+        target_amount = account_value_usd * adjusted_pct
         qty = int(target_amount / entry_price)  # 정수 주만 (소수점 미지원)
 
         if qty <= 0:
@@ -60,6 +90,8 @@ class PositionManager:
             "qty": qty,
             "amount": round(actual_amount, 2),
             "pct_of_account": round(actual_pct, 4),
+            "macro_regime": regime,
+            "macro_multiplier": multiplier,
         }
 
     def validate_entry(self, symbol: str, entry_price: float) -> tuple[bool, str]:
@@ -189,4 +221,35 @@ class PositionManager:
             "exit_price": exit_price,
             "exit_reason": exit_reason,
             "pnl": round(pnl, 2),
+        }
+
+    def _get_macro_regime(self) -> str:
+        """현재 매크로 레짐 조회 (캐시된 매크로 스코어 기반)."""
+        if self.macro_scorer:
+            try:
+                result = self.macro_scorer.calc_macro_score()
+                return result.get("regime", "NEUTRAL")
+            except Exception as e:
+                logger.warning(f"Macro regime check failed: {e}")
+        return "NEUTRAL"
+
+    def get_risk_adjustment(self) -> dict:
+        """현재 매크로 리스크 조절 상태 반환."""
+        macro_enabled = self.pg.get_config_value("macro_enabled", "true") == "true"
+        if not macro_enabled:
+            return {"enabled": False, "regime": "NEUTRAL", "multiplier": 1.0,
+                    "entry_blocked": False}
+
+        regime = self._get_macro_regime()
+        multiplier = MACRO_POSITION_MULTIPLIER.get(regime, 1.0)
+        base_pct = float(self.pg.get_config_value("position_pct", str(self.cfg.position_pct)))
+        adjusted_pct = base_pct * multiplier
+
+        return {
+            "enabled": True,
+            "regime": regime,
+            "multiplier": multiplier,
+            "base_position_pct": base_pct,
+            "adjusted_position_pct": round(adjusted_pct, 4),
+            "entry_blocked": regime == "CRISIS",
         }
