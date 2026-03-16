@@ -1,7 +1,8 @@
-"""MultiFactorScorer — 5팩터 복합 스코어링 (Tier 1 Factor Enhancement).
+"""MultiFactorScorer — 6팩터 복합 스코어링 (Tier 1 + Macro Overlay).
 
-기술(30%) + 감성(20%) + 수급(10%) + 퀄리티(20%) + 밸류(20%)
+기술(25-30%) + 감성(15-25%) + 수급(10%) + 퀄리티(15-25%) + 밸류(15-25%) + 매크로(10-20%)
 레짐 적응형 가중치: ADX/VIX 기반 동적 팩터 배분.
+매크로 오버레이: VIX + HY 스프레드 + Gold/SPY + 수익률 곡선 + 구리/금 + BTC.
 시그널 생성 후 호출되어 각 팩터 점수를 계산하고 DB에 저장.
 Finnhub API 없으면 기술 점수만 계산 (graceful degradation).
 """
@@ -36,35 +37,38 @@ Respond in JSON only: {{"sentiment_score": <0-100>, "summary": "<1 sentence>"}}"
 
 
 class MultiFactorScorer:
-    """멀티팩터 스코어링 엔진 (5-Factor Regime-Adaptive).
+    """멀티팩터 스코어링 엔진 (6-Factor Regime-Adaptive + Macro Overlay).
 
-    Technical Score (30%): 기존 지표 기반 (rank, trend, breakout, volume)
-    Sentiment Score (20%): Finnhub 뉴스 + Claude/Ollama 감성분석
-    Flow Score (10%): 내부자 거래 + 애널리스트 추천
-    Quality Score (20%): ROE, 마진, 부채비율, 수익안정성
-    Value Score (20%): P/E, P/B, FCF Yield, EV/EBITDA
+    Technical Score: 기존 지표 기반 + LSTM 블렌딩
+    Sentiment Score: Finnhub 뉴스 + Claude/Ollama + 소셜 감성
+    Flow Score: 내부자 거래 + 애널리스트 추천
+    Quality Score: ROE, 마진, 부채비율, 수익안정성
+    Value Score: P/E, P/B, FCF Yield, EV/EBITDA
+    Macro Score: VIX + HY 스프레드 + Gold/SPY + 수익률 곡선 + 구리/금 + BTC
 
     레짐 적응형: ADX>25 TRENDING, ADX<20 SIDEWAYS, VIX>25 HIGH_VOL
+    HIGH_VOL 시 매크로 비중 20%로 확대 (위기 감지 강화)
     """
 
-    # Regime-adaptive weight profiles
+    # Regime-adaptive weight profiles (6 factors, sum = 1.0)
     REGIME_WEIGHTS = {
-        "TRENDING":  {"technical": 0.35, "sentiment": 0.15, "flow": 0.10, "quality": 0.15, "value": 0.25},
-        "SIDEWAYS":  {"technical": 0.20, "sentiment": 0.15, "flow": 0.10, "quality": 0.30, "value": 0.25},
-        "HIGH_VOL":  {"technical": 0.25, "sentiment": 0.25, "flow": 0.10, "quality": 0.25, "value": 0.15},
-        "MIXED":     {"technical": 0.30, "sentiment": 0.20, "flow": 0.10, "quality": 0.20, "value": 0.20},
+        "TRENDING":  {"technical": 0.30, "sentiment": 0.15, "flow": 0.10, "quality": 0.15, "value": 0.20, "macro": 0.10},
+        "SIDEWAYS":  {"technical": 0.18, "sentiment": 0.12, "flow": 0.10, "quality": 0.25, "value": 0.20, "macro": 0.15},
+        "HIGH_VOL":  {"technical": 0.20, "sentiment": 0.15, "flow": 0.10, "quality": 0.20, "value": 0.15, "macro": 0.20},
+        "MIXED":     {"technical": 0.25, "sentiment": 0.18, "flow": 0.10, "quality": 0.17, "value": 0.18, "macro": 0.12},
     }
 
     def __init__(self, pg: PostgresStore, finnhub: FinnhubClient,
                  anthropic_key: str = "",
                  ollama_url: str = "", ollama_model: str = "",
                  cache=None, social_collector=None,
-                 lstm_predictor=None):
+                 lstm_predictor=None, macro_scorer=None):
         self.pg = pg
         self.finnhub = finnhub
         self.cache = cache  # RedisCache (optional, for factor momentum)
         self.social = social_collector  # SocialSentimentCollector (optional)
         self.lstm = lstm_predictor  # LSTMPredictor (optional)
+        self.macro = macro_scorer  # MacroScorer (optional)
         self.anthropic_key = anthropic_key
         self._claude = None
         self._ollama_url = ollama_url or "http://localhost:11434"
@@ -97,9 +101,9 @@ class MultiFactorScorer:
             return False
 
     def score_signal(self, signal_id: int) -> dict:
-        """단일 시그널 5팩터 스코어링 (레짐 적응형).
+        """단일 시그널 6팩터 스코어링 (레짐 적응형 + 매크로 오버레이).
 
-        Returns: {signal_id, technical, sentiment, flow, quality, value, composite, regime, detail}
+        Returns: {signal_id, technical, sentiment, flow, quality, value, macro, composite, regime, detail}
         """
         sig = self.pg.get_signal(signal_id)
         if not sig:
@@ -115,12 +119,14 @@ class MultiFactorScorer:
             weights = self.REGIME_WEIGHTS[regime]
         else:
             regime = "MIXED"
+            macro_w = float(self.pg.get_config_value("macro_weight", "0.10"))
             weights = {
-                "technical": float(self.pg.get_config_value("factor_weight_technical", "0.3")),
-                "sentiment": float(self.pg.get_config_value("factor_weight_sentiment", "0.2")),
-                "flow": float(self.pg.get_config_value("factor_weight_flow", "0.1")),
-                "quality": float(self.pg.get_config_value("factor_weight_quality", "0.2")),
-                "value": float(self.pg.get_config_value("factor_weight_value", "0.2")),
+                "technical": float(self.pg.get_config_value("factor_weight_technical", "0.25")),
+                "sentiment": float(self.pg.get_config_value("factor_weight_sentiment", "0.18")),
+                "flow": float(self.pg.get_config_value("factor_weight_flow", "0.10")),
+                "quality": float(self.pg.get_config_value("factor_weight_quality", "0.19")),
+                "value": float(self.pg.get_config_value("factor_weight_value", "0.18")),
+                "macro": macro_w,
             }
 
         # Factor Momentum: 최근 성과 기반 가중치 틸트
@@ -144,13 +150,17 @@ class MultiFactorScorer:
         # 5) Value Score (P/E, P/B, FCF yield, EV/EBITDA)
         value_result = self._calc_value(symbol)
 
-        # Composite (5-factor weighted)
+        # 6) Macro Score (크로스 에셋 매크로 오버레이)
+        macro_result = self._calc_macro()
+
+        # Composite (6-factor weighted)
         composite = (
             tech_result["score"] * weights["technical"] +
             sent_result["score"] * weights["sentiment"] +
             flow_result["score"] * weights["flow"] +
             quality_result["score"] * weights["quality"] +
-            value_result["score"] * weights["value"]
+            value_result["score"] * weights["value"] +
+            macro_result["score"] * weights.get("macro", 0.10)
         )
 
         elapsed = time.time() - start
@@ -161,6 +171,7 @@ class MultiFactorScorer:
             "flow": flow_result,
             "quality": quality_result,
             "value": value_result,
+            "macro": macro_result,
             "regime": regime,
             "weights": weights,
             "regime_adaptive": regime_adaptive,
@@ -177,6 +188,7 @@ class MultiFactorScorer:
             flow=flow_result["score"],
             quality=quality_result["score"],
             value=value_result["score"],
+            macro=macro_result["score"],
             composite=round(composite, 1),
             detail=detail,
         )
@@ -184,7 +196,7 @@ class MultiFactorScorer:
         logger.info(f"Factor score {symbol} [{regime}]: T={tech_result['score']:.0f} "
                      f"S={sent_result['score']:.0f} F={flow_result['score']:.0f} "
                      f"Q={quality_result['score']:.0f} V={value_result['score']:.0f} "
-                     f"→ C={composite:.1f} ({elapsed:.1f}s)")
+                     f"M={macro_result['score']:.0f} → C={composite:.1f} ({elapsed:.1f}s)")
 
         return {
             "signal_id": signal_id,
@@ -194,6 +206,7 @@ class MultiFactorScorer:
             "flow_score": flow_result["score"],
             "quality_score": quality_result["score"],
             "value_score": value_result["score"],
+            "macro_score": macro_result["score"],
             "composite_score": round(composite, 1),
             "regime": regime,
             "detail": detail,
@@ -879,13 +892,38 @@ class MultiFactorScorer:
             },
         }
 
+    # ─── Macro Score (0-100) ─────────────────────────────
+
+    def _calc_macro(self) -> dict:
+        """매크로 오버레이 점수 (0-100). MacroScorer 호출 or 중립 50."""
+        macro_enabled = self.pg.get_config_value("macro_enabled", "true") == "true"
+        if not macro_enabled or not self.macro:
+            return {"score": 50.0, "source": "disabled", "regime": "NEUTRAL"}
+
+        try:
+            result = self.macro.calc_macro_score()
+            return {
+                "score": result["macro_score"],
+                "source": "macro_scorer",
+                "regime": result["regime"],
+                "risk_off": result["risk_off"].get("score", 50),
+                "yield_curve": result["yield_curve"].get("score", 50),
+                "copper_gold": result["copper_gold"].get("score", 50),
+                "dollar_trend": result["dollar_trend"].get("score", 50),
+                "btc_momentum": result["btc_momentum"].get("score", 50),
+            }
+        except Exception as e:
+            logger.warning(f"Macro scoring failed: {e}")
+            return {"score": 50.0, "source": "error", "regime": "NEUTRAL"}
+
     # ─── DB Update ───────────────────────────────────────
 
     def _update_signal_factors(self, signal_id: int, *,
                                technical: float, sentiment: float,
                                flow: float, quality: float, value: float,
+                               macro: float = 50.0,
                                composite: float, detail: dict) -> None:
-        """swing_signals에 5팩터 점수 업데이트."""
+        """swing_signals에 6팩터 점수 업데이트."""
         with self.pg.get_conn() as conn:
             conn.execute("""
                 UPDATE swing_signals
@@ -894,11 +932,12 @@ class MultiFactorScorer:
                     flow_score = %s,
                     quality_score = %s,
                     value_score = %s,
+                    macro_score = %s,
                     composite_score = %s,
                     factor_detail = %s,
                     factor_scored_at = now()
                 WHERE signal_id = %s
-            """, (technical, sentiment, flow, quality, value, composite,
+            """, (technical, sentiment, flow, quality, value, macro, composite,
                   json.dumps(detail, ensure_ascii=False, default=str),
                   signal_id))
             conn.commit()

@@ -144,7 +144,16 @@ class SwingScheduler:
             replace_existing=True,
         )
 
-        # 9) 매일 06:50 KST — 소셜 감성 수집 (파이프라인 전)
+        # 9) 매일 06:45 KST — 매크로 데이터 수집 (파이프라인 전)
+        self.scheduler.add_job(
+            self._job_macro_collect,
+            CronTrigger(day_of_week="mon-sat", hour=6, minute=45, timezone=KST),
+            id="macro_collect",
+            name="Daily Macro Data Collection",
+            replace_existing=True,
+        )
+
+        # 10) 매일 06:50 KST — 소셜 감성 수집 (파이프라인 전)
         self.scheduler.add_job(
             self._job_social_collect,
             CronTrigger(day_of_week="mon-sat", hour=6, minute=50, timezone=KST),
@@ -153,7 +162,7 @@ class SwingScheduler:
             replace_existing=True,
         )
 
-        # 10) 토 09:00 KST — LSTM 주간 재학습
+        # 11) 토 09:00 KST — LSTM 주간 재학습
         self.scheduler.add_job(
             self._job_lstm_retrain,
             CronTrigger(day_of_week="sat", hour=9, minute=0, timezone=KST),
@@ -721,6 +730,23 @@ class SwingScheduler:
                 logger.warning(f"LSTM retrain trigger failed: HTTP {resp.status_code}")
         except Exception as e:
             logger.error(f"LSTM retrain job failed: {e}", exc_info=True)
+
+    def _job_macro_collect(self):
+        """매크로 지표 수집 + 스코어링 + DB 스냅샷."""
+        import requests
+        try:
+            macro_enabled = self.pg.get_config_value("macro_enabled", "true")
+            if macro_enabled != "true":
+                logger.info("Macro collect skipped: disabled in config")
+                return
+
+            resp = requests.post("http://localhost:8001/macro/collect", timeout=30)
+            if resp.status_code == 200:
+                logger.info("Macro collect triggered via API")
+            else:
+                logger.warning(f"Macro collect trigger failed: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.error(f"Macro collect job failed: {e}", exc_info=True)
 
     def _job_social_collect(self):
         """소셜 감성 수집 (Reddit + StockTwits)."""

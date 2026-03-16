@@ -398,6 +398,12 @@
                         <td>Finnhub API (PER, PBR) + 애널리스트 목표가</td>
                         <td>15%</td>
                     </tr>
+                    <tr>
+                        <td><strong>매크로 (Macro)</strong></td>
+                        <td>글로벌 시장 환경이 유리한가?</td>
+                        <td>VIX, 금리, 달러, 구리/금, BTC (yfinance)</td>
+                        <td>10~20%</td>
+                    </tr>
                 </tbody>
             </table>
 
@@ -407,6 +413,28 @@
                 <strong>상승장</strong>이면 기술+감성 비중을 높이고 (모멘텀 타기),
                 <strong>하락장</strong>이면 퀄리티+밸류 비중을 높입니다 (안전한 종목 선호).
             </p>
+
+            <div class="help-card" style="border-left: 3px solid #06b6d4; margin-top:1rem">
+                <h5 class="help-subtitle">&#x1f30d; 매크로 오버레이 (Macro Overlay)</h5>
+                <div class="help-tip">
+                    <strong>한 줄 설명:</strong> "지금 세계 경제가 주식 투자에 유리한가?"를 5개 거시경제 지표로 판단하는 시스템
+                </div>
+                <p><strong>5가지 매크로 서브시그널:</strong></p>
+                <ul class="help-list">
+                    <li><strong>Risk-Off 지수 (30%):</strong> VIX(공포지수) + 금/주식 비율 + 하이일드 스프레드. 투자자들이 "안전자산"으로 도망치는 정도를 측정</li>
+                    <li><strong>금리 곡선 (20%):</strong> 미국 10년 국채 금리의 수준과 방향. 2.5~4%가 "골디락스"(적정) 구간</li>
+                    <li><strong>구리/금 비율 (20%):</strong> 구리(산업용)÷금(안전자산). 비율 상승 = 경기 확장, 하락 = 경기 수축</li>
+                    <li><strong>달러 추세 (15%):</strong> 달러 약세 = 유동성 확대 = 주식 유리. 반대로 달러 강세는 주식에 불리</li>
+                    <li><strong>BTC 모멘텀 (15%):</strong> 비트코인 20일 수익률. BTC 강세 = 위험 선호(Risk-On) 환경</li>
+                </ul>
+                <p><strong>매크로 레짐 분류:</strong></p>
+                <ul class="help-list">
+                    <li><span style="color:#22c55e">&#x25cf;</span> <strong>RISK_ON (65~100점):</strong> 적극 투자 유리</li>
+                    <li><span style="color:#eab308">&#x25cf;</span> <strong>NEUTRAL (45~65점):</strong> 정상 환경</li>
+                    <li><span style="color:#f97316">&#x25cf;</span> <strong>RISK_OFF (25~45점):</strong> 주의 필요, 방어적 포지션</li>
+                    <li><span style="color:#ef4444">&#x25cf;</span> <strong>CRISIS (&lt;25점):</strong> 위기 수준, 신규 진입 자제</li>
+                </ul>
+            </div>
 
             <p><strong>추가 분석:</strong></p>
             <ul class="help-list">
@@ -418,7 +446,7 @@
         <div class="help-note">
             <span class="help-note-icon">&#x1f3af;</span>
             <div>
-                <strong>최종 점수 산출:</strong> 5개 팩터 가중 합산 → 0~100점.
+                <strong>최종 점수 산출:</strong> 6개 팩터 가중 합산 → 0~100점.
                 Settings에서 설정한 <strong>최소 점수(기본 50점)</strong> 이상이어야 시그널이 생성됩니다.
                 Signals 페이지에서 점수를 클릭하면 각 팩터별 상세 내역을 볼 수 있습니다.
             </div>
@@ -1253,6 +1281,9 @@
                 <tr><td>social_enabled</td><td>true</td><td>소셜 감성 분석 사용 여부</td></tr>
                 <tr><td>social_weight_in_sentiment</td><td>0.4</td><td>감성 점수 내 소셜 비중 (40%)</td></tr>
                 <tr><td>dual_sort_enabled</td><td>true</td><td>이중 정렬(모멘텀+밸류) 사용 여부</td></tr>
+                <tr><td>macro_enabled</td><td>true</td><td>매크로 오버레이 사용 여부</td></tr>
+                <tr><td>macro_weight</td><td>0.10</td><td>매크로 팩터 기본 가중치 (10%)</td></tr>
+                <tr><td>macro_risk_off_threshold</td><td>30</td><td>이 점수 이하면 심각한 risk-off 경고</td></tr>
                 <tr><td>trading_mode</td><td>paper</td><td>Paper(연습) / Live(실전) 모드</td></tr>
             </tbody>
         </table>

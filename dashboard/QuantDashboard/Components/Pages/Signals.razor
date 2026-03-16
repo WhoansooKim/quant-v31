@@ -304,6 +304,13 @@
                         </div>
                         <span class="factor-val">@(factorDetailSignal.ValueScore?.ToString("F0") ?? "-")</span>
                     </div>
+                    <div class="factor-row">
+                        <span class="factor-label">Macro</span>
+                        <div class="factor-bar-bg">
+                            <div class="factor-bar" style="width:@(factorDetailSignal.MacroScore ?? 0)%; background:#06b6d4"></div>
+                        </div>
+                        <span class="factor-val">@(factorDetailSignal.MacroScore?.ToString("F0") ?? "-")</span>
+                    </div>
                 </div>
                 @if (factorParsed != null)
                 {
@@ -396,6 +403,44 @@
                             </div>
                         </div>
                     }
+                }
+                <!-- Macro Overlay -->
+                @if (macroData.HasValue)
+                {
+                    var md = macroData.Value;
+                    var regime = md.TryGetProperty("regime", out var rg) ? rg.GetString() : "NEUTRAL";
+                    var regimeColor = regime switch { "RISK_ON" => "#22c55e", "NEUTRAL" => "#eab308", "RISK_OFF" => "#f97316", "CRISIS" => "#ef4444", _ => "#94a3b8" };
+                    <div class="ai-section" style="margin-top:0.75rem">
+                        <div class="ai-section-label">
+                            Macro Overlay
+                            <span style="margin-left:0.5rem; padding:1px 6px; border-radius:4px; font-size:0.7rem; color:white; background:@regimeColor">@regime</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.3rem; font-size:0.78rem; margin-top:0.3rem">
+                            @{
+                                var subs = new[] {
+                                    ("risk_off", "Risk-Off"), ("yield_curve", "Yield Curve"),
+                                    ("copper_gold", "Cu/Au"), ("dollar_trend", "Dollar"),
+                                    ("btc_momentum", "BTC Mom")
+                                };
+                            }
+                            @foreach (var (key, label) in subs)
+                            {
+                                if (md.TryGetProperty(key, out var sub) && sub.TryGetProperty("score", out var sc))
+                                {
+                                    var sv = sc.GetDouble();
+                                    <span>@label: <b style="color:@(sv >= 60 ? "#22c55e" : sv >= 40 ? "#eab308" : "#ef4444")">@sv.ToString("F0")</b></span>
+                                }
+                            }
+                        </div>
+                        @if (md.TryGetProperty("raw_data", out var raw))
+                        {
+                            <div class="text-muted" style="font-size:0.7rem; margin-top:0.25rem">
+                                VIX=@(raw.TryGetProperty("vix", out var v) && v.ValueKind != System.Text.Json.JsonValueKind.Null ? v.GetDouble().ToString("F1") : "-")
+                                | 10Y=@(raw.TryGetProperty("yield_10y", out var y) && y.ValueKind != System.Text.Json.JsonValueKind.Null ? y.GetDouble().ToString("F2") + "%" : "-")
+                                | DXY=@(raw.TryGetProperty("dxy", out var d) && d.ValueKind != System.Text.Json.JsonValueKind.Null ? d.GetDouble().ToString("F1") : "-")
+                            </div>
+                        }
+                    </div>
                 }
                 <!-- Crowding + Short Interest -->
                 @if (symbolCrowding.HasValue)
@@ -529,6 +574,7 @@
     // Crowding + Short Interest (per-symbol, in factor popup)
     private System.Text.Json.JsonElement? symbolCrowding;
     private System.Text.Json.JsonElement? symbolShortInterest;
+    private System.Text.Json.JsonElement? macroData;
 
     // Sort state
     private SortState sigSort = new();
@@ -905,6 +951,7 @@
         fundamentalScore = 0;
         symbolCrowding = null;
         symbolShortInterest = null;
+        macroData = null;
         if (!string.IsNullOrEmpty(signal.FactorDetail))
         {
             try
@@ -928,12 +975,15 @@
             var client = HttpFactory.CreateClient("Engine");
             var crowdTask = client.GetAsync($"/factor-crowding/{symbol}");
             var siTask = client.GetAsync($"/short-interest/{symbol}");
-            await Task.WhenAll(crowdTask, siTask);
+            var macroTask = client.GetAsync("/macro");
+            await Task.WhenAll(crowdTask, siTask, macroTask);
 
             if (crowdTask.Result.IsSuccessStatusCode)
                 symbolCrowding = await crowdTask.Result.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
             if (siTask.Result.IsSuccessStatusCode)
                 symbolShortInterest = await siTask.Result.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+            if (macroTask.Result.IsSuccessStatusCode)
+                macroData = await macroTask.Result.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
 
             StateHasChanged();
         }
@@ -947,6 +997,7 @@
         fundamentalScore = 0;
         symbolCrowding = null;
         symbolShortInterest = null;
+        macroData = null;
     }
 
     private async Task RunFundamental(string symbol)

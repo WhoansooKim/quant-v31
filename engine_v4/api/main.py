@@ -18,8 +18,10 @@ from engine_v4.ai.data_feeds import FinnhubClient
 from engine_v4.ai.factor_crowding import FactorCrowdingMonitor
 from engine_v4.ai.fundamental import FundamentalAnalyzer
 from engine_v4.ai.lstm_predictor import LSTMPredictor
+from engine_v4.ai.macro_scorer import MacroScorer
 from engine_v4.ai.multi_factor import MultiFactorScorer
 from engine_v4.ai.social_sentiment import SocialSentimentCollector
+from engine_v4.data.macro_collector import MacroDataCollector
 from engine_v4.ai.optimizer import StrategyOptimizer
 from engine_v4.ai.sentiment import SentimentAnalyzer
 from engine_v4.backtest.runner import BacktestParams, BacktestRunner
@@ -67,12 +69,15 @@ social_collector = SocialSentimentCollector(
     ollama_model=config.ollama_model,
 )
 lstm_predictor = LSTMPredictor(pg, cache)
+macro_collector = MacroDataCollector(cache)
+macro_scorer_inst = MacroScorer(macro_collector, cache)
 scorer = MultiFactorScorer(pg, finnhub_client, config.anthropic_key,
                            ollama_url=config.ollama_url,
                            ollama_model=config.ollama_model,
                            cache=cache,
                            social_collector=social_collector,
-                           lstm_predictor=lstm_predictor)
+                           lstm_predictor=lstm_predictor,
+                           macro_scorer=macro_scorer_inst)
 optimizer = StrategyOptimizer(pg, backtester, config.anthropic_key)
 event_collector = EventCollector(pg, finnhub_client)
 event_processor = EventProcessor(pg)
@@ -2412,6 +2417,81 @@ async def get_short_interest(symbol: str):
         **si_data,
         "fetched_at": datetime.now().isoformat(),
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# Macro Overlay (VIX + HY Spread + Gold/SPY + Yield Curve + Cu/Au + BTC)
+# ═══════════════════════════════════════════════════════════
+
+
+@app.get("/macro")
+async def get_macro_score():
+    """현재 매크로 오버레이 점수 (캐시 반환)."""
+    cached = cache.get_json("macro_score")
+    if cached:
+        cached["cache_hit"] = True
+        return cached
+    try:
+        result = macro_scorer_inst.calc_macro_score()
+        result["cache_hit"] = False
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"Macro score failed: {e}")
+
+
+@app.post("/macro/collect")
+async def collect_macro_data(bg: BackgroundTasks):
+    """매크로 데이터 수집 + 스코어링 (수동/스케줄러 트리거)."""
+    def _run():
+        try:
+            data = macro_collector.collect_macro_data(force=True)
+            result = macro_scorer_inst.calc_macro_score(force_collect=True)
+            # DB 스냅샷 저장
+            _save_macro_snapshot(result, data)
+            logger.info(f"Macro collect done: score={result['macro_score']:.1f}, "
+                        f"regime={result['regime']}")
+        except Exception as e:
+            logger.error(f"Macro collect failed: {e}", exc_info=True)
+
+    bg.add_task(_run)
+    return {"status": "collecting", "message": "Macro data collection started"}
+
+
+@app.get("/macro/history")
+async def get_macro_history(days: int = 30):
+    """매크로 스냅샷 이력."""
+    with pg.get_conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM swing_macro_snapshots
+            WHERE time >= now() - make_interval(days => %s)
+            ORDER BY time DESC
+        """, (days,)).fetchall()
+    return {"snapshots": [dict(r) for r in rows], "count": len(rows)}
+
+
+def _save_macro_snapshot(score_result: dict, raw_data: dict):
+    """매크로 스냅샷 DB 저장."""
+    with pg.get_conn() as conn:
+        conn.execute("""
+            INSERT INTO swing_macro_snapshots
+                (macro_score, risk_off_score, yield_curve_score,
+                 copper_gold_score, dollar_trend_score, btc_momentum_score,
+                 regime, vix, tnx, dxy, gold_spy_ratio, hy_spread,
+                 copper_gold_ratio, btc_momentum_20d, dxy_momentum_20d, detail)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (score_result["macro_score"],
+              score_result["risk_off"]["score"],
+              score_result["yield_curve"]["score"],
+              score_result["copper_gold"]["score"],
+              score_result["dollar_trend"]["score"],
+              score_result["btc_momentum"]["score"],
+              score_result["regime"],
+              raw_data.get("vix"), raw_data.get("tnx"), raw_data.get("dxy"),
+              raw_data.get("gold_spy_ratio"), raw_data.get("hy_spread"),
+              raw_data.get("copper_gold_ratio"), raw_data.get("btc_momentum_20d"),
+              raw_data.get("dxy_momentum_20d"),
+              json.dumps(score_result, default=str)))
+        conn.commit()
 
 
 # ═══════════════════════════════════════════════════════════

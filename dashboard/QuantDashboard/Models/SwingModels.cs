@@ -27,6 +27,7 @@ public record SwingSignal(
     double? QualityScore,     // Multi-factor: quality (0-100)
     double? ValueScore,       // Multi-factor: value (0-100)
     double? CompositeScore,   // Multi-factor: composite (0-100)
+    double? MacroScore,       // Macro overlay score (0-100)
     string? FactorDetail,     // Factor breakdown JSON
     DateTime? FactorScoredAt
 );

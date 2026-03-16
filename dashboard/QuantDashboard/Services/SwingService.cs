@@ -36,7 +36,7 @@ public class SwingService
                        llm_score, llm_analysis, llm_analyzed_at,
                        technical_score, sentiment_score, flow_score,
                        quality_score, value_score,
-                       composite_score, factor_detail, factor_scored_at
+                       composite_score, macro_score, factor_detail, factor_scored_at
                 FROM swing_signals WHERE status = @status
                 ORDER BY time DESC LIMIT @limit"
             : @"SELECT signal_id, time, symbol, signal_type, entry_price,
@@ -46,7 +46,7 @@ public class SwingService
                        llm_score, llm_analysis, llm_analyzed_at,
                        technical_score, sentiment_score, flow_score,
                        quality_score, value_score,
-                       composite_score, factor_detail, factor_scored_at
+                       composite_score, macro_score, factor_detail, factor_scored_at
                 FROM swing_signals ORDER BY time DESC LIMIT @limit";
 
         await using var cmd = new NpgsqlCommand(sql, conn);
@@ -82,8 +82,9 @@ public class SwingService
                 QualityScore: r.IsDBNull(22) ? null : r.GetDouble(22),
                 ValueScore: r.IsDBNull(23) ? null : r.GetDouble(23),
                 CompositeScore: r.IsDBNull(24) ? null : r.GetDouble(24),
-                FactorDetail: r.IsDBNull(25) ? null : r.GetString(25),
-                FactorScoredAt: r.IsDBNull(26) ? null : r.GetDateTime(26)
+                MacroScore: r.IsDBNull(25) ? null : r.GetDouble(25),
+                FactorDetail: r.IsDBNull(26) ? null : r.GetString(26),
+                FactorScoredAt: r.IsDBNull(27) ? null : r.GetDateTime(27)
             ));
         }
         return signals;
@@ -106,7 +107,7 @@ public class SwingService
                        llm_score, llm_analysis, llm_analyzed_at,
                        technical_score, sentiment_score, flow_score,
                        quality_score, value_score,
-                       composite_score, factor_detail, factor_scored_at
+                       composite_score, macro_score, factor_detail, factor_scored_at
                 FROM swing_signals {where}
                 ORDER BY time DESC LIMIT @limit OFFSET @offset";
         await using var cmd = new NpgsqlCommand(sql, conn);
@@ -142,8 +143,9 @@ public class SwingService
                 QualityScore: r.IsDBNull(22) ? null : r.GetDouble(22),
                 ValueScore: r.IsDBNull(23) ? null : r.GetDouble(23),
                 CompositeScore: r.IsDBNull(24) ? null : r.GetDouble(24),
-                FactorDetail: r.IsDBNull(25) ? null : r.GetString(25),
-                FactorScoredAt: r.IsDBNull(26) ? null : r.GetDateTime(26)
+                MacroScore: r.IsDBNull(25) ? null : r.GetDouble(25),
+                FactorDetail: r.IsDBNull(26) ? null : r.GetString(26),
+                FactorScoredAt: r.IsDBNull(27) ? null : r.GetDateTime(27)
             ));
         }
         return (signals, total);
@@ -794,8 +796,9 @@ public class SwingService
                         QualityScore: r3.IsDBNull(22) ? null : r3.GetDouble(22),
                         ValueScore: r3.IsDBNull(23) ? null : r3.GetDouble(23),
                         CompositeScore: r3.IsDBNull(24) ? null : r3.GetDouble(24),
-                        FactorDetail: r3.IsDBNull(25) ? null : r3.GetString(25),
-                        FactorScoredAt: r3.IsDBNull(26) ? null : r3.GetDateTime(26)
+                        MacroScore: r3.IsDBNull(25) ? null : r3.GetDouble(25),
+                        FactorDetail: r3.IsDBNull(26) ? null : r3.GetString(26),
+                        FactorScoredAt: r3.IsDBNull(27) ? null : r3.GetDateTime(27)
                     )
                 };
             }
