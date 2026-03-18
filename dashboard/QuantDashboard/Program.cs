@@ -89,14 +89,23 @@ app.MapPost("/account/login", async (HttpContext ctx, AuthService auth) =>
     var username = form["username"].ToString();
     var password = form["password"].ToString();
 
-    if (await auth.ValidateAsync(username, password))
+    var reason = await auth.ValidateWithReasonAsync(username, password);
+    if (reason is null)
     {
         var user = await auth.GetUserAsync(username);
         var claims = new List<Claim>
         {
             new(ClaimTypes.Name, username),
-            new(ClaimTypes.NameIdentifier, user!.Id.ToString())
+            new(ClaimTypes.NameIdentifier, user!.Id.ToString()),
+            new(ClaimTypes.Role, user.Role)
         };
+        // Add page permissions as claims (admin gets all)
+        if (user.Role != "admin")
+        {
+            var perms = await auth.GetRolePermissionsAsync(user.Role);
+            foreach (var p in perms)
+                claims.Add(new Claim("page_access", p));
+        }
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         await ctx.SignInAsync(
             CookieAuthenticationDefaults.AuthenticationScheme,
@@ -105,8 +114,33 @@ app.MapPost("/account/login", async (HttpContext ctx, AuthService auth) =>
     }
     else
     {
-        ctx.Response.Redirect("/login?error=1");
+        ctx.Response.Redirect($"/login?error={reason}");
     }
+}).AllowAnonymous();
+
+app.MapPost("/account/register", async (HttpContext ctx, AuthService auth) =>
+{
+    var form = await ctx.Request.ReadFormAsync();
+    var username = form["username"].ToString().Trim();
+    var password = form["password"].ToString();
+    var email = form["email"].ToString().Trim();
+
+    if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password) || string.IsNullOrEmpty(email))
+    {
+        ctx.Response.Redirect("/register?error=required");
+        return;
+    }
+    if (username.Length < 3 || password.Length < 6)
+    {
+        ctx.Response.Redirect("/register?error=length");
+        return;
+    }
+
+    var (success, _) = await auth.RegisterAsync(username, password, email);
+    if (success)
+        ctx.Response.Redirect("/login?registered=1");
+    else
+        ctx.Response.Redirect("/register?error=exists");
 }).AllowAnonymous();
 
 app.MapPost("/account/logout", async (HttpContext ctx) =>

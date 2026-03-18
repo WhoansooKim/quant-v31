@@ -1,6 +1,6 @@
 """MacroDataCollector — yfinance 기반 매크로 지표 수집 + Redis 캐시.
 
-수집 지표: VIX, 10Y 금리, 달러인덱스, 금, 구리, BTC, HY 스프레드, SPY
+수집 지표: VIX, 10Y 금리, 달러인덱스, 금, 구리, BTC, HY 스프레드, SPY, WTI 원유
 파생 비율: Gold/SPY, Copper/Gold, HY Spread (LQD/HYG), 20d 모멘텀
 """
 
@@ -22,6 +22,7 @@ MACRO_TICKERS = {
     "hyg": "HYG",          # High Yield Bond ETF
     "lqd": "LQD",          # Investment Grade Bond ETF
     "spy": "SPY",           # S&P 500 ETF
+    "wti": "CL=F",          # WTI Crude Oil Futures
 }
 
 
@@ -89,6 +90,12 @@ class MacroDataCollector:
                     else:
                         result[f"{name}_20d_ago"] = round(float(series.iloc[0]), 4)
 
+                    # WTI 5일 전 데이터
+                    if name == "wti" and len(series) >= 5:
+                        result["wti_5d_ago"] = round(float(series.iloc[-5]), 4)
+                    elif name == "wti":
+                        result["wti_5d_ago"] = result.get("wti_20d_ago")
+
                     # VIX SMA-20
                     if name == "vix" and len(series) >= 20:
                         result["vix_sma_20"] = round(float(series.tail(20).mean()), 2)
@@ -120,6 +127,11 @@ class MacroDataCollector:
             result.get("dxy"), result.get("dxy_20d_ago"))
         result["vix_momentum_20d"] = self._safe_return(
             result.get("vix"), result.get("vix_20d_ago"))
+        result["wti_momentum_20d"] = self._safe_return(
+            result.get("wti"), result.get("wti_20d_ago"))
+        # WTI 5일 수익률 (급변 감지)
+        result["wti_momentum_5d"] = self._safe_return(
+            result.get("wti"), result.get("wti_5d_ago"))
 
         # TNX: yfinance ^TNX는 이미 % 단위 (e.g., 4.28 = 4.28%)
         if result.get("tnx") is not None:
@@ -138,7 +150,8 @@ class MacroDataCollector:
         logger.info(f"Macro collect done: VIX={result.get('vix')}, "
                      f"10Y={result.get('yield_10y')}%, DXY={result.get('dxy')}, "
                      f"Gold/SPY={result.get('gold_spy_ratio')}, "
-                     f"Cu/Au={result.get('copper_gold_ratio')}")
+                     f"Cu/Au={result.get('copper_gold_ratio')}, "
+                     f"WTI=${result.get('wti')}")
 
         return result
 
@@ -160,7 +173,7 @@ class MacroDataCollector:
             "status": reason,
             "vix": None, "tnx": None, "dxy": None,
             "gold": None, "copper": None, "btc": None,
-            "spy": None, "hyg": None, "lqd": None,
+            "spy": None, "hyg": None, "lqd": None, "wti": None,
             "gold_spy_ratio": None, "copper_gold_ratio": None,
             "hy_spread": None, "yield_10y": None,
             "btc_momentum_20d": None, "dxy_momentum_20d": None,

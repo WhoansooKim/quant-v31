@@ -71,13 +71,15 @@ social_collector = SocialSentimentCollector(
     ollama_model=config.ollama_model,
 )
 lstm_predictor = LSTMPredictor(pg, cache)
+crowding_monitor = FactorCrowdingMonitor(pg, cache)
 scorer = MultiFactorScorer(pg, finnhub_client, config.anthropic_key,
                            ollama_url=config.ollama_url,
                            ollama_model=config.ollama_model,
                            cache=cache,
                            social_collector=social_collector,
                            lstm_predictor=lstm_predictor,
-                           macro_scorer=macro_scorer_inst)
+                           macro_scorer=macro_scorer_inst,
+                           crowding_monitor=crowding_monitor)
 optimizer = StrategyOptimizer(pg, backtester, config.anthropic_key)
 event_collector = EventCollector(pg, finnhub_client)
 event_processor = EventProcessor(pg)
@@ -86,7 +88,6 @@ fundamental_analyzer = FundamentalAnalyzer(
     finnhub_client, edgar, config.anthropic_key,
     ollama_url=config.ollama_url,
     ollama_model=config.ollama_model)
-crowding_monitor = FactorCrowdingMonitor(pg, cache)
 swing_scheduler = SwingScheduler(
     pg, cache, config, universe_mgr, collector, strategy, notifier)
 
@@ -1879,19 +1880,46 @@ async def get_watchlist_chart(symbol: str, period: str = "1d"):
     """워치리스트 종목 차트 데이터 (1d/5d/1mo/6mo)."""
     import yfinance as yf
 
+    from datetime import datetime as _dt
+    import pytz as _pytz
+
     _PERIOD_MAP = {
-        "1d":  {"period": "1d",  "interval": "5m",  "prepost": True},
+        "1d":  None,  # 별도 로직으로 처리
         "5d":  {"period": "5d",  "interval": "30m", "prepost": False},
         "1mo": {"period": "1mo", "interval": "1d",  "prepost": False},
         "6mo": {"period": "6mo", "interval": "1d",  "prepost": False},
     }
-    params = _PERIOD_MAP.get(period, _PERIOD_MAP["1d"])
 
     try:
         tkr = yf.Ticker(symbol)
-        df = tkr.history(**params)
-        if df.empty and period == "1d":
+        et = _pytz.timezone("US/Eastern")
+        today_et = _dt.now(et).date()
+
+        if period == "1d":
+            # 프리마켓 포함 오늘 데이터 확보: 2d → 5d fallback
             df = tkr.history(period="2d", interval="5m", prepost=True)
+            today_df = df[df.index.date == today_et] if not df.empty else df
+            if today_df.empty:
+                # 2d로도 오늘 데이터가 없으면 5d로 재시도 (휴일 직후 등)
+                df = tkr.history(period="5d", interval="5m", prepost=True)
+                today_df = df[df.index.date == today_et] if not df.empty else df
+
+            if not today_df.empty:
+                df = today_df
+                data_date = str(today_et)
+            elif not df.empty:
+                # 오늘 데이터 없음 (프리마켓 전 or 휴일) → 최신 거래일
+                last_date = df.index[-1].date()
+                df = df[df.index.date == last_date]
+                data_date = str(last_date)
+            else:
+                return {"symbol": symbol, "period": period, "points": [], "prev_close": None,
+                        "data_date": None, "today": str(today_et)}
+        else:
+            params = _PERIOD_MAP.get(period, {"period": "5d", "interval": "30m", "prepost": False})
+            df = tkr.history(**params)
+            data_date = None
+
         if df.empty:
             return {"symbol": symbol, "period": period, "points": [], "prev_close": None}
 
@@ -1901,11 +1929,6 @@ async def get_watchlist_chart(symbol: str, period: str = "1d"):
             prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
             if prev_close:
                 prev_close = round(float(prev_close), 2)
-            # 오늘 날짜만
-            last_date = df.index[-1].date()
-            df = df[df.index.date == last_date]
-            if df.empty:
-                return {"symbol": symbol, "period": period, "points": [], "prev_close": prev_close}
 
         points = []
         for idx, row in df.iterrows():
@@ -1923,12 +1946,16 @@ async def get_watchlist_chart(symbol: str, period: str = "1d"):
                 ts = idx
                 points.append({"time": ts.strftime("%m/%d"), "price": p})
 
-        return {
+        resp = {
             "symbol": symbol,
             "period": period,
             "prev_close": prev_close,
             "points": points,
         }
+        if period == "1d":
+            resp["data_date"] = data_date
+            resp["today_et"] = str(today_et)
+        return resp
     except Exception as e:
         logger.error(f"Chart fetch failed for {symbol}/{period}: {e}")
         return {"symbol": symbol, "period": period, "points": [], "prev_close": None, "error": str(e)}
@@ -2407,16 +2434,44 @@ async def check_extended_hours_now():
 
 @app.get("/short-interest/{symbol}")
 async def get_short_interest(symbol: str):
-    """공매도 잔고 데이터 조회 (Finnhub)."""
-    if not finnhub_client.is_available:
-        raise HTTPException(400, "Finnhub API key not configured")
+    """공매도 잔고 데이터 조회 (yfinance)."""
+    import yfinance as yf
 
-    si_data = finnhub_client.get_short_interest(symbol.upper())
-    return {
-        "symbol": symbol.upper(),
-        **si_data,
-        "fetched_at": datetime.now().isoformat(),
-    }
+    sym = symbol.upper()
+    try:
+        info = yf.Ticker(sym).info
+        shares_short = info.get("sharesShort", 0) or 0
+        short_ratio = info.get("shortRatio", 0) or 0
+        short_pct_float = info.get("shortPercentOfFloat", 0) or 0
+        shares_prior = info.get("sharesShortPriorMonth", 0) or 0
+
+        change_pct = 0.0
+        if shares_prior > 0:
+            change_pct = round((shares_short - shares_prior) / shares_prior * 100, 2)
+
+        return {
+            "symbol": sym,
+            "short_interest": shares_short,
+            "short_ratio": round(float(short_ratio), 2),
+            "short_pct_float": round(float(short_pct_float) * 100, 2),
+            "change_pct": change_pct,
+            "shares_prior_month": shares_prior,
+            "available": shares_short > 0,
+            "source": "yfinance",
+            "fetched_at": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.warning(f"yfinance short interest failed for {sym}: {e}")
+        return {
+            "symbol": sym,
+            "short_interest": 0,
+            "short_ratio": 0.0,
+            "short_pct_float": 0.0,
+            "change_pct": 0.0,
+            "available": False,
+            "source": "error",
+            "fetched_at": datetime.now().isoformat(),
+        }
 
 
 # ═══════════════════════════════════════════════════════════

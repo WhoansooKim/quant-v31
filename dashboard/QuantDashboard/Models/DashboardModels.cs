@@ -196,7 +196,10 @@ public record UserRecord(
     int Id,
     string Username,
     string PasswordHash,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    string? Email = null,
+    string Role = "user",
+    bool IsApproved = false
 );
 
 // ─── 레짐 전망 ───

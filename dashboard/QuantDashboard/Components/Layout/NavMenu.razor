@@ -1,3 +1,5 @@
+@using System.Security.Claims
+
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">
@@ -25,87 +27,131 @@
     </AuthorizeView>
 
     <nav class="flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="material-symbols-outlined nav-icon">dashboard</span>
-                <span class="nav-text">Dashboard</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                    <span class="material-symbols-outlined nav-icon">dashboard</span>
+                    <span class="nav-text">Dashboard</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="pipeline">
-                <span class="material-symbols-outlined nav-icon">conversion_path</span>
-                <span class="nav-text">Pipeline</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/pipeline"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="pipeline">
+                    <span class="material-symbols-outlined nav-icon">conversion_path</span>
+                    <span class="nav-text">Pipeline</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="signals">
-                <span class="material-symbols-outlined nav-icon">notifications_active</span>
-                <span class="nav-text">Signals</span>
-                @if (_pendingCount > 0)
-                {
-                    <span class="nav-badge">@_pendingCount</span>
-                }
-            </NavLink>
-        </div>
+        @if (CanAccess("/signals"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="signals">
+                    <span class="material-symbols-outlined nav-icon">notifications_active</span>
+                    <span class="nav-text">Signals</span>
+                    @if (_pendingCount > 0)
+                    {
+                        <span class="nav-badge">@_pendingCount</span>
+                    }
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="performance">
-                <span class="material-symbols-outlined nav-icon">monitoring</span>
-                <span class="nav-text">Performance</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/performance"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="performance">
+                    <span class="material-symbols-outlined nav-icon">monitoring</span>
+                    <span class="nav-text">Performance</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="positions">
-                <span class="material-symbols-outlined nav-icon">account_balance_wallet</span>
-                <span class="nav-text">Positions</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/positions"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="positions">
+                    <span class="material-symbols-outlined nav-icon">account_balance_wallet</span>
+                    <span class="nav-text">Positions</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="backtest">
-                <span class="material-symbols-outlined nav-icon">query_stats</span>
-                <span class="nav-text">Backtest</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/backtest"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="backtest">
+                    <span class="material-symbols-outlined nav-icon">query_stats</span>
+                    <span class="nav-text">Backtest</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="events">
-                <span class="material-symbols-outlined nav-icon">bolt</span>
-                <span class="nav-text">Events</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/events"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="events">
+                    <span class="material-symbols-outlined nav-icon">bolt</span>
+                    <span class="nav-text">Events</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="watchlist">
-                <span class="material-symbols-outlined nav-icon">bookmark</span>
-                <span class="nav-text">Watchlist</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/watchlist"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="watchlist">
+                    <span class="material-symbols-outlined nav-icon">bookmark</span>
+                    <span class="nav-text">Watchlist</span>
+                </NavLink>
+            </div>
+        }
 
         <div class="nav-divider"></div>
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="settings">
-                <span class="material-symbols-outlined nav-icon">settings</span>
-                <span class="nav-text">Settings</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/account"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="account">
+                    <span class="material-symbols-outlined nav-icon">manage_accounts</span>
+                    <span class="nav-text">Account</span>
+                </NavLink>
+            </div>
+        }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="help">
-                <span class="material-symbols-outlined nav-icon">help</span>
-                <span class="nav-text">Help</span>
-            </NavLink>
-        </div>
+        @if (CanAccess("/settings"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="settings">
+                    <span class="material-symbols-outlined nav-icon">settings</span>
+                    <span class="nav-text">Settings</span>
+                </NavLink>
+            </div>
+        }
+
+        @if (CanAccess("/help"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="help">
+                    <span class="material-symbols-outlined nav-icon">help</span>
+                    <span class="nav-text">Help</span>
+                </NavLink>
+            </div>
+        }
     </nav>
 </div>
 
 @code {
     [Inject] private SwingService? SwingSvc { get; set; }
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
     private int _pendingCount;
+    private bool _isAdmin;
+    private HashSet<string> _allowedPages = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -115,5 +161,24 @@
                 _pendingCount = await SwingSvc.GetPendingSignalCountAsync();
         }
         catch { }
+
+        if (AuthState is not null)
+        {
+            var state = await AuthState;
+            var user = state.User;
+            _isAdmin = user.IsInRole("admin");
+            if (!_isAdmin)
+            {
+                _allowedPages = user.FindAll("page_access")
+                    .Select(c => c.Value)
+                    .ToHashSet();
+            }
+        }
+    }
+
+    private bool CanAccess(string path)
+    {
+        if (_isAdmin) return true;
+        return _allowedPages.Contains(path);
     }
 }

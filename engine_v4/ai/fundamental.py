@@ -176,14 +176,11 @@ class FundamentalAnalyzer:
                 "elapsed_sec": round(time.time() - start, 2),
             }
 
-        # 4) 재무 데이터 구조화 (LLM 프롬프트용)
-        financial_data = self._format_financial_data(symbol, financials, edgar_info)
-
-        # 5) LLM 분석
+        # 4) 분석 실행
+        # Claude API가 있으면 LLM 분석, 아니면 rule_based (Ollama는 CPU에서 너무 느림)
         if self._claude:
+            financial_data = self._format_financial_data(symbol, financials, edgar_info)
             result = self._claude_analyze(symbol, financial_data)
-        elif self._ollama_available:
-            result = self._ollama_analyze(symbol, financial_data)
         else:
             result = self._rule_based_analyze(symbol, financials)
 
@@ -331,9 +328,9 @@ class FundamentalAnalyzer:
                     "model": self._ollama_model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"num_predict": 200, "temperature": 0.3},
+                    "options": {"num_predict": 150, "temperature": 0.3},
                 },
-                timeout=90,
+                timeout=300,
             )
             text = resp.json().get("response", "").strip()
 

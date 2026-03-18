@@ -1,11 +1,14 @@
-"""MacroScorer — 5개 매크로 서브시그널 → 종합 점수 (0-100).
+"""MacroScorer — 5+1개 매크로 서브시그널 → 종합 점수 (0-100).
 
-Sub-signals:
+Sub-signals (점수 반영):
   1. Risk-Off Regime (VIX + Gold/SPY + HY spread): 30%
   2. Yield Curve (10Y 금리 수준 + 방향): 20%
   3. Copper/Gold Ratio (경기 선행): 20%
   4. Dollar Trend (DXY 모멘텀): 15%
   5. BTC Momentum (위험 선호 프록시): 15%
+
+참고용 (가중치 0%, 표시만):
+  6. Oil (WTI) — 유가 수준 + 5d/20d 모멘텀 + 변동성 상태
 
 Score 해석:
   80-100: 매우 유리한 매크로 (risk-on, 성장)
@@ -61,14 +64,17 @@ class MacroScorer:
             logger.warning(f"Macro data unavailable: {data.get('status')}")
             return self._neutral_result(data)
 
-        # 5개 서브시그널 계산
+        # 5개 서브시그널 계산 (점수 반영)
         risk_off = self._score_risk_off(data)
         yield_curve = self._score_yield_curve(data)
         copper_gold = self._score_copper_gold(data)
         dollar_trend = self._score_dollar_trend(data)
         btc_momentum = self._score_btc_momentum(data)
 
-        # 가중 합산
+        # 참고용: Oil sub-signal (가중치 0%, 표시만)
+        oil_wti = self._score_oil(data)
+
+        # 가중 합산 (Oil 제외)
         macro_score = (
             risk_off["score"] * self.SUB_WEIGHTS["risk_off"] +
             yield_curve["score"] * self.SUB_WEIGHTS["yield_curve"] +
@@ -87,6 +93,7 @@ class MacroScorer:
             "copper_gold": copper_gold,
             "dollar_trend": dollar_trend,
             "btc_momentum": btc_momentum,
+            "oil_wti": oil_wti,          # 참고용 (가중치 0%)
             "regime": regime,
             "weights": dict(self.SUB_WEIGHTS),
             "raw_data": {
@@ -98,6 +105,9 @@ class MacroScorer:
                 "copper_gold_ratio": data.get("copper_gold_ratio"),
                 "btc_momentum_20d": data.get("btc_momentum_20d"),
                 "dxy_momentum_20d": data.get("dxy_momentum_20d"),
+                "wti": data.get("wti"),
+                "wti_momentum_5d": data.get("wti_momentum_5d"),
+                "wti_momentum_20d": data.get("wti_momentum_20d"),
             },
             "scored_at": datetime.now().isoformat(),
         }
@@ -109,7 +119,7 @@ class MacroScorer:
         logger.info(f"Macro score: {macro_score:.1f} [{regime}] — "
                      f"RiskOff={risk_off['score']:.0f} Yield={yield_curve['score']:.0f} "
                      f"CuAu={copper_gold['score']:.0f} DXY={dollar_trend['score']:.0f} "
-                     f"BTC={btc_momentum['score']:.0f}")
+                     f"BTC={btc_momentum['score']:.0f} Oil={oil_wti['score']:.0f}(ref)")
 
         return result
 
@@ -351,6 +361,70 @@ class MacroScorer:
             "btc_momentum": btc_mom,
         }
 
+    def _score_oil(self, data: dict) -> dict:
+        """WTI 유가 — 참고용 (가중치 0%, 점수에 미반영).
+
+        유가 수준 + 5일/20일 모멘텀 + 변동성 상태를 종합.
+        50 = 안정, 높으면 유리(에너지), 낮으면 불안정/급변.
+        """
+        wti = data.get("wti")
+        mom_5d = data.get("wti_momentum_5d")   # %
+        mom_20d = data.get("wti_momentum_20d")  # %
+
+        if wti is None:
+            return {"score": 50, "detail": "no data", "price": None,
+                    "mom_5d": None, "mom_20d": None, "status": "N/A"}
+
+        # 5일 모멘텀 기반 방향성 점수
+        if mom_5d is not None:
+            if mom_5d > 5:
+                dir_score = 35   # 급등 → 에너지 외 불리
+            elif mom_5d > 2:
+                dir_score = 45
+            elif mom_5d > -2:
+                dir_score = 60   # 안정
+            elif mom_5d > -5:
+                dir_score = 45
+            else:
+                dir_score = 30   # 급락 → 경기침체 우려
+        else:
+            dir_score = 50
+
+        # 20일 추세
+        if mom_20d is not None:
+            if abs(mom_20d) > 15:
+                trend_adj = -10  # 극단적 변동 = 불안정
+            elif abs(mom_20d) > 8:
+                trend_adj = -5
+            else:
+                trend_adj = 0    # 안정
+        else:
+            trend_adj = 0
+
+        score = max(0, min(100, dir_score + trend_adj))
+
+        # 상태 레이블
+        if mom_5d is not None:
+            if mom_5d > 5:
+                status = "SURGE"
+            elif mom_5d < -5:
+                status = "CRASH"
+            elif abs(mom_5d or 0) <= 2:
+                status = "STABLE"
+            else:
+                status = "VOLATILE"
+        else:
+            status = "N/A"
+
+        return {
+            "score": round(score, 1),
+            "detail": f"WTI=${wti:.1f} 5d={mom_5d or 0:+.1f}% 20d={mom_20d or 0:+.1f}%",
+            "price": wti,
+            "mom_5d": mom_5d,
+            "mom_20d": mom_20d,
+            "status": status,
+        }
+
     # ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -376,6 +450,7 @@ class MacroScorer:
             "copper_gold": neutral,
             "dollar_trend": neutral,
             "btc_momentum": neutral,
+            "oil_wti": neutral,
             "regime": "NEUTRAL",
             "weights": MacroScorer.SUB_WEIGHTS,
             "raw_data": {},

@@ -52,7 +52,7 @@
                         <th>Type</th>
                         <th>Symbol</th>
                         <th>Title</th>
-                        <th>Action</th>
+                        <th class="hide-mobile">Action</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -80,7 +80,7 @@
                             <td class="text-muted">@evType.Replace("_", " ")</td>
                             <td style="font-weight:600">@(e.GetValueOrDefault("symbol") ?? "")</td>
                             <td>@(e.GetValueOrDefault("title") ?? "")</td>
-                            <td>
+                            <td class="hide-mobile">
                                 @{
                                     var action = e.GetValueOrDefault("action_taken")?.ToString();
                                     if (!string.IsNullOrEmpty(action))

@@ -123,12 +123,12 @@
                             <th class="sortable" @onclick='() => ToggleTradeSort("date")'>Date@(tradeSort.Arrow("date"))</th>
                             <th class="sortable" @onclick='() => ToggleTradeSort("symbol")'>Symbol@(tradeSort.Arrow("symbol"))</th>
                             <th class="sortable" @onclick='() => ToggleTradeSort("side")'>Side@(tradeSort.Arrow("side"))</th>
-                            <th class="sortable" @onclick='() => ToggleTradeSort("qty")'>Qty@(tradeSort.Arrow("qty"))</th>
+                            <th class="sortable hide-mobile" @onclick='() => ToggleTradeSort("qty")'>Qty@(tradeSort.Arrow("qty"))</th>
                             <th class="sortable" @onclick='() => ToggleTradeSort("price")'>Price@(tradeSort.Arrow("price"))</th>
                             <th class="sortable" @onclick='() => ToggleTradeSort("pnl")'>P&L@(tradeSort.Arrow("pnl"))</th>
                             <th class="sortable" @onclick='() => ToggleTradeSort("pnlPct")'>P&L %@(tradeSort.Arrow("pnlPct"))</th>
-                            <th>Reason</th>
-                            <th class="sortable" @onclick='() => ToggleTradeSort("holdDays")'>Hold Days@(tradeSort.Arrow("holdDays"))</th>
+                            <th class="hide-mobile">Reason</th>
+                            <th class="sortable hide-mobile" @onclick='() => ToggleTradeSort("holdDays")'>Hold Days@(tradeSort.Arrow("holdDays"))</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -139,14 +139,14 @@
                                 <td>@t.Date</td>
                                 <td><SymbolLink Symbol="@t.Symbol" OnSymbolClick="OpenModal" /></td>
                                 <td>@t.Side</td>
-                                <td>@($"{t.Qty:F1}")</td>
+                                <td class="hide-mobile">@($"{t.Qty:F1}")</td>
                                 <td>$@($"{t.Price:F2}")</td>
                                 <td class="@pnlClass">@(t.Pnl >= 0 ? "+" : "")$@($"{t.Pnl:F2}")</td>
                                 <td class="@pnlClass">@(t.PnlPct >= 0 ? "+" : "")@($"{t.PnlPct * 100:F2}")%</td>
-                                <td>
+                                <td class="hide-mobile">
                                     <span class="exit-reason-chip @GetExitClass(t.Reason)">@(t.Reason ?? "--")</span>
                                 </td>
-                                <td>@t.HoldDays</td>
+                                <td class="hide-mobile">@t.HoldDays</td>
                             </tr>
                         }
                     </tbody>
@@ -186,13 +186,13 @@
                         <th>Capital</th>
                         <th>Final</th>
                         <th class="sortable" @onclick='() => runSort.Toggle("return")'>Return@(runSort.Arrow("return"))</th>
-                        <th class="sortable" @onclick='() => runSort.Toggle("cagr")'>CAGR@(runSort.Arrow("cagr"))</th>
-                        <th class="sortable" @onclick='() => runSort.Toggle("mdd")'>MDD@(runSort.Arrow("mdd"))</th>
+                        <th class="sortable hide-mobile" @onclick='() => runSort.Toggle("cagr")'>CAGR@(runSort.Arrow("cagr"))</th>
+                        <th class="sortable hide-mobile" @onclick='() => runSort.Toggle("mdd")'>MDD@(runSort.Arrow("mdd"))</th>
                         <th class="sortable" @onclick='() => runSort.Toggle("sharpe")'>Sharpe@(runSort.Arrow("sharpe"))</th>
                         <th class="sortable" @onclick='() => runSort.Toggle("winRate")'>Win Rate@(runSort.Arrow("winRate"))</th>
                         <th class="sortable" @onclick='() => runSort.Toggle("trades")'>Trades@(runSort.Arrow("trades"))</th>
-                        <th class="sortable" @onclick='() => runSort.Toggle("pf")'>PF@(runSort.Arrow("pf"))</th>
-                        <th>Date</th>
+                        <th class="sortable hide-mobile" @onclick='() => runSort.Toggle("pf")'>PF@(runSort.Arrow("pf"))</th>
+                        <th class="hide-mobile">Date</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -207,13 +207,13 @@
                             <td>$@($"{r.InitialCapital:N0}")</td>
                             <td>$@($"{r.FinalValue:N0}")</td>
                             <td class="@retClass">@($"{(r.TotalReturn ?? 0) * 100:F1}")%</td>
-                            <td class="@retClass">@($"{(r.Cagr ?? 0) * 100:F1}")%</td>
-                            <td class="text-red">@($"{(r.MaxDrawdown ?? 0) * 100:F1}")%</td>
+                            <td class="@retClass hide-mobile">@($"{(r.Cagr ?? 0) * 100:F1}")%</td>
+                            <td class="text-red hide-mobile">@($"{(r.MaxDrawdown ?? 0) * 100:F1}")%</td>
                             <td>@($"{r.SharpeRatio:F2}")</td>
                             <td>@($"{(r.WinRate ?? 0) * 100:F0}")%</td>
                             <td>@r.TotalTrades</td>
-                            <td>@($"{r.ProfitFactor:F2}")</td>
-                            <td>@r.CreatedAt.ToString("MM/dd HH:mm")</td>
+                            <td class="hide-mobile">@($"{r.ProfitFactor:F2}")</td>
+                            <td class="hide-mobile">@r.CreatedAt.ToString("MM/dd HH:mm")</td>
                         </tr>
                     }
                 </tbody>

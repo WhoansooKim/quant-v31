@@ -1,7 +1,10 @@
 @page "/settings"
 @attribute [Authorize]
 @inject SwingService Db
+@inject AuthService Auth
 @inject IHttpClientFactory HttpFactory
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Authorization
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
 <PageTitle>Swing V4 - Settings</PageTitle>
@@ -10,47 +13,343 @@
     <h3>Settings</h3>
 </div>
 
+<!-- Tab bar (admin만 User Management 탭 표시) -->
+<div class="tab-bar" style="margin-bottom:1rem">
+    <button class="tab-btn @(activeTab == "settings" ? "tab-active" : "")"
+            @onclick='() => activeTab = "settings"'>
+        <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">settings</span>
+        Settings
+    </button>
+    @if (_isAdmin)
+    {
+        <button class="tab-btn @(activeTab == "users" ? "tab-active" : "")"
+                @onclick="ActivateUsersTab">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">group</span>
+            User Management
+            @if (_pendingUserCount > 0)
+            {
+                <span class="nav-badge" style="margin-left:4px">@_pendingUserCount</span>
+            }
+        </button>
+        <button class="tab-btn @(activeTab == "roles" ? "tab-active" : "")"
+                @onclick="ActivateRolesTab">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">admin_panel_settings</span>
+            Role Permissions
+        </button>
+    }
+</div>
+
 @if (!string.IsNullOrEmpty(statusMsg))
 {
     <div class="alert-info" style="margin-bottom:0.5rem">@statusMsg</div>
 }
 
-@foreach (var category in configs.GroupBy(c => c.Category).OrderBy(g => g.Key))
+@* ════════════ Settings Tab ════════════ *@
+@if (activeTab == "settings")
 {
+    @foreach (var category in configs.GroupBy(c => c.Category).OrderBy(g => g.Key))
+    {
+        <div class="section-card" style="margin-bottom:1rem">
+            <h4 class="section-title">@category.Key.ToUpper()</h4>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Key</th>
+                            <th>Value</th>
+                            <th>Description</th>
+                            <th>Updated</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var cfg in category)
+                        {
+                            <tr>
+                                <td><code>@cfg.Key</code></td>
+                                <td>
+                                    <input type="text"
+                                           class="form-input form-input-sm"
+                                           value="@(editValues.GetValueOrDefault(cfg.Key, cfg.Value))"
+                                           @oninput="e => editValues[cfg.Key] = e.Value?.ToString() ?? cfg.Value"
+                                           style="width:120px" />
+                                </td>
+                                <td class="text-muted">@cfg.Description</td>
+                                <td class="text-muted">@cfg.UpdatedAt.ToString("MM/dd HH:mm")</td>
+                                <td>
+                                    @if (editValues.ContainsKey(cfg.Key) && editValues[cfg.Key] != cfg.Value)
+                                    {
+                                        <button class="btn-sm btn-approve"
+                                                @onclick="() => SaveConfig(cfg.Key)">
+                                            Save
+                                        </button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+    <!-- Trading Mode Toggle -->
     <div class="section-card" style="margin-bottom:1rem">
-        <h4 class="section-title">@category.Key.ToUpper()</h4>
+        <h4 class="section-title">TRADING MODE</h4>
+        <div class="trading-mode-box">
+            <div class="trading-mode-current">
+                <span class="trading-mode-icon @(tradingMode == "live" ? "mode-live" : "mode-paper")">
+                    <span class="material-symbols-outlined">@(tradingMode == "live" ? "currency_exchange" : "science")</span>
+                </span>
+                <div>
+                    <div class="trading-mode-label">Current Mode</div>
+                    <div class="trading-mode-value @(tradingMode == "live" ? "text-red" : "text-green")">
+                        @(tradingMode == "live" ? "LIVE TRADING" : "PAPER TRADING")
+                    </div>
+                    <div class="text-muted" style="font-size:0.75rem">
+                        @(tradingMode == "live"
+                            ? "Real money is being used for trades via KIS"
+                            : "Simulated trades — no real money involved")
+                    </div>
+                </div>
+            </div>
+
+            @if (!showModeConfirm)
+            {
+                <button class="btn-action @(tradingMode == "live" ? "btn-mode-paper" : "btn-mode-live")"
+                        @onclick="StartModeChange"
+                        disabled="@modeChanging">
+                    <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">swap_horiz</span>
+                    Switch to @(tradingMode == "live" ? "Paper" : "Live")
+                </button>
+            }
+            else
+            {
+                <div class="mode-confirm-box">
+                    @if (targetMode == "live")
+                    {
+                        <div class="mode-warning">
+                            <span class="material-symbols-outlined">warning</span>
+                            <strong>WARNING: Switching to LIVE mode will use REAL MONEY.</strong>
+                            All future trade approvals will execute real orders via KIS.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="mode-info">
+                            <span class="material-symbols-outlined">info</span>
+                            Switching to Paper mode. Trades will be simulated.
+                        </div>
+                    }
+                    <div style="display:flex; gap:0.5rem; margin-top:0.5rem">
+                        <button class="btn-sm btn-approve" @onclick="ConfirmModeChange" disabled="@modeChanging">
+                            @(modeChanging ? "Changing..." : "Confirm")
+                        </button>
+                        <button class="btn-sm btn-reject" @onclick="CancelModeChange">Cancel</button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+    <!-- Capital Management -->
+    <div class="section-card" style="margin-bottom:1rem">
+        <h4 class="section-title">CAPITAL MANAGEMENT</h4>
+        <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end; margin-bottom:1rem">
+            <div>
+                <label class="form-label">Type</label>
+                <select class="form-input form-input-sm" @bind="capitalType" style="width:120px">
+                    <option value="deposit">Deposit</option>
+                    <option value="withdraw">Withdraw</option>
+                </select>
+            </div>
+            <div>
+                <label class="form-label">Amount ($)</label>
+                <input type="number" class="form-input form-input-sm" @bind="capitalAmount"
+                       step="0.01" min="0.01" style="width:120px" />
+            </div>
+            <div>
+                <label class="form-label">Note</label>
+                <input type="text" class="form-input form-input-sm" @bind="capitalNote"
+                       placeholder="optional memo" style="width:180px" />
+            </div>
+            <button class="btn-sm btn-approve" @onclick="AddCapitalEvent" disabled="@capitalSaving">
+                @(capitalSaving ? "Saving..." : "Record")
+            </button>
+        </div>
+
+        @if (capitalEvents.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Note</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var ev in capitalEvents)
+                        {
+                            <tr>
+                                <td class="text-muted">@ev.CreatedAt.ToString("MM/dd HH:mm")</td>
+                                <td>
+                                    <span class="status-chip @(ev.EventType == "deposit" ? "status-buy" : "status-sell")">
+                                        @ev.EventType
+                                    </span>
+                                </td>
+                                <td style="font-weight:600">$@ev.Amount.ToString("F2")</td>
+                                <td class="text-muted">@(ev.Note ?? "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <!-- Engine Status -->
+    <div class="section-card">
+        <h4 class="section-title">Engine Status</h4>
+        <div class="stat-grid cols-3">
+            <div class="stat-card">
+                <span class="stat-label">Engine</span>
+                <span class="stat-value @(engineOk ? "text-green" : "text-red")">
+                    @(engineOk ? "Online" : "Offline")
+                </span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Database</span>
+                <span class="stat-value @(dbOk ? "text-green" : "text-red")">
+                    @(dbOk ? "Connected" : "Disconnected")
+                </span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">KIS Broker</span>
+                <span class="stat-value @(kisConnected ? "text-green" : "text-muted")">
+                    @(kisConnected ? "Connected" : "Not Connected")
+                </span>
+            </div>
+        </div>
+
+        <!-- Pipeline Logs -->
+        <h4 class="section-title" style="margin-top:1rem">Recent Pipeline Runs</h4>
+        @if (pipelineLogs.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Step</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                            <th>Error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var log in pipelineLogs)
+                        {
+                            <tr>
+                                <td>@log.CreatedAt.ToString("MM/dd HH:mm")</td>
+                                <td>@log.StepName</td>
+                                <td>
+                                    <span class="status-chip status-@log.Status">@log.Status</span>
+                                </td>
+                                <td>@(log.ElapsedSec != null ? $"{log.ElapsedSec:F1}s" : "--")</td>
+                                <td class="text-red">@(log.ErrorMsg ?? "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@* ════════════ User Management Tab (admin only) ════════════ *@
+@if (activeTab == "users" && _isAdmin)
+{
+    <div class="section-card">
+        <h4 class="section-title">
+            Registered Users
+            <span class="text-muted" style="font-size:0.75rem; font-weight:400; margin-left:0.5rem">
+                @allUsers.Count total
+            </span>
+        </h4>
+
+        @if (!string.IsNullOrEmpty(userMsg))
+        {
+            <div class="alert-info" style="margin-bottom:0.8rem">@userMsg</div>
+        }
+
         <div class="table-responsive">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Key</th>
-                        <th>Value</th>
-                        <th>Description</th>
-                        <th>Updated</th>
-                        <th>Action</th>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Registered</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var cfg in category)
+                    @foreach (var u in allUsers)
                     {
                         <tr>
-                            <td><code>@cfg.Key</code></td>
+                            <td class="text-muted">@u.Id</td>
                             <td>
-                                <input type="text"
-                                       class="form-input form-input-sm"
-                                       value="@(editValues.GetValueOrDefault(cfg.Key, cfg.Value))"
-                                       @oninput="e => editValues[cfg.Key] = e.Value?.ToString() ?? cfg.Value"
-                                       style="width:120px" />
+                                <a href="javascript:void(0)" @onclick="() => OpenResetPw(u.Id, u.Username)"
+                                   style="font-weight:600; color:#60a5fa; text-decoration:none; cursor:pointer"
+                                   title="Click to reset password">@u.Username</a>
                             </td>
-                            <td class="text-muted">@cfg.Description</td>
-                            <td class="text-muted">@cfg.UpdatedAt.ToString("MM/dd HH:mm")</td>
+                            <td class="text-muted">@(u.Email ?? "-")</td>
                             <td>
-                                @if (editValues.ContainsKey(cfg.Key) && editValues[cfg.Key] != cfg.Value)
+                                <span class="status-chip @(u.Role == "admin" ? "status-buy" : "status-pending")">@u.Role</span>
+                            </td>
+                            <td>
+                                @if (u.IsApproved)
                                 {
-                                    <button class="btn-sm btn-approve"
-                                            @onclick="() => SaveConfig(cfg.Key)">
-                                        Save
-                                    </button>
+                                    <span class="status-chip status-approved" style="font-size:0.68rem">Approved</span>
+                                }
+                                else
+                                {
+                                    <span class="status-chip status-sell" style="font-size:0.68rem">Pending</span>
+                                }
+                            </td>
+                            <td class="text-muted">@u.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td>
+                                @if (u.Role != "admin")
+                                {
+                                    <div style="display:flex; gap:0.3rem; flex-wrap:wrap">
+                                        @if (!u.IsApproved)
+                                        {
+                                            <button class="btn-sm btn-approve" @onclick="() => ApproveUser(u.Id)"
+                                                    style="font-size:0.68rem; padding:2px 8px">
+                                                Approve
+                                            </button>
+                                        }
+                                        else
+                                        {
+                                            <button class="btn-sm btn-reject" @onclick="() => RejectUser(u.Id)"
+                                                    style="font-size:0.68rem; padding:2px 8px">
+                                                Revoke
+                                            </button>
+                                        }
+                                        <button class="btn-sm" @onclick="() => ConfirmDeleteUser(u.Id, u.Username)"
+                                                style="font-size:0.68rem; padding:2px 8px; background:#374151; color:#ef4444; border:1px solid #ef4444">
+                                            Delete
+                                        </button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="text-muted" style="font-size:0.7rem">-</span>
                                 }
                             </td>
                         </tr>
@@ -59,184 +358,259 @@
             </table>
         </div>
     </div>
-}
 
-<!-- Trading Mode Toggle -->
-<div class="section-card" style="margin-bottom:1rem">
-    <h4 class="section-title">TRADING MODE</h4>
-    <div class="trading-mode-box">
-        <div class="trading-mode-current">
-            <span class="trading-mode-icon @(tradingMode == "live" ? "mode-live" : "mode-paper")">
-                <span class="material-symbols-outlined">@(tradingMode == "live" ? "currency_exchange" : "science")</span>
-            </span>
-            <div>
-                <div class="trading-mode-label">Current Mode</div>
-                <div class="trading-mode-value @(tradingMode == "live" ? "text-red" : "text-green")">
-                    @(tradingMode == "live" ? "LIVE TRADING" : "PAPER TRADING")
-                </div>
-                <div class="text-muted" style="font-size:0.75rem">
-                    @(tradingMode == "live"
-                        ? "Real money is being used for trades via KIS"
-                        : "Simulated trades — no real money involved")
+    <!-- Delete Confirmation Modal -->
+    @if (_deleteConfirmVisible)
+    {
+        <div class="modal-overlay" @onclick="() => _deleteConfirmVisible = false">
+            <div class="modal-content" style="max-width:360px" @onclick:stopPropagation>
+                <h4 style="margin:0 0 0.5rem; color:#ef4444">
+                    <span class="material-symbols-outlined" style="vertical-align:middle">warning</span>
+                    Delete User
+                </h4>
+                <p style="font-size:0.85rem; color:#cbd5e1">
+                    Are you sure you want to delete user <strong>@_deleteUsername</strong>?
+                    This action cannot be undone.
+                </p>
+                <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem">
+                    <button class="btn-sm btn-reject" @onclick="() => _deleteConfirmVisible = false"
+                            style="padding:4px 16px">Cancel</button>
+                    <button class="btn-sm" @onclick="ExecuteDeleteUser"
+                            style="padding:4px 16px; background:#ef4444; color:white; border:none; border-radius:4px">
+                        Delete
+                    </button>
                 </div>
             </div>
         </div>
+    }
 
-        @if (!showModeConfirm)
+    <!-- Password Reset Modal -->
+    @if (_resetPwVisible)
+    {
+        <div class="modal-overlay" @onclick="() => _resetPwVisible = false">
+            <div class="modal-content" style="max-width:360px" @onclick:stopPropagation>
+                <h4 style="margin:0 0 0.8rem; color:#60a5fa">
+                    <span class="material-symbols-outlined" style="vertical-align:middle">lock_reset</span>
+                    Reset Password
+                </h4>
+                <p style="font-size:0.82rem; color:#94a3b8; margin-bottom:1rem">
+                    User: <strong style="color:#e2e8f0">@_resetPwUsername</strong>
+                </p>
+
+                @if (!string.IsNullOrEmpty(_resetPwMsg))
+                {
+                    <div class="@(_resetPwOk ? "alert-info" : "login-error")" style="margin-bottom:0.8rem; font-size:0.8rem">
+                        @_resetPwMsg
+                    </div>
+                }
+
+                <div style="margin-bottom:0.7rem">
+                    <label class="form-label">New Password</label>
+                    <input type="password" class="form-input" @bind="_resetPwNew"
+                           placeholder="Min 6 characters" />
+                </div>
+                <div style="margin-bottom:0.7rem">
+                    <label class="form-label">Confirm Password</label>
+                    <input type="password" class="form-input" @bind="_resetPwConfirm"
+                           placeholder="Re-enter password" />
+                </div>
+                <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem">
+                    <button class="btn-sm btn-reject" @onclick="() => _resetPwVisible = false"
+                            style="padding:4px 16px">Cancel</button>
+                    <button class="btn-sm btn-approve" @onclick="ExecuteResetPw" disabled="@_resetPwSaving"
+                            style="padding:4px 16px">
+                        @(_resetPwSaving ? "Saving..." : "Reset")
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@* ════════════ Role Permissions Tab (admin only) ════════════ *@
+@if (activeTab == "roles" && _isAdmin)
+{
+    <div class="section-card">
+        <h4 class="section-title">
+            <span class="material-symbols-outlined" style="font-size:18px; vertical-align:middle; margin-right:0.3rem">admin_panel_settings</span>
+            Role-Based Page Access
+        </h4>
+        <p class="text-muted" style="font-size:0.75rem; margin-bottom:1rem">
+            admin role always has full access. Configure page permissions for other roles below.
+        </p>
+
+        @if (!string.IsNullOrEmpty(_roleMsg))
         {
-            <button class="btn-action @(tradingMode == "live" ? "btn-mode-paper" : "btn-mode-live")"
-                    @onclick="StartModeChange"
-                    disabled="@modeChanging">
-                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">swap_horiz</span>
-                Switch to @(tradingMode == "live" ? "Paper" : "Live")
-            </button>
+            <div class="alert-info" style="margin-bottom:0.8rem">@_roleMsg</div>
+        }
+
+        <!-- Role selector -->
+        <div style="display:flex; gap:0.8rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap">
+            <label class="form-label" style="margin:0">Role:</label>
+            @foreach (var r in _roles)
+            {
+                <button class="tab-btn @(_selectedRole == r ? "tab-active" : "")"
+                        @onclick="() => SelectRole(r)"
+                        style="padding:0.3rem 1rem; font-size:0.78rem; border:1px solid var(--bd); border-radius:4px">
+                    @r
+                </button>
+            }
+            <!-- Add new role -->
+            <div style="display:flex; gap:0.3rem; align-items:center">
+                <input type="text" class="form-input form-input-sm" @bind="_newRoleName"
+                       placeholder="new role" style="width:100px; font-size:0.75rem" />
+                <button class="btn-sm btn-approve" @onclick="AddRole"
+                        style="font-size:0.7rem; padding:2px 8px">Add</button>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(_selectedRole))
+        {
+            <h4 class="section-title" style="margin-top:1rem; margin-bottom:0.5rem">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; color:#22c55e">check_circle</span>
+                Page Access for "<span style="color:#60a5fa">@_selectedRole</span>"
+            </h4>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:40px">Access</th>
+                            <th>Page</th>
+                            <th>Path</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var pg in ALL_PAGES)
+                        {
+                            var path = pg.Path;
+                            <tr>
+                                <td>
+                                    <input type="checkbox"
+                                           checked="@_rolePerms.Contains(path)"
+                                           @onchange="e => TogglePagePerm(path, (bool)(e.Value ?? false))"
+                                           style="width:16px; height:16px; accent-color:#22c55e; cursor:pointer" />
+                                </td>
+                                <td>
+                                    <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; margin-right:0.3rem; color:var(--tm)">@pg.Icon</span>
+                                    @pg.Name
+                                </td>
+                                <td class="text-muted"><code>@pg.Path</code></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div style="margin-top:0.8rem; display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center">
+                <button class="btn-sm btn-approve" @onclick="SaveRolePerms" disabled="@_roleSaving"
+                        style="padding:4px 16px">
+                    @(_roleSaving ? "Saving..." : "Save Permissions")
+                </button>
+                <button class="btn-sm" @onclick="SelectAllPages"
+                        style="padding:4px 12px; background:var(--c2); color:var(--tm); border:1px solid var(--bd)">
+                    Select All
+                </button>
+                <button class="btn-sm" @onclick="ClearAllPages"
+                        style="padding:4px 12px; background:var(--c2); color:var(--tm); border:1px solid var(--bd)">
+                    Clear All
+                </button>
+                <span style="border-left:1px solid var(--bd); height:20px; margin:0 0.3rem"></span>
+                <button class="btn-sm" @onclick="OpenRenameRole"
+                        style="padding:4px 12px; background:var(--c2); color:#60a5fa; border:1px solid #60a5fa; font-size:0.72rem">
+                    <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">edit</span> Rename
+                </button>
+                <button class="btn-sm" @onclick="ConfirmDeleteRole"
+                        style="padding:4px 12px; background:var(--c2); color:#ef4444; border:1px solid #ef4444; font-size:0.72rem">
+                    <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">delete</span> Delete
+                </button>
+            </div>
+
+            <!-- Rename Role inline -->
+            @if (_renameRoleVisible)
+            {
+                <div style="margin-top:0.6rem; display:flex; gap:0.4rem; align-items:center">
+                    <span class="text-muted" style="font-size:0.78rem">Rename "@_selectedRole" to:</span>
+                    <input type="text" class="form-input form-input-sm" @bind="_renameRoleNew"
+                           placeholder="new name" style="width:120px; font-size:0.78rem" />
+                    <button class="btn-sm btn-approve" @onclick="ExecuteRenameRole"
+                            style="font-size:0.72rem; padding:2px 10px">Apply</button>
+                    <button class="btn-sm btn-reject" @onclick="() => _renameRoleVisible = false"
+                            style="font-size:0.72rem; padding:2px 10px">Cancel</button>
+                </div>
+            }
+
+            <!-- Delete Role confirm inline -->
+            @if (_deleteRoleVisible)
+            {
+                <div style="margin-top:0.6rem; padding:0.6rem; background:rgba(239,68,68,0.1); border:1px solid #ef4444; border-radius:6px">
+                    <span style="font-size:0.82rem; color:#fca5a5">
+                        Delete role "<strong>@_selectedRole</strong>"? Users with this role will be changed to "user".
+                    </span>
+                    <div style="display:flex; gap:0.4rem; margin-top:0.4rem">
+                        <button class="btn-sm" @onclick="ExecuteDeleteRole"
+                                style="padding:3px 12px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:0.72rem">
+                            Confirm Delete
+                        </button>
+                        <button class="btn-sm btn-reject" @onclick="() => _deleteRoleVisible = false"
+                                style="font-size:0.72rem; padding:3px 10px">Cancel</button>
+                    </div>
+                </div>
+            }
         }
         else
         {
-            <div class="mode-confirm-box">
-                @if (targetMode == "live")
-                {
-                    <div class="mode-warning">
-                        <span class="material-symbols-outlined">warning</span>
-                        <strong>WARNING: Switching to LIVE mode will use REAL MONEY.</strong>
-                        All future trade approvals will execute real orders via KIS.
-                    </div>
-                }
-                else
-                {
-                    <div class="mode-info">
-                        <span class="material-symbols-outlined">info</span>
-                        Switching to Paper mode. Trades will be simulated.
-                    </div>
-                }
-                <div style="display:flex; gap:0.5rem; margin-top:0.5rem">
-                    <button class="btn-sm btn-approve" @onclick="ConfirmModeChange" disabled="@modeChanging">
-                        @(modeChanging ? "Changing..." : "Confirm")
-                    </button>
-                    <button class="btn-sm btn-reject" @onclick="CancelModeChange">Cancel</button>
-                </div>
+            <div class="text-muted" style="font-size:0.82rem; padding:1rem 0">
+                Select a role above to configure page permissions.
             </div>
         }
     </div>
-</div>
 
-<!-- Capital Management -->
-<div class="section-card" style="margin-bottom:1rem">
-    <h4 class="section-title">CAPITAL MANAGEMENT</h4>
-    <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end; margin-bottom:1rem">
-        <div>
-            <label class="form-label">Type</label>
-            <select class="form-input form-input-sm" @bind="capitalType" style="width:120px">
-                <option value="deposit">Deposit</option>
-                <option value="withdraw">Withdraw</option>
-            </select>
-        </div>
-        <div>
-            <label class="form-label">Amount ($)</label>
-            <input type="number" class="form-input form-input-sm" @bind="capitalAmount"
-                   step="0.01" min="0.01" style="width:120px" />
-        </div>
-        <div>
-            <label class="form-label">Note</label>
-            <input type="text" class="form-input form-input-sm" @bind="capitalNote"
-                   placeholder="optional memo" style="width:180px" />
-        </div>
-        <button class="btn-sm btn-approve" @onclick="AddCapitalEvent" disabled="@capitalSaving">
-            @(capitalSaving ? "Saving..." : "Record")
-        </button>
-    </div>
-
-    @if (capitalEvents.Any())
-    {
+    <!-- User Role Assignment -->
+    <div class="section-card" style="margin-top:1rem">
+        <h4 class="section-title">User Role Assignment</h4>
         <div class="table-responsive">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Date</th>
-                        <th>Type</th>
-                        <th>Amount</th>
-                        <th>Note</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Current Role</th>
+                        <th>Change To</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var ev in capitalEvents)
+                    @foreach (var u in allUsers.Where(u => u.Role != "admin"))
                     {
                         <tr>
-                            <td class="text-muted">@ev.CreatedAt.ToString("MM/dd HH:mm")</td>
+                            <td style="font-weight:600">@u.Username</td>
+                            <td class="text-muted">@(u.Email ?? "-")</td>
                             <td>
-                                <span class="status-chip @(ev.EventType == "deposit" ? "status-buy" : "status-sell")">
-                                    @ev.EventType
-                                </span>
+                                <span class="status-chip status-pending">@u.Role</span>
                             </td>
-                            <td style="font-weight:600">$@ev.Amount.ToString("F2")</td>
-                            <td class="text-muted">@(ev.Note ?? "")</td>
+                            <td>
+                                <select class="form-input form-input-sm" style="width:120px; font-size:0.75rem"
+                                        value="@u.Role"
+                                        @onchange="e => ChangeUserRole(u.Id, e.Value?.ToString() ?? u.Role)">
+                                    @foreach (var r in _roles)
+                                    {
+                                        <option value="@r" selected="@(r == u.Role)">@r</option>
+                                    }
+                                </select>
+                            </td>
                         </tr>
                     }
                 </tbody>
             </table>
         </div>
-    }
-</div>
-
-<!-- Engine Status -->
-<div class="section-card">
-    <h4 class="section-title">Engine Status</h4>
-    <div class="stat-grid cols-3">
-        <div class="stat-card">
-            <span class="stat-label">Engine</span>
-            <span class="stat-value @(engineOk ? "text-green" : "text-red")">
-                @(engineOk ? "Online" : "Offline")
-            </span>
-        </div>
-        <div class="stat-card">
-            <span class="stat-label">Database</span>
-            <span class="stat-value @(dbOk ? "text-green" : "text-red")">
-                @(dbOk ? "Connected" : "Disconnected")
-            </span>
-        </div>
-        <div class="stat-card">
-            <span class="stat-label">KIS Broker</span>
-            <span class="stat-value @(kisConnected ? "text-green" : "text-muted")">
-                @(kisConnected ? "Connected" : "Not Connected")
-            </span>
-        </div>
     </div>
-
-    <!-- Pipeline Logs -->
-    <h4 class="section-title" style="margin-top:1rem">Recent Pipeline Runs</h4>
-    @if (pipelineLogs.Any())
-    {
-        <div class="table-responsive">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Step</th>
-                        <th>Status</th>
-                        <th>Duration</th>
-                        <th>Error</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var log in pipelineLogs)
-                    {
-                        <tr>
-                            <td>@log.CreatedAt.ToString("MM/dd HH:mm")</td>
-                            <td>@log.StepName</td>
-                            <td>
-                                <span class="status-chip status-@log.Status">@log.Status</span>
-                            </td>
-                            <td>@(log.ElapsedSec != null ? $"{log.ElapsedSec:F1}s" : "--")</td>
-                            <td class="text-red">@(log.ErrorMsg ?? "")</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-    }
-</div>
+}
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private string activeTab = "settings";
+    private bool _isAdmin;
+
+    // Settings tab
     private List<SwingConfig> configs = new();
     private List<SwingPipelineLog> pipelineLogs = new();
     private Dictionary<string, string> editValues = new();
@@ -245,21 +619,68 @@
     private bool dbOk;
     private bool kisConnected;
     private string tradingMode = "paper";
-
-    // Trading Mode toggle
     private bool showModeConfirm;
     private bool modeChanging;
     private string targetMode = "";
-
-    // Capital Management
     private string capitalType = "deposit";
     private double capitalAmount;
     private string capitalNote = "";
     private bool capitalSaving;
     private List<(long EventId, string EventType, decimal Amount, string? Note, DateTime CreatedAt)> capitalEvents = new();
 
+    // User Management tab
+    private List<UserRecord> allUsers = new();
+    private int _pendingUserCount;
+    private string? userMsg;
+    private bool _deleteConfirmVisible;
+    private int _deleteUserId;
+    private string _deleteUsername = "";
+
+    // Password Reset modal
+    private bool _resetPwVisible;
+    private int _resetPwUserId;
+    private string _resetPwUsername = "";
+    private string _resetPwNew = "";
+    private string _resetPwConfirm = "";
+    private string? _resetPwMsg;
+    private bool _resetPwOk;
+    private bool _resetPwSaving;
+
+    // Role Permissions tab
+    private static readonly (string Name, string Path, string Icon)[] ALL_PAGES = new[]
+    {
+        ("Dashboard", "/", "dashboard"),
+        ("Pipeline", "/pipeline", "conversion_path"),
+        ("Signals", "/signals", "notifications_active"),
+        ("Performance", "/performance", "monitoring"),
+        ("Positions", "/positions", "account_balance_wallet"),
+        ("Backtest", "/backtest", "query_stats"),
+        ("Events", "/events", "bolt"),
+        ("Watchlist", "/watchlist", "bookmark"),
+        ("Settings", "/settings", "settings"),
+        ("Account", "/account", "manage_accounts"),
+        ("Help", "/help", "help"),
+    };
+
+    private List<string> _roles = new();
+    private string _selectedRole = "";
+    private HashSet<string> _rolePerms = new();
+    private string _newRoleName = "";
+    private string? _roleMsg;
+    private bool _roleSaving;
+    private bool _renameRoleVisible;
+    private string _renameRoleNew = "";
+    private bool _deleteRoleVisible;
+
     protected override async Task OnInitializedAsync()
     {
+        // Check if admin
+        if (AuthState is not null)
+        {
+            var state = await AuthState;
+            _isAdmin = state.User.IsInRole("admin");
+        }
+
         try
         {
             var cfgTask = Db.GetAllConfigAsync();
@@ -276,9 +697,249 @@
             tradingMode = mode?.Value ?? "paper";
 
             capitalEvents = await Db.GetCapitalEventsAsync();
+
+            // Load pending user count for badge
+            if (_isAdmin)
+            {
+                allUsers = await Auth.GetAllUsersAsync();
+                _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+            }
         }
         catch { }
     }
+
+    private async Task ActivateUsersTab()
+    {
+        activeTab = "users";
+        if (_isAdmin)
+        {
+            allUsers = await Auth.GetAllUsersAsync();
+            _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+        }
+    }
+
+    // ── User Management actions ──
+
+    private async Task ApproveUser(int userId)
+    {
+        await Auth.ApproveUserAsync(userId);
+        userMsg = $"User #{userId} approved";
+        allUsers = await Auth.GetAllUsersAsync();
+        _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+    }
+
+    private async Task RejectUser(int userId)
+    {
+        await Auth.RejectUserAsync(userId);
+        userMsg = $"User #{userId} access revoked";
+        allUsers = await Auth.GetAllUsersAsync();
+        _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+    }
+
+    private void ConfirmDeleteUser(int userId, string username)
+    {
+        _deleteUserId = userId;
+        _deleteUsername = username;
+        _deleteConfirmVisible = true;
+    }
+
+    private async Task ExecuteDeleteUser()
+    {
+        await Auth.DeleteUserAsync(_deleteUserId);
+        userMsg = $"User '{_deleteUsername}' deleted";
+        _deleteConfirmVisible = false;
+        allUsers = await Auth.GetAllUsersAsync();
+        _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+    }
+
+    private void OpenResetPw(int userId, string username)
+    {
+        _resetPwUserId = userId;
+        _resetPwUsername = username;
+        _resetPwNew = "";
+        _resetPwConfirm = "";
+        _resetPwMsg = null;
+        _resetPwOk = false;
+        _resetPwVisible = true;
+    }
+
+    private async Task ExecuteResetPw()
+    {
+        _resetPwMsg = null;
+        _resetPwOk = false;
+
+        if (_resetPwNew.Length < 6)
+        {
+            _resetPwMsg = "Password must be at least 6 characters";
+            return;
+        }
+        if (_resetPwNew != _resetPwConfirm)
+        {
+            _resetPwMsg = "Passwords do not match";
+            return;
+        }
+
+        _resetPwSaving = true;
+        StateHasChanged();
+
+        try
+        {
+            var (ok, msg) = await Auth.AdminResetPasswordAsync(_resetPwUserId, _resetPwNew);
+            _resetPwMsg = msg;
+            _resetPwOk = ok;
+            if (ok)
+            {
+                _resetPwNew = "";
+                _resetPwConfirm = "";
+                userMsg = $"Password reset for '{_resetPwUsername}'";
+            }
+        }
+        catch (Exception ex)
+        {
+            _resetPwMsg = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _resetPwSaving = false;
+        }
+    }
+
+    // ── Role Permissions tab actions ──
+
+    private async Task ActivateRolesTab()
+    {
+        activeTab = "roles";
+        _roles = await Auth.GetRolesAsync();
+        if (_isAdmin)
+            allUsers = await Auth.GetAllUsersAsync();
+        // Auto-select first role
+        var firstRole = _roles.FirstOrDefault();
+        if (firstRole != null && string.IsNullOrEmpty(_selectedRole))
+            await SelectRole(firstRole);
+    }
+
+    private async Task SelectRole(string role)
+    {
+        _selectedRole = role;
+        _rolePerms = await Auth.GetRolePermissionsAsync(role);
+        _roleMsg = null;
+    }
+
+    private void TogglePagePerm(string path, bool allowed)
+    {
+        if (allowed)
+            _rolePerms.Add(path);
+        else
+            _rolePerms.Remove(path);
+    }
+
+    private void SelectAllPages()
+    {
+        foreach (var pg in ALL_PAGES) _rolePerms.Add(pg.Path);
+    }
+
+    private void ClearAllPages()
+    {
+        _rolePerms.Clear();
+    }
+
+    private async Task SaveRolePerms()
+    {
+        _roleSaving = true;
+        StateHasChanged();
+        try
+        {
+            await Auth.SetRolePermissionsAsync(_selectedRole, _rolePerms);
+            _roleMsg = $"Permissions saved for role '{_selectedRole}'";
+        }
+        catch (Exception ex)
+        {
+            _roleMsg = $"Error: {ex.Message}";
+        }
+        finally { _roleSaving = false; }
+    }
+
+    private async Task AddRole()
+    {
+        var name = _newRoleName.Trim().ToLower();
+        if (string.IsNullOrEmpty(name)) return;
+        if (_roles.Contains(name))
+        {
+            _roleMsg = $"Role '{name}' already exists";
+            return;
+        }
+        // Create role by adding empty permission set
+        await Auth.SetRolePermissionsAsync(name, Array.Empty<string>());
+        _roles = await Auth.GetRolesAsync();
+        if (!_roles.Contains(name)) _roles.Add(name);
+        _newRoleName = "";
+        _roleMsg = $"Role '{name}' created";
+        await SelectRole(name);
+    }
+
+    private async Task ChangeUserRole(int userId, string newRole)
+    {
+        await Auth.ChangeRoleAsync(userId, newRole);
+        allUsers = await Auth.GetAllUsersAsync();
+        _roleMsg = $"User #{userId} role changed to '{newRole}'";
+    }
+
+    private void OpenRenameRole()
+    {
+        _renameRoleNew = _selectedRole;
+        _renameRoleVisible = true;
+        _deleteRoleVisible = false;
+    }
+
+    private async Task ExecuteRenameRole()
+    {
+        var newName = _renameRoleNew.Trim().ToLower();
+        if (string.IsNullOrEmpty(newName) || newName == "admin" || newName == _selectedRole)
+        {
+            _roleMsg = "Invalid role name";
+            return;
+        }
+        try
+        {
+            await Auth.RenameRoleAsync(_selectedRole, newName);
+            _roleMsg = $"Role '{_selectedRole}' renamed to '{newName}'";
+            _renameRoleVisible = false;
+            _roles = await Auth.GetRolesAsync();
+            allUsers = await Auth.GetAllUsersAsync();
+            await SelectRole(newName);
+        }
+        catch (Exception ex) { _roleMsg = $"Error: {ex.Message}"; }
+    }
+
+    private void ConfirmDeleteRole()
+    {
+        _deleteRoleVisible = true;
+        _renameRoleVisible = false;
+    }
+
+    private async Task ExecuteDeleteRole()
+    {
+        if (_selectedRole == "admin")
+        {
+            _roleMsg = "Cannot delete admin role";
+            _deleteRoleVisible = false;
+            return;
+        }
+        try
+        {
+            await Auth.DeleteRoleAsync(_selectedRole);
+            _roleMsg = $"Role '{_selectedRole}' deleted";
+            _deleteRoleVisible = false;
+            _selectedRole = "";
+            _roles = await Auth.GetRolesAsync();
+            allUsers = await Auth.GetAllUsersAsync();
+            var firstRole = _roles.FirstOrDefault();
+            if (firstRole != null) await SelectRole(firstRole);
+        }
+        catch (Exception ex) { _roleMsg = $"Error: {ex.Message}"; }
+    }
+
+    // ── Settings tab actions ──
 
     private async Task CheckEngineHealth()
     {
@@ -319,7 +980,6 @@
             {
                 tradingMode = targetMode;
                 statusMsg = $"Trading mode changed to {targetMode.ToUpper()}";
-                // Refresh config list
                 configs = await Db.GetAllConfigAsync();
                 await CheckEngineHealth();
             }

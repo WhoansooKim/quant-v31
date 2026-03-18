@@ -1,0 +1,134 @@
+@page "/account"
+@attribute [Authorize]
+@inject AuthService Auth
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Authorization
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Account</PageTitle>
+
+<div class="page-header">
+    <h3>
+        <span class="material-symbols-outlined" style="vertical-align:middle; margin-right:0.3rem">person</span>
+        Account
+    </h3>
+</div>
+
+<!-- Account Info -->
+<div class="section-card" style="margin-bottom:1rem">
+    <h4 class="section-title">Account Information</h4>
+    <div style="display:grid; grid-template-columns:120px 1fr; gap:0.5rem 1rem; font-size:0.85rem; max-width:400px">
+        <span class="text-muted">Username</span>
+        <span style="font-weight:600">@_username</span>
+        <span class="text-muted">Role</span>
+        <span>
+            <span class="status-chip @(_role == "admin" ? "status-buy" : "status-pending")">@_role</span>
+        </span>
+        <span class="text-muted">User ID</span>
+        <span class="text-muted">@_userId</span>
+    </div>
+</div>
+
+<!-- Change Password -->
+<div class="section-card">
+    <h4 class="section-title">Change Password</h4>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="@(_success ? "alert-info" : "login-error")" style="margin-bottom:0.8rem; font-size:0.82rem">
+            @_message
+        </div>
+    }
+
+    <div style="max-width:360px">
+        <div style="margin-bottom:0.7rem">
+            <label class="form-label">Current Password</label>
+            <input type="password" class="form-input" @bind="_currentPw"
+                   autocomplete="current-password" placeholder="Enter current password" />
+        </div>
+        <div style="margin-bottom:0.7rem">
+            <label class="form-label">New Password</label>
+            <input type="password" class="form-input" @bind="_newPw"
+                   autocomplete="new-password" placeholder="Min 6 characters" />
+        </div>
+        <div style="margin-bottom:0.7rem">
+            <label class="form-label">Confirm New Password</label>
+            <input type="password" class="form-input" @bind="_confirmPw"
+                   autocomplete="new-password" placeholder="Re-enter new password" />
+        </div>
+        <button class="btn-action btn-approve" @onclick="ChangePassword" disabled="@_saving"
+                style="width:100%; padding:0.5rem">
+            @(_saving ? "Changing..." : "Change Password")
+        </button>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private string _username = "";
+    private string _role = "";
+    private int _userId;
+    private string _currentPw = "";
+    private string _newPw = "";
+    private string _confirmPw = "";
+    private string? _message;
+    private bool _success;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState is null) return;
+        var state = await AuthState;
+        var user = state.User;
+        _username = user.Identity?.Name ?? "";
+        _role = user.FindFirst(ClaimTypes.Role)?.Value ?? "user";
+        _ = int.TryParse(user.FindFirst(ClaimTypes.NameIdentifier)?.Value, out _userId);
+    }
+
+    private async Task ChangePassword()
+    {
+        _message = null;
+        _success = false;
+
+        if (string.IsNullOrWhiteSpace(_currentPw))
+        {
+            _message = "Current password is required";
+            return;
+        }
+        if (_newPw.Length < 6)
+        {
+            _message = "New password must be at least 6 characters";
+            return;
+        }
+        if (_newPw != _confirmPw)
+        {
+            _message = "New passwords do not match";
+            return;
+        }
+
+        _saving = true;
+        StateHasChanged();
+
+        try
+        {
+            var (ok, msg) = await Auth.ChangePasswordAsync(_userId, _currentPw, _newPw);
+            _message = msg;
+            _success = ok;
+            if (ok)
+            {
+                _currentPw = "";
+                _newPw = "";
+                _confirmPw = "";
+            }
+        }
+        catch (Exception ex)
+        {
+            _message = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

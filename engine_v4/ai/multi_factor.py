@@ -62,13 +62,15 @@ class MultiFactorScorer:
                  anthropic_key: str = "",
                  ollama_url: str = "", ollama_model: str = "",
                  cache=None, social_collector=None,
-                 lstm_predictor=None, macro_scorer=None):
+                 lstm_predictor=None, macro_scorer=None,
+                 crowding_monitor=None):
         self.pg = pg
         self.finnhub = finnhub
         self.cache = cache  # RedisCache (optional, for factor momentum)
         self.social = social_collector  # SocialSentimentCollector (optional)
         self.lstm = lstm_predictor  # LSTMPredictor (optional)
         self.macro = macro_scorer  # MacroScorer (optional)
+        self.crowding = crowding_monitor  # FactorCrowdingMonitor (optional)
         self.anthropic_key = anthropic_key
         self._claude = None
         self._ollama_url = ollama_url or "http://localhost:11434"
@@ -466,13 +468,20 @@ class MultiFactorScorer:
         """수급/기관 흐름 점수 (0-100).
 
         Components:
-        - Insider transactions: net buy = positive (40%)
-        - Analyst recommendations: buy ratio (40%)
-        - Short interest: SIR-based contrarian signal (20%)
+        - Insider transactions: net buy = positive (30%)
+        - Analyst recommendations: buy ratio (30%)
+        - Short interest (yfinance): SIR-based contrarian signal (20%)
+        - Crowding: factor ETF overlap penalty (20%)
         """
         if not self.finnhub.is_available:
-            return {"score": 50, "source": "default",
-                    "insider": {}, "recommendations": {}, "short_interest": {}}
+            si_data = self._yf_short_interest(symbol)
+            si_score = self._short_interest_score(si_data)
+            crowd_data = self._get_crowding(symbol)
+            crowd_score = self._crowding_score(crowd_data)
+            score = 50 * 0.3 + 50 * 0.3 + si_score * 0.2 + crowd_score * 0.2
+            return {"score": round(min(100, score), 1), "source": "partial",
+                    "insider": {}, "recommendations": {},
+                    "short_interest": si_data, "crowding": crowd_data}
 
         # Insider transactions
         insider = self.finnhub.get_insider_transactions(symbol)
@@ -482,30 +491,32 @@ class MultiFactorScorer:
         recs = self.finnhub.get_recommendation_trends(symbol)
         rec_score = self._recommendation_score(recs)
 
-        # Short interest
-        si_data = self.finnhub.get_short_interest(symbol)
+        # Short interest (yfinance — replaces Finnhub premium)
+        si_data = self._yf_short_interest(symbol)
         si_score = self._short_interest_score(si_data)
 
-        score = insider_score * 0.4 + rec_score * 0.4 + si_score * 0.2
+        # Crowding (factor ETF overlap)
+        crowd_data = self._get_crowding(symbol)
+        crowd_score = self._crowding_score(crowd_data)
+
+        score = (insider_score * 0.3 + rec_score * 0.3 +
+                 si_score * 0.2 + crowd_score * 0.2)
 
         return {
             "score": round(min(100, score), 1),
-            "source": "finnhub",
+            "source": "finnhub+yfinance",
             "insider_score": round(insider_score, 1),
             "recommendation_score": round(rec_score, 1),
             "short_interest_score": round(si_score, 1),
+            "crowding_score": round(crowd_score, 1),
             "insider": {
                 "net_shares": insider.get("net_shares", 0),
                 "buys": insider.get("total_buys", 0),
                 "sells": insider.get("total_sells", 0),
             },
             "recommendations": recs,
-            "short_interest": {
-                "short_ratio": si_data.get("short_ratio", 0),
-                "short_pct_float": si_data.get("short_pct_float", 0),
-                "change_pct": si_data.get("change_pct", 0),
-                "available": si_data.get("available", False),
-            },
+            "short_interest": si_data,
+            "crowding": crowd_data,
         }
 
     @staticmethod
@@ -545,6 +556,33 @@ class MultiFactorScorer:
         return (buy_weight + hold_weight + sell_weight) / total
 
     @staticmethod
+    def _yf_short_interest(symbol: str) -> dict:
+        """yfinance에서 공매도 잔고 데이터 조회."""
+        try:
+            import yfinance as yf
+            info = yf.Ticker(symbol).info
+            shares_short = info.get("sharesShort", 0) or 0
+            short_ratio = info.get("shortRatio", 0) or 0
+            short_pct_float = info.get("shortPercentOfFloat", 0) or 0
+            shares_prior = info.get("sharesShortPriorMonth", 0) or 0
+
+            change_pct = 0.0
+            if shares_prior > 0:
+                change_pct = round((shares_short - shares_prior) / shares_prior * 100, 2)
+
+            return {
+                "short_ratio": round(float(short_ratio), 2),
+                "short_pct_float": round(float(short_pct_float) * 100, 2),
+                "change_pct": change_pct,
+                "available": shares_short > 0,
+                "source": "yfinance",
+            }
+        except Exception as e:
+            logger.warning(f"yfinance short interest failed for {symbol}: {e}")
+            return {"short_ratio": 0, "short_pct_float": 0, "change_pct": 0,
+                    "available": False, "source": "error"}
+
+    @staticmethod
     def _short_interest_score(si_data: dict) -> float:
         """공매도 잔고 기반 점수 (0-100).
 
@@ -552,7 +590,7 @@ class MultiFactorScorer:
         - SIR > 10 days: 과도한 공매도 → bearish (20)
         - SIR 5-10 days: 보통 수준 (50)
         - SIR < 5 days: 낮은 공매도 → bullish (70)
-        - SIR 하락 + 가격 상승 시: short covering momentum → +15 boost
+        - SIR 하락 시: short covering momentum → +15 boost
         """
         if not si_data.get("available", False):
             return 50  # no data = neutral
@@ -573,6 +611,43 @@ class MultiFactorScorer:
             score = min(100, score + 15)
 
         return score
+
+    def _get_crowding(self, symbol: str) -> dict:
+        """FactorCrowdingMonitor에서 종목 크라우딩 데이터 조회."""
+        if not self.crowding:
+            return {"factor_count": 0, "risk_level": "unknown",
+                    "factor_memberships": [], "available": False}
+        try:
+            result = self.crowding.get_crowding_score(symbol)
+            result["available"] = True
+            return result
+        except Exception as e:
+            logger.warning(f"Crowding check failed for {symbol}: {e}")
+            return {"factor_count": 0, "risk_level": "unknown",
+                    "factor_memberships": [], "available": False}
+
+    @staticmethod
+    def _crowding_score(crowd_data: dict) -> float:
+        """팩터 크라우딩 기반 점수 (0-100).
+
+        크라우딩이 높으면 리스크가 높음 → 낮은 점수.
+        - 0 factors: 75 (독립적 = 좋음)
+        - 1 factor: 65
+        - 2 factors: 50 (moderate risk)
+        - 3+ factors: 30 (high crowding risk)
+        """
+        if not crowd_data.get("available", False):
+            return 50  # no data = neutral
+
+        count = crowd_data.get("factor_count", 0)
+        if count == 0:
+            return 75
+        elif count == 1:
+            return 65
+        elif count == 2:
+            return 50
+        else:
+            return 30
 
     # ─── Regime Detection ─────────────────────────────────
 

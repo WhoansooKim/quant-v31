@@ -595,6 +595,7 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
 .data-table tbody tr { transition: background 0.12s; }
 .data-table tbody tr:hover { background: rgba(10,15,20,0.4); }
 .data-table tbody tr:hover td { color: var(--tb); }
+.data-table code { color: #fb923c; }
 
 .row-highlight {
     background: var(--primary-10) !important;
@@ -1164,6 +1165,63 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     font-weight: 500;
 }
 
+.login-register-link {
+    text-align: center;
+    margin-top: 1.5rem;
+    font-size: 0.7rem;
+}
+.login-register-link a {
+    color: #60a5fa;
+    text-decoration: none;
+    font-weight: 600;
+    margin-left: 0.3rem;
+}
+.login-register-link a:hover {
+    text-decoration: underline;
+    color: #93bbfd;
+}
+
+/* ─── Tab bar ─── */
+.tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--bd);
+}
+.tab-btn {
+    background: none;
+    border: none;
+    padding: 0.5rem 1.2rem;
+    color: var(--tm);
+    font-size: 0.82rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+.tab-btn:hover { color: var(--fg); }
+.tab-btn.tab-active {
+    color: #60a5fa;
+    border-bottom-color: #60a5fa;
+    font-weight: 600;
+}
+
+/* ─── Modal overlay ─── */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+.modal-content {
+    background: var(--c2);
+    border: 1px solid var(--bd);
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+}
+
 /* ═══════════════════════════════════════
    Blazor Framework
    ═══════════════════════════════════════ */
@@ -1280,13 +1338,16 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     .pipeline-arrow { transform: rotate(90deg); text-align: center; padding: 0 !important; }
     .pipeline-step { min-width: auto !important; }
 
-    /* Tables: horizontal scroll */
+    /* Tables: horizontal scroll — reduced min-width for mobile */
     .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .data-table { min-width: 500px; font-size: 0.75rem !important; }
-    .data-table th, .data-table td { padding: 0.35rem 0.5rem !important; }
+    .data-table { min-width: 400px; font-size: 0.72rem !important; }
+    .data-table th, .data-table td { padding: 0.3rem 0.4rem !important; white-space: nowrap; }
+
+    /* Hide less critical columns on mobile */
+    .data-table .hide-mobile { display: none !important; }
 
     /* Section cards */
-    .section-card { padding: 0.75rem !important; }
+    .section-card { padding: 0.6rem !important; }
     .section-title { font-size: 0.9rem !important; }
 
     /* Ticker bar */
@@ -1295,19 +1356,42 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     /* Pipeline description */
     .pipeline-desc-grid { grid-template-columns: 1fr !important; }
 
-    /* Watchlist: level2 row stack */
+    /* ─── Watchlist mobile ─── */
     .wl-level2-row { flex-direction: column !important; }
     .wl-level2-left, .wl-level2-right { flex: none !important; width: 100% !important; height: 200px !important; overflow: hidden !important; }
+
+    /* Watchlist compact header: wrap to 2 lines */
+    .analysis-compact-header { flex-wrap: wrap !important; gap: 0.2rem !important; }
+    .analysis-compact-header > div:first-child { flex-wrap: wrap !important; gap: 0.15rem 0.3rem !important; }
+    .analysis-compact-header .wl-sym { flex: 0 0 52px !important; font-size: 0.95rem !important; }
+    .analysis-compact-header .wl-company { display: none !important; }
+    .analysis-compact-header .wl-price { flex: 0 0 auto !important; width: auto !important; }
+    .analysis-compact-header .wl-pnl { flex: 0 0 auto !important; width: auto !important; }
+    .compact-right { margin-left: 0 !important; width: 100% !important; justify-content: flex-end !important; }
+    .compact-right canvas { width: 60px !important; height: 22px !important; }
+    .compact-right .compact-verdict { width: 55px !important; font-size: 0.65rem !important; }
+    .compact-right .compact-score { width: 45px !important; font-size: 0.65rem !important; }
+
+    /* Category breakdown: tighter on mobile */
+    .cat-label { font-size: 0.62rem !important; min-width: 55px !important; }
+    .cat-val { font-size: 0.62rem !important; min-width: 32px !important; }
+
+    /* Summary gauge: stack vertically */
+    .gauge-sections { flex-direction: column !important; gap: 0.3rem !important; }
+
+    /* Detail toggle */
+    .detail-toggle { font-size: 0.72rem !important; }
 
     /* Help page */
     .help-page { max-width: 100% !important; }
     .help-concept-grid { grid-template-columns: repeat(2, 1fr) !important; }
     .help-ind-gauge { flex-direction: column !important; }
-    .help-strategy-flow .help-strat-content .data-table { min-width: 400px; }
+    .help-strategy-flow .help-strat-content .data-table { min-width: 350px; }
     .help-factor-bar { font-size: 0.65rem !important; }
 
     /* Popup modal */
     .pp-modal { width: 95vw !important; max-width: 95vw !important; margin: 1rem auto !important; max-height: 85vh !important; }
+    .modal-panel { max-width: 95vw !important; width: 95vw !important; }
 
     /* Footer */
     .app-footer { font-size: 0.7rem !important; padding: 0.5rem !important; }
@@ -1325,13 +1409,33 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
     /* Buttons */
     .btn-action { font-size: 0.78rem !important; padding: 0.4rem 0.8rem !important; }
     .btn-sm { font-size: 0.72rem !important; }
+
+    /* Factor detail popup: single column */
+    .fd-grid { grid-template-columns: 1fr !important; }
+
+    /* Pagination: compact */
+    .pagination { gap: 0.15rem !important; }
+    .pagination button { min-width: 28px !important; font-size: 0.7rem !important; padding: 0.25rem 0.4rem !important; }
 }
 
 @media (max-width: 480px) {
     .stat-grid.cols-4, .stat-grid.cols-6 { grid-template-columns: 1fr 1fr !important; }
     .help-concept-grid { grid-template-columns: 1fr !important; }
-    .data-table { min-width: 420px; }
+    .data-table { min-width: 320px; font-size: 0.68rem !important; }
+    .data-table th, .data-table td { padding: 0.2rem 0.3rem !important; }
     .page-header { padding: 0 !important; }
+    .content { padding: 0.5rem !important; }
+
+    /* Watchlist: even more compact */
+    .analysis-card { padding: 0.4rem !important; }
+    .summary-gauge { padding: 0.3rem !important; }
+    .chart-period-bar button { font-size: 0.6rem !important; padding: 0.15rem 0.4rem !important; }
+
+    /* Factor detail: tighter */
+    .fd-card { padding: 0.4rem 0.5rem !important; }
+    .fd-mini-label { width: 55px !important; font-size: 0.62rem !important; }
+    .fd-mini-val { width: 28px !important; font-size: 0.62rem !important; }
+    .factor-label { width: 70px !important; font-size: 0.68rem !important; }
 }
 
 @media (max-width: 1200px) {

@@ -56,12 +56,12 @@
                         <th class="sortable" @onclick='() => ToggleSort("symbol")'>Symbol@(sigSort.Arrow("symbol"))</th>
                         <th class="sortable" @onclick='() => ToggleSort("type")'>Type@(sigSort.Arrow("type"))</th>
                         <th class="sortable" @onclick='() => ToggleSort("price")'>Price@(sigSort.Arrow("price"))</th>
-                        <th>SL</th>
-                        <th>TP</th>
-                        <th class="sortable" title="20d Return Rank" @onclick='() => ToggleSort("rank")'>Rank@(sigSort.Arrow("rank"))</th>
-                        <th title="Trend Aligned">Trend</th>
-                        <th title="5d Breakout">Break</th>
-                        <th title="Volume Surge">Vol</th>
+                        <th class="hide-mobile">SL</th>
+                        <th class="hide-mobile">TP</th>
+                        <th class="sortable hide-mobile" title="20d Return Rank" @onclick='() => ToggleSort("rank")'>Rank@(sigSort.Arrow("rank"))</th>
+                        <th class="hide-mobile" title="Trend Aligned">Trend</th>
+                        <th class="hide-mobile" title="5d Breakout">Break</th>
+                        <th class="hide-mobile" title="Volume Surge">Vol</th>
                         <th class="sortable" title="AI Sentiment Score" @onclick='() => ToggleSort("ai")'>AI@(sigSort.Arrow("ai"))</th>
                         <th class="sortable" title="5-Factor Composite (T+S+F+Q+V, Regime-Adaptive)" @onclick='() => ToggleSort("composite")'>Score@(sigSort.Arrow("composite"))</th>
                         <th class="sortable" @onclick='() => ToggleSort("status")'>Status@(sigSort.Arrow("status"))</th>
@@ -80,16 +80,16 @@
                                 </span>
                             </td>
                             <td>@(s.EntryPrice != null ? $"${s.EntryPrice:F2}" : "--")</td>
-                            <td class="text-red">@(s.StopLoss != null ? $"${s.StopLoss:F2}" : "--")</td>
-                            <td class="text-green">@(s.TakeProfit != null ? $"${s.TakeProfit:F2}" : "--")</td>
-                            <td>@(s.Return20dRank != null ? $"{s.Return20dRank:P0}" : "--")</td>
-                            <td class="@(s.TrendAligned ? "text-green" : "text-red")">
+                            <td class="text-red hide-mobile">@(s.StopLoss != null ? $"${s.StopLoss:F2}" : "--")</td>
+                            <td class="text-green hide-mobile">@(s.TakeProfit != null ? $"${s.TakeProfit:F2}" : "--")</td>
+                            <td class="hide-mobile">@(s.Return20dRank != null ? $"{s.Return20dRank:P0}" : "--")</td>
+                            <td class="@(s.TrendAligned ? "text-green" : "text-red") hide-mobile">
                                 <span class="material-symbols-outlined" style="font-size:16px">@(s.TrendAligned ? "check_circle" : "cancel")</span>
                             </td>
-                            <td class="@(s.Breakout5d ? "text-green" : "text-red")">
+                            <td class="@(s.Breakout5d ? "text-green" : "text-red") hide-mobile">
                                 <span class="material-symbols-outlined" style="font-size:16px">@(s.Breakout5d ? "check_circle" : "cancel")</span>
                             </td>
-                            <td class="@(s.VolumeSurge ? "text-green" : "text-red")">
+                            <td class="@(s.VolumeSurge ? "text-green" : "text-red") hide-mobile">
                                 <span class="material-symbols-outlined" style="font-size:16px">@(s.VolumeSurge ? "check_circle" : "cancel")</span>
                             </td>
                             <td>
@@ -367,13 +367,8 @@
                                     {
                                         var buys = ins.TryGetProperty("buys", out var b2) ? b2.GetInt32() : 0;
                                         var sells = ins.TryGetProperty("sells", out var sl2) ? sl2.GetInt32() : 0;
-                                        var total = Math.Max(buys + sells, 1);
-                                        <div class="fd-mini-row">
-                                            <span class="fd-mini-label">Insider</span>
-                                            <div class="fd-mini-bar-bg">
-                                                <div class="fd-mini-bar" style="width:@((double)buys/total*100)%; background:#22c55e"></div>
-                                            </div>
-                                            <span class="fd-mini-val" style="font-size:0.65rem">B@(buys)/S@(sells)</span>
+                                        <div style="font-size:0.72rem; margin-bottom:0.3rem">
+                                            Insider: <b style="color:#22c55e">Buy @buys.ToString("N0")</b> / <b style="color:#ef4444">Sell @sells.ToString("N0")</b>
                                         </div>
                                     }
                                     @if (flowEl.TryGetProperty("recommendations", out var rec))
@@ -490,6 +485,31 @@
                                             <span class="fd-mini-val">@msv.ToString("F0")</span>
                                         </div>
                                     }
+                                }
+                                @* Oil (참고용, 점수 미반영) *@
+                                @if (md.TryGetProperty("oil_wti", out var oilSub) && oilSub.TryGetProperty("score", out var oilSc))
+                                {
+                                    var oilScore = oilSc.GetDouble();
+                                    var oilPrice = oilSub.TryGetProperty("price", out var op) && op.ValueKind != System.Text.Json.JsonValueKind.Null ? op.GetDouble() : 0;
+                                    var oilStatus = oilSub.TryGetProperty("status", out var os) ? os.GetString() : "N/A";
+                                    var oilMom5d = oilSub.TryGetProperty("mom_5d", out var om5) && om5.ValueKind != System.Text.Json.JsonValueKind.Null ? om5.GetDouble() : 0;
+                                    var oilStatusColor = oilStatus switch { "SURGE" => "#ef4444", "CRASH" => "#ef4444", "VOLATILE" => "#eab308", "STABLE" => "#22c55e", _ => "#94a3b8" };
+                                    <div style="margin-top:0.35rem; padding-top:0.3rem; border-top:1px dashed rgba(255,255,255,0.08)">
+                                        <div style="font-size:0.6rem; color:var(--text-secondary); margin-bottom:0.15rem">
+                                            <span class="material-symbols-outlined" style="font-size:10px; vertical-align:middle">oil_barrel</span>
+                                            Oil (참고용)
+                                        </div>
+                                        <div class="fd-mini-row">
+                                            <span class="fd-mini-label">WTI</span>
+                                            <div class="fd-mini-bar-bg"><div class="fd-mini-bar" style="width:@oilScore%; background:@(oilScore >= 55 ? "#22c55e" : oilScore >= 35 ? "#eab308" : "#ef4444")"></div></div>
+                                            <span class="fd-mini-val">@oilScore.ToString("F0")</span>
+                                        </div>
+                                        <div style="font-size:0.62rem; display:flex; gap:0.5rem; align-items:center; margin-top:0.1rem">
+                                            <span>$@oilPrice.ToString("F1")</span>
+                                            <span style="color:@(oilMom5d >= 0 ? "#22c55e" : "#ef4444")">5d @(oilMom5d >= 0 ? "+" : "")@oilMom5d.ToString("F1")%</span>
+                                            <span style="padding:0px 4px; border-radius:3px; font-size:0.58rem; font-weight:600; color:white; background:@oilStatusColor">@oilStatus</span>
+                                        </div>
+                                    </div>
                                 }
                                 @if (md.TryGetProperty("raw_data", out var raw))
                                 {

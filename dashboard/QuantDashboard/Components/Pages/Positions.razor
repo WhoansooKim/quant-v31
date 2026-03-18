@@ -123,8 +123,8 @@
                             <th class="sortable" @onclick='() => openSort.Toggle("pnl")'>P&L ($)@(openSort.Arrow("pnl"))</th>
                             <th class="sortable" @onclick='() => openSort.Toggle("pnlPct")'>P&L (%)@(openSort.Arrow("pnlPct"))</th>
                             <th>Stop Loss</th>
-                            <th>Take Profit</th>
-                            <th>Flags</th>
+                            <th class="hide-mobile">Take Profit</th>
+                            <th class="hide-mobile">Flags</th>
                             <th class="sortable" @onclick='() => openSort.Toggle("holdDays")'>Hold Days@(openSort.Arrow("holdDays"))</th>
                         </tr>
                     </thead>
@@ -152,8 +152,8 @@
                                         <span class="badge badge-trail" title="Trailing Stop Active (HWM: $@(p.HighWaterMark?.ToString("F2") ?? "--"))">TRAIL</span>
                                     }
                                 </td>
-                                <td class="text-green">@(p.TakeProfit != null ? $"${p.TakeProfit:F2}" : "--")</td>
-                                <td>
+                                <td class="text-green hide-mobile">@(p.TakeProfit != null ? $"${p.TakeProfit:F2}" : "--")</td>
+                                <td class="hide-mobile">
                                     @if (p.TrailingStopActive)
                                     {
                                         <span class="exit-flag flag-trail" title="Trailing stop active">
@@ -212,8 +212,8 @@
                             <th class="sortable" @onclick='() => closedSort.Toggle("pnlPct")'>P&L (%)@(closedSort.Arrow("pnlPct"))</th>
                             <th class="sortable" @onclick='() => closedSort.Toggle("reason")'>Exit Reason@(closedSort.Arrow("reason"))</th>
                             <th class="sortable" @onclick='() => closedSort.Toggle("holdDays")'>Hold Days@(closedSort.Arrow("holdDays"))</th>
-                            <th>Entry Date</th>
-                            <th>Exit Date</th>
+                            <th class="hide-mobile">Entry Date</th>
+                            <th class="hide-mobile">Exit Date</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -237,8 +237,8 @@
                                     </span>
                                 </td>
                                 <td>@(p.HoldDays ?? 0)</td>
-                                <td>@p.EntryTime.ToString("MM/dd")</td>
-                                <td>@(p.ExitTime?.ToString("MM/dd") ?? "--")</td>
+                                <td class="hide-mobile">@p.EntryTime.ToString("MM/dd")</td>
+                                <td class="hide-mobile">@(p.ExitTime?.ToString("MM/dd") ?? "--")</td>
                             </tr>
                         }
                     </tbody>

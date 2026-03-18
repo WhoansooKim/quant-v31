@@ -3,16 +3,27 @@
 @inject IHttpClientFactory HttpFactory
 @inject SwingService Db
 @inject IJSRuntime JS
+@implements IDisposable
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
 <PageTitle>Swing V4 - Watchlist</PageTitle>
 
 <div class="page-header">
     <h3>My Watchlist</h3>
-    <div style="display:flex; gap:0.5rem">
+    <div style="display:flex; align-items:center; gap:0.5rem">
+        @if (lastSparklineUpdate.HasValue)
+        {
+            <span class="text-muted" style="font-size:0.65rem; margin-right:0.25rem">
+                <span class="material-symbols-outlined" style="font-size:12px; vertical-align:middle">update</span>
+                @lastSparklineUpdate.Value.ToString("HH:mm:ss")
+            </span>
+        }
         <button class="btn-action" @onclick="AnalyzeAll" disabled="@analyzing">
             <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">analytics</span>
             @(analyzing ? "Analyzing..." : "Analyze All")
+        </button>
+        <button class="btn-action btn-outline" @onclick="RunChartDebug" disabled="@debugRunning" title="Chart API 디버그">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">bug_report</span>
         </button>
         <button class="btn-action btn-outline" @onclick="LoadAll">
             <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">refresh</span>
@@ -77,20 +88,21 @@
                           style="font-size:16px; width:20px; flex-shrink:0; transition:transform 0.2s">expand_more</span>
                     <a href="https://edition.cnn.com/markets/stocks/@sym" target="_blank" rel="noopener"
                        @onclick:stopPropagation="true"
+                       class="wl-sym"
                        style="display:inline-block; width:58px; flex:0 0 58px; font-weight:700; font-size:1.05rem; color:var(--primary); text-decoration:none; white-space:nowrap; overflow:hidden"
                        title="CNN Markets — @sym">@sym</a>
                     @{  var compName = r.TryGetProperty("company_name", out var cn) ? cn.GetString() ?? "" : ""; }
-                    <span style="display:inline-block; width:100px; flex:0 0 100px; font-size:0.72rem; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:2px">@compName</span>
-                    <span style="display:inline-block; width:78px; flex:0 0 78px; text-align:right; font-size:0.88rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap">$@price.ToString("F2")</span>
+                    <span class="wl-company" style="display:inline-block; width:100px; flex:0 0 100px; font-size:0.72rem; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:2px">@compName</span>
+                    <span class="wl-price" style="display:inline-block; width:78px; flex:0 0 78px; text-align:right; font-size:0.88rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap">$@price.ToString("F2")</span>
                     @if (pnl.HasValue)
                     {
-                        <span style="display:inline-block; width:65px; flex:0 0 65px; text-align:right; font-size:0.8rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; color:@(pnl > 0 ? "var(--accent-green,#22c55e)" : "var(--accent-red,#ef4444)")">
+                        <span class="wl-pnl" style="display:inline-block; width:65px; flex:0 0 65px; text-align:right; font-size:0.8rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; color:@(pnl > 0 ? "var(--accent-green,#22c55e)" : "var(--accent-red,#ef4444)")">
                             @(pnl > 0 ? "+" : "")@pnl.Value.ToString("F2")%
                         </span>
                     }
                     else
                     {
-                        <span style="display:inline-block; width:65px; flex:0 0 65px"></span>
+                        <span class="wl-pnl" style="display:inline-block; width:65px; flex:0 0 65px"></span>
                     }
                 </div>
                 <div class="compact-right">
@@ -721,6 +733,119 @@ else
     }
 </div>
 
+<!-- Chart Debug Popup -->
+@if (debugVisible)
+{
+    <div class="modal-overlay" @onclick="() => debugVisible = false">
+        <div class="modal-panel" @onclick:stopPropagation="true" style="max-width:720px; width:95vw; max-height:85vh; overflow-y:auto">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem">
+                <h4 style="margin:0; font-size:0.95rem">
+                    <span class="material-symbols-outlined" style="font-size:18px; vertical-align:middle; color:var(--accent-yellow,#eab308)">bug_report</span>
+                    Chart API Debug
+                </h4>
+                <button class="btn-icon" @onclick="() => debugVisible = false">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+
+            <!-- Server Time -->
+            <div style="background:var(--bg-secondary); border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.75rem; font-size:0.75rem">
+                <div style="display:flex; gap:1.5rem; flex-wrap:wrap">
+                    <span><b>Server KST:</b> @debugServerKst</span>
+                    <span><b>US Eastern:</b> @debugServerEt</span>
+                    <span><b>Market:</b> <span style="color:@(debugMarketStatus == "OPEN" ? "#22c55e" : debugMarketStatus == "PRE" ? "#06b6d4" : debugMarketStatus == "POST" ? "#f97316" : "#ef4444")">@debugMarketStatus</span></span>
+                </div>
+            </div>
+
+            <!-- Per-Symbol Results -->
+            @foreach (var d in debugResults)
+            {
+                var dateMatch = d.DataDate == d.TodayEt;
+                var hasPoints = d.PointCount > 0;
+                var statusColor = hasPoints && dateMatch ? "#22c55e" : hasPoints ? "#eab308" : "#ef4444";
+                var statusIcon = hasPoints && dateMatch ? "check_circle" : hasPoints ? "warning" : "error";
+                <div style="background:var(--bg-secondary); border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.4rem; border-left:3px solid @statusColor">
+                    <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.3rem">
+                        <span class="material-symbols-outlined" style="font-size:16px; color:@statusColor">@statusIcon</span>
+                        <b style="font-size:0.82rem">@d.Symbol</b>
+                        <span class="text-muted" style="font-size:0.7rem">@d.PointCount points</span>
+                        @if (d.ElapsedMs > 0)
+                        {
+                            <span class="text-muted" style="font-size:0.65rem">(@(d.ElapsedMs)ms)</span>
+                        }
+                    </div>
+                    <div style="font-size:0.7rem; display:flex; flex-wrap:wrap; gap:0.75rem">
+                        <span>data_date: <b style="color:@(dateMatch ? "#22c55e" : "#ef4444")">@(d.DataDate ?? "null")</b></span>
+                        <span>today_et: <b>@(d.TodayEt ?? "?")</b></span>
+                        <span>prev_close: <b>@(d.PrevClose?.ToString("F2") ?? "null")</b></span>
+                        @if (d.PointCount > 0)
+                        {
+                            <span>range: <b>@d.FirstTime</b> → <b>@d.LastTime</b></span>
+                        }
+                    </div>
+                    @if (d.PointCount > 0)
+                    {
+                        <div style="font-size:0.68rem; margin-top:0.2rem; display:flex; gap:0.75rem">
+                            <span style="color:#06b6d4">Pre: @d.PreCount</span>
+                            <span style="color:#22c55e">Regular: @d.RegularCount</span>
+                            <span style="color:#f97316">Post: @d.PostCount</span>
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(d.Error))
+                    {
+                        <div style="font-size:0.7rem; color:#ef4444; margin-top:0.2rem">Error: @d.Error</div>
+                    }
+                </div>
+            }
+
+            @if (!debugResults.Any() && debugRunning)
+            {
+                <div class="text-muted" style="text-align:center; padding:1rem">Fetching chart data for all symbols...</div>
+            }
+
+            <!-- Diagnosis -->
+            @if (debugResults.Any())
+            {
+                var stale = debugResults.Where(d => d.DataDate != d.TodayEt && d.PointCount > 0).ToList();
+                var failed = debugResults.Where(d => d.PointCount == 0).ToList();
+                var ok = debugResults.Where(d => d.DataDate == d.TodayEt && d.PointCount > 0).ToList();
+
+                <div style="margin-top:0.75rem; padding:0.6rem 0.75rem; background:var(--s2); border-radius:6px; font-size:0.75rem">
+                    <div style="font-weight:600; margin-bottom:0.3rem">
+                        <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">diagnosis</span>
+                        진단 결과
+                    </div>
+                    @if (ok.Count == debugResults.Count)
+                    {
+                        <div style="color:#22c55e">모든 종목 오늘(@(debugResults.First().TodayEt)) 데이터 정상 수신</div>
+                    }
+                    else
+                    {
+                        @if (stale.Any())
+                        {
+                            <div style="color:#eab308; margin-bottom:0.2rem">
+                                <b>과거 데이터 반환 (@(stale.Count)개):</b> @string.Join(", ", stale.Select(s => $"{s.Symbol}({s.DataDate})"))
+                                <br/>→ yfinance period=2d에 오늘 데이터 미포함 (프리마켓 전 또는 휴장일)
+                            </div>
+                        }
+                        @if (failed.Any())
+                        {
+                            <div style="color:#ef4444; margin-bottom:0.2rem">
+                                <b>데이터 없음 (@(failed.Count)개):</b> @string.Join(", ", failed.Select(s => s.Symbol))
+                                <br/>→ yfinance 응답 빈 배열 (티커 오류 또는 네트워크 이슈)
+                            </div>
+                        }
+                        @if (ok.Any())
+                        {
+                            <div style="color:#22c55e">정상: @string.Join(", ", ok.Select(s => s.Symbol))</div>
+                        }
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
 @code {
     private List<WatchlistItem> watchlist = new();
     private List<System.Text.Json.JsonElement> analysisResults = new();
@@ -734,6 +859,19 @@ else
     private HashSet<string> expandedCards = new();
     private HashSet<string> expandedDetails = new();
     private Dictionary<string, string> selectedPeriod = new();
+
+    // Chart Debug
+    private bool debugVisible;
+    private bool debugRunning;
+    private string? debugServerKst;
+    private string? debugServerEt;
+    private string? debugMarketStatus;
+    private List<ChartDebugResult> debugResults = new();
+    private record ChartDebugResult(
+        string Symbol, int PointCount, string? DataDate, string? TodayEt,
+        double? PrevClose, string? FirstTime, string? LastTime,
+        int PreCount, int RegularCount, int PostCount,
+        long ElapsedMs, string? Error);
 
     // Market Heatmap
     private bool heatmapLoading = false;
@@ -801,10 +939,22 @@ else
     private string newNotes = "";
 
     private bool sparklineRendered;
+    private System.Threading.Timer? _autoRefreshTimer;
+    private DateTime? lastSparklineUpdate;
 
     protected override async Task OnInitializedAsync()
     {
         await LoadAll();
+        // 60초마다 sparkline + 확장된 차트 자동 갱신
+        _autoRefreshTimer = new System.Threading.Timer(async _ =>
+        {
+            try
+            {
+                await RefreshAllCharts();
+                await InvokeAsync(StateHasChanged);
+            }
+            catch { }
+        }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -812,13 +962,45 @@ else
         if (!sparklineRendered && analysisResults.Any())
         {
             sparklineRendered = true;
-            await Task.Delay(300);
-            foreach (var r in analysisResults)
+            await Task.Delay(500);
+            await RenderAllSparklines();
+        }
+    }
+
+    private async Task RenderAllSparklines()
+    {
+        foreach (var r in analysisResults)
+        {
+            var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
+            if (string.IsNullOrEmpty(sym)) continue;
+            try { await FetchAndRenderSparkline(sym); }
+            catch { }
+        }
+        lastSparklineUpdate = DateTime.Now;
+    }
+
+    /// <summary>타이머에 의한 자동 갱신: sparkline + 확장된 intraday 차트</summary>
+    private async Task RefreshAllCharts()
+    {
+        // Sparkline 전체 갱신
+        foreach (var r in analysisResults)
+        {
+            var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
+            if (string.IsNullOrEmpty(sym)) continue;
+            try { await FetchAndRenderSparkline(sym); }
+            catch { }
+        }
+        lastSparklineUpdate = DateTime.Now;
+
+        // 확장된 카드의 intraday 차트도 갱신
+        foreach (var sym in expandedCards.ToList())
+        {
+            try
             {
-                var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
-                if (string.IsNullOrEmpty(sym)) continue;
-                _ = FetchAndRenderSparkline(sym);
+                var period = selectedPeriod.GetValueOrDefault(sym, "1d");
+                await FetchAndRenderChart(sym, period);
             }
+            catch { }
         }
     }
 
@@ -848,6 +1030,8 @@ else
             await LoadAnalysis();
             await LoadSignalLogStats();
             await LoadMarketOverview();
+            // Reset sparkline flag so OnAfterRenderAsync re-renders them
+            sparklineRendered = false;
         }
         catch (Exception ex)
         {
@@ -1155,5 +1339,117 @@ else
             }
         }
         catch { }
+    }
+
+    private async Task RunChartDebug()
+    {
+        debugRunning = true;
+        debugVisible = true;
+        debugResults.Clear();
+        debugServerKst = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        debugServerEt = null;
+        debugMarketStatus = "...";
+        StateHasChanged();
+
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            client.Timeout = TimeSpan.FromSeconds(30);
+
+            // 서버 시간 + 마켓 상태 확인 (health 엔드포인트)
+            try
+            {
+                var health = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/health");
+                // US Eastern 시간 계산 (KST - 13h or 14h depending on DST)
+                var kst = DateTime.Now;
+                var etOffset = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+                var etNow = TimeZoneInfo.ConvertTime(kst, TimeZoneInfo.Local, etOffset);
+                debugServerEt = etNow.ToString("yyyy-MM-dd HH:mm:ss ddd");
+                var etHour = etNow.Hour * 60 + etNow.Minute;
+                var isWeekday = etNow.DayOfWeek != DayOfWeek.Saturday && etNow.DayOfWeek != DayOfWeek.Sunday;
+                debugMarketStatus = !isWeekday ? "CLOSED (Weekend)"
+                    : etHour < 240 ? "CLOSED"      // ~04:00 전
+                    : etHour < 570 ? "PRE"          // 04:00~09:30
+                    : etHour < 960 ? "OPEN"         // 09:30~16:00
+                    : etHour < 1200 ? "POST"        // 16:00~20:00
+                    : "CLOSED";
+            }
+            catch { debugServerEt = "?"; debugMarketStatus = "?"; }
+
+            StateHasChanged();
+
+            // 각 워치리스트 종목별 chart API 호출
+            var symbols = analysisResults
+                .Select(r => r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "")
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList();
+
+            if (!symbols.Any())
+            {
+                symbols = watchlist.Select(w => w.Symbol).ToList();
+            }
+
+            foreach (var sym in symbols)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+                        $"/watchlist/chart/{sym}?period=1d");
+                    sw.Stop();
+
+                    var pts = resp.TryGetProperty("points", out var p) ? p : default;
+                    var pointCount = pts.ValueKind == System.Text.Json.JsonValueKind.Array ? pts.GetArrayLength() : 0;
+                    var dataDate = resp.TryGetProperty("data_date", out var dd) ? dd.GetString() : null;
+                    var todayEt = resp.TryGetProperty("today_et", out var te) ? te.GetString() : null;
+                    var prevClose = resp.TryGetProperty("prev_close", out var pc)
+                        && pc.ValueKind == System.Text.Json.JsonValueKind.Number ? (double?)pc.GetDouble() : null;
+                    var error = resp.TryGetProperty("error", out var er) ? er.GetString() : null;
+
+                    string? firstTime = null, lastTime = null;
+                    int preC = 0, regC = 0, postC = 0;
+                    if (pointCount > 0)
+                    {
+                        var arr = pts.EnumerateArray().ToList();
+                        firstTime = arr.First().TryGetProperty("time", out var ft) ? ft.GetString() : null;
+                        lastTime = arr.Last().TryGetProperty("time", out var lt) ? lt.GetString() : null;
+                        foreach (var pt in arr)
+                        {
+                            var sess = pt.TryGetProperty("session", out var ss) ? ss.GetString() : "";
+                            if (sess == "pre") preC++;
+                            else if (sess == "regular") regC++;
+                            else if (sess == "post") postC++;
+                        }
+                    }
+
+                    debugResults.Add(new ChartDebugResult(
+                        sym, pointCount, dataDate, todayEt, prevClose,
+                        firstTime, lastTime, preC, regC, postC,
+                        sw.ElapsedMilliseconds, error));
+                }
+                catch (Exception ex)
+                {
+                    sw.Stop();
+                    debugResults.Add(new ChartDebugResult(
+                        sym, 0, null, null, null, null, null, 0, 0, 0,
+                        sw.ElapsedMilliseconds, ex.Message));
+                }
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMsg = $"Debug error: {ex.Message}";
+        }
+        finally
+        {
+            debugRunning = false;
+            StateHasChanged();
+        }
+    }
+
+    public void Dispose()
+    {
+        _autoRefreshTimer?.Dispose();
     }
 }
