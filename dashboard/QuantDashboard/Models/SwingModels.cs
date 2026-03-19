@@ -56,7 +56,11 @@ public record SwingPosition(
     bool IsPaper,
     bool PartialExited = false,
     bool TrailingStopActive = false,
-    decimal? HighWaterMark = null
+    decimal? HighWaterMark = null,
+    decimal? Atr14 = null,
+    decimal? EntryAtr = null,
+    decimal? HardStop = null,
+    bool AutoExit = false
 );
 
 // ─── 스윙 거래 ───

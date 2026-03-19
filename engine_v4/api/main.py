@@ -1246,9 +1246,19 @@ async def analyze_watchlist(bg: BackgroundTasks):
 
 
 def _analyze_watchlist():
-    """워치리스트 전체 분석 — Investing.com 스타일 12개 기술지표 기반 매수/매도 추천."""
+    """워치리스트 분석 — Connors RSI(2) Mean Reversion + ATR 기반 대형 기술주 전략.
+
+    연구 기반 (Connors 2004, Lopez de Prado 2018, Quantpedia):
+      - 1차: RSI(2) < 5 매수, Close > SMA5 매도 (승률 75%, 평균 보유 3~5일)
+      - 2차: SMA200 추세 필터 (상승추세에서만 매수)
+      - 3차: 거래량 확인 + QQQ 상대강도
+      - 4차: ATR 기반 목표가/손절 (2.5×/1.5×)
+      - 5차: BB 스퀴즈 감지 + OPEX 주간 필터
+    """
     import yfinance as yf
     import numpy as np
+    from datetime import date as _date_type, timedelta
+    import calendar
 
     items = pg.get_watchlist()
     if not items:
@@ -1259,19 +1269,18 @@ def _analyze_watchlist():
     symbols = [w["symbol"] for w in items]
 
     try:
-        data = yf.download(symbols, period="1y", progress=False)
+        data = yf.download(symbols + ["QQQ"], period="1y", progress=False)
     except Exception as e:
         logger.error(f"Watchlist yfinance failed: {e}")
         cache.set_json("watchlist_analysis", {"status": "failed", "error": str(e)}, ttl=3600)
         return
 
     def _get_col(col, sym):
-        if len(symbols) == 1:
-            return data[col].dropna().values
+        if len(symbols) == 1 and sym != "QQQ":
+            return data[col].dropna().values if "QQQ" not in symbols else data[col][sym].dropna().values
         return data[col][sym].dropna().values
 
     def _ema_arr(arr, period):
-        """Return full EMA array."""
         out = np.empty_like(arr, dtype=float)
         out[0] = float(arr[0])
         m = 2.0 / (period + 1)
@@ -1280,14 +1289,12 @@ def _analyze_watchlist():
         return out
 
     def _sma_arr(arr, period):
-        """Return rolling SMA array (NaN-padded)."""
         out = np.full(len(arr), np.nan)
         for i in range(period - 1, len(arr)):
             out[i] = np.mean(arr[i - period + 1:i + 1])
         return out
 
     def _rsi_series(arr, period=14):
-        """Return RSI array."""
         d = np.diff(arr)
         g = np.where(d > 0, d, 0.0)
         l = np.where(d < 0, -d, 0.0)
@@ -1301,8 +1308,7 @@ def _analyze_watchlist():
         rs = avg_g / np.maximum(avg_l, 1e-10)
         return 100.0 - 100.0 / (1.0 + rs)
 
-    def _stoch(high, low, close, k_period=14, d_period=3):
-        """Stochastic %K, %D."""
+    def _stoch(high, low, close, k_period=5, d_period=3):
         k_arr = np.full(len(close), np.nan)
         for i in range(k_period - 1, len(close)):
             hh = np.max(high[i - k_period + 1:i + 1])
@@ -1311,28 +1317,7 @@ def _analyze_watchlist():
         d_arr = _sma_arr(k_arr, d_period)
         return k_arr, d_arr
 
-    def _williams_r(high, low, close, period=14):
-        """Williams %R."""
-        out = np.full(len(close), np.nan)
-        for i in range(period - 1, len(close)):
-            hh = np.max(high[i - period + 1:i + 1])
-            ll = np.min(low[i - period + 1:i + 1])
-            out[i] = ((hh - close[i]) / max(hh - ll, 1e-10)) * -100
-        return out
-
-    def _cci(high, low, close, period=20):
-        """CCI."""
-        tp = (high + low + close) / 3.0
-        out = np.full(len(close), np.nan)
-        for i in range(period - 1, len(close)):
-            window = tp[i - period + 1:i + 1]
-            sma = np.mean(window)
-            md = np.mean(np.abs(window - sma))
-            out[i] = (tp[i] - sma) / max(md * 0.015, 1e-10)
-        return out
-
     def _adx(high, low, close, period=14):
-        """ADX."""
         n = len(close)
         if n < period * 2:
             return np.full(n, np.nan)
@@ -1354,36 +1339,43 @@ def _analyze_watchlist():
         out[1:] = adx_arr
         return out
 
-    def _ultimate_osc(high, low, close, p1=7, p2=14, p3=28):
-        """Ultimate Oscillator."""
-        bp = close[1:] - np.minimum(low[1:], close[:-1])
-        tr = np.maximum(high[1:] - low[1:],
-                        np.maximum(np.abs(high[1:] - close[:-1]),
-                                   np.abs(low[1:] - close[:-1])))
-        n = len(bp)
-        out = np.full(len(close), np.nan)
-        for i in range(max(p1, p2, p3) - 1, n):
-            a1 = np.sum(bp[i - p1 + 1:i + 1]) / max(np.sum(tr[i - p1 + 1:i + 1]), 1e-10)
-            a2 = np.sum(bp[i - p2 + 1:i + 1]) / max(np.sum(tr[i - p2 + 1:i + 1]), 1e-10)
-            a3 = np.sum(bp[i - p3 + 1:i + 1]) / max(np.sum(tr[i - p3 + 1:i + 1]), 1e-10)
-            out[i + 1] = 100 * (4 * a1 + 2 * a2 + a3) / 7.0
-        return out
-
-    def _roc(close, period=12):
-        """Rate of Change."""
+    def _mfi(high, low, close, volume, period=14):
+        """Money Flow Index — volume-weighted RSI."""
+        tp = (high + low + close) / 3.0
+        mf = tp * volume
         out = np.full(len(close), np.nan)
         for i in range(period, len(close)):
-            out[i] = ((close[i] - close[i - period]) / max(abs(close[i - period]), 1e-10)) * 100
+            pos_mf = sum(mf[j] for j in range(i - period + 1, i + 1) if tp[j] > tp[j - 1])
+            neg_mf = sum(mf[j] for j in range(i - period + 1, i + 1) if tp[j] < tp[j - 1])
+            if neg_mf < 1e-10:
+                out[i] = 100.0
+            else:
+                out[i] = 100.0 - 100.0 / (1.0 + pos_mf / neg_mf)
         return out
 
-    def _bull_bear_power(high, low, close, period=13):
-        """Bull/Bear Power (Elder)."""
-        ema_s = _ema_arr(close, period)
-        bull = high - ema_s
-        bear = low - ema_s
-        return bull, bear
+    def _is_opex_week():
+        """현재 OPEX 주간인지 확인 (매월 세번째 금요일 포함 주)."""
+        today = _date_type.today()
+        cal = calendar.monthcalendar(today.year, today.month)
+        # 세번째 금요일 찾기 (금=4)
+        fridays = [week[calendar.FRIDAY] for week in cal if week[calendar.FRIDAY] != 0]
+        if len(fridays) >= 3:
+            opex_friday = _date_type(today.year, today.month, fridays[2])
+            # OPEX 주 = 해당 금요일 포함 월~금
+            opex_monday = opex_friday - timedelta(days=opex_friday.weekday())
+            return opex_monday <= today <= opex_friday
+        return False
 
-    # ── 실시간 현재가 조회 (장중이면 실시간, 장외면 종가) ──
+    opex_week = _is_opex_week()
+
+    # ── QQQ 데이터 (상대강도 계산용) ──
+    qqq_close = None
+    try:
+        qqq_close = _get_col("Close", "QQQ")
+    except Exception:
+        logger.warning("QQQ data not available for relative strength")
+
+    # ── 실시간 현재가 조회 ──
     live_prices = {}
     try:
         live_data = yf.download(symbols, period="1d", interval="1m", progress=False)
@@ -1413,294 +1405,339 @@ def _analyze_watchlist():
             if n < 50:
                 continue
 
-            # 실시간 가격 사용 (없으면 일봉 종가 fallback)
             current_price = live_prices.get(sym, float(close_arr[-1]))
 
-            # ── Calculate all 12 indicators ──
-            # 1) RSI(14)
-            rsi_arr = _rsi_series(close_arr, 14)
-            rsi_val = float(rsi_arr[-1])
+            # ═══════════════════════════════════════════════
+            # 8 Key Indicators (연구 기반 선별)
+            # ═══════════════════════════════════════════════
 
-            # 2) Stochastic(14,3,3)
-            stoch_k, stoch_d = _stoch(high_arr, low_arr, close_arr, 14, 3)
+            # 1) RSI(2) — Connors 핵심 시그널
+            rsi2_arr = _rsi_series(close_arr, 2)
+            rsi2_val = float(rsi2_arr[-1])
+
+            # 2) Cumulative RSI(2) — 2일 누적 (Quantitativo 변형, 연 26.6%)
+            cum_rsi2 = float(rsi2_arr[-1] + rsi2_arr[-2]) if len(rsi2_arr) >= 2 else rsi2_val * 2
+
+            # 3) RSI(14) — 전통적 과매수/과매도
+            rsi14_arr = _rsi_series(close_arr, 14)
+            rsi14_val = float(rsi14_arr[-1])
+
+            # 4) Stochastic(5,3,3) — 빠른 반전 감지
+            stoch_k, stoch_d = _stoch(high_arr, low_arr, close_arr, 5, 3)
             stoch_k_val = float(stoch_k[-1]) if not np.isnan(stoch_k[-1]) else 50
-            stoch_d_val = float(stoch_d[-1]) if not np.isnan(stoch_d[-1]) else 50
 
-            # 3) StochRSI(14)
-            rsi_for_stoch = rsi_arr[-14:] if len(rsi_arr) >= 14 else rsi_arr
-            rsi_high = np.max(rsi_for_stoch)
-            rsi_low = np.min(rsi_for_stoch)
-            stoch_rsi = ((rsi_val - rsi_low) / max(rsi_high - rsi_low, 1e-10)) * 100
-
-            # 4) MACD(12,26,9)
+            # 5) MACD Histogram — 모멘텀 방향
             ema12 = _ema_arr(close_arr, 12)
             ema26 = _ema_arr(close_arr, 26)
-            macd_line_arr = ema12 - ema26
-            signal_arr = _ema_arr(macd_line_arr, 9)
-            macd_val = float(macd_line_arr[-1])
-            macd_signal = float(signal_arr[-1])
-            macd_hist = macd_val - macd_signal
+            macd_line = ema12 - ema26
+            macd_signal = _ema_arr(macd_line, 9)
+            macd_hist = float(macd_line[-1] - macd_signal[-1])
 
-            # 5) ADX(14)
+            # 6) MFI(14) — 거래량 가중 RSI (ML 최강 예측변수)
+            mfi_arr = _mfi(high_arr, low_arr, close_arr, vol_arr, 14)
+            mfi_val = float(mfi_arr[-1]) if not np.isnan(mfi_arr[-1]) else 50
+
+            # 7) ADX(14) — 추세 강도 / 레짐 분류
             adx_arr = _adx(high_arr, low_arr, close_arr, 14)
             adx_val = float(adx_arr[-1]) if not np.isnan(adx_arr[-1]) else 25
 
-            # 6) Williams %R(14)
-            wr_arr = _williams_r(high_arr, low_arr, close_arr, 14)
-            wr_val = float(wr_arr[-1]) if not np.isnan(wr_arr[-1]) else -50
+            # 8) Bollinger Bandwidth — 스퀴즈 감지
+            sma20 = _sma_arr(close_arr, 20)
+            if not np.isnan(sma20[-1]):
+                rolling_std = np.std(close_arr[-20:])
+                bb_upper = sma20[-1] + 2 * rolling_std
+                bb_lower = sma20[-1] - 2 * rolling_std
+                bb_width = (bb_upper - bb_lower) / max(sma20[-1], 1e-10)
+                # 120일 최저 bandwidth 대비 현재
+                bw_history = []
+                for i in range(max(119, 19), n):
+                    std_i = np.std(close_arr[i - 19:i + 1])
+                    sma_i = np.mean(close_arr[i - 19:i + 1])
+                    bw_history.append(2 * 2 * std_i / max(sma_i, 1e-10))
+                bb_squeeze = bb_width <= (np.percentile(bw_history, 10) if bw_history else bb_width)
+            else:
+                bb_width = 0
+                bb_squeeze = False
 
-            # 7) CCI(20)
-            cci_arr = _cci(high_arr, low_arr, close_arr, 20)
-            cci_val = float(cci_arr[-1]) if not np.isnan(cci_arr[-1]) else 0
-
-            # 8) ATR(14)
+            # ── ATR(14) ──
             tr_arr = np.maximum(high_arr[1:] - low_arr[1:],
                                 np.maximum(np.abs(high_arr[1:] - close_arr[:-1]),
                                            np.abs(low_arr[1:] - close_arr[:-1])))
             atr_val = float(np.mean(tr_arr[-14:])) if len(tr_arr) >= 14 else float(np.mean(tr_arr))
 
-            # 9) Highs/Lows (14-day)
-            high_14 = float(np.max(high_arr[-14:]))
-            low_14 = float(np.min(low_arr[-14:]))
-            hl_mid = (high_14 + low_14) / 2
+            # ── Moving Averages (핵심 5개) ──
+            sma200_val = float(np.mean(close_arr[-200:])) if n >= 200 else float(np.mean(close_arr))
+            ema5_val = float(_ema_arr(close_arr, 5)[-1])
+            ema10_val = float(_ema_arr(close_arr, 10)[-1])
+            ema20_val = float(_ema_arr(close_arr, 20)[-1])
+            ema200_val = float(_ema_arr(close_arr, 200)[-1]) if n >= 200 else float(_ema_arr(close_arr, min(n, 50))[-1])
 
-            # 10) Ultimate Oscillator(7,14,28)
-            uo_arr = _ultimate_osc(high_arr, low_arr, close_arr)
-            uo_val = float(uo_arr[-1]) if not np.isnan(uo_arr[-1]) else 50
+            # ── QQQ Relative Strength (5일 & 20일) ──
+            rel_str_5d = 0
+            rel_str_20d = 0
+            if qqq_close is not None and len(qqq_close) >= 20 and n >= 20:
+                sym_ret_5 = (close_arr[-1] - close_arr[-5]) / max(close_arr[-5], 1e-10) if n >= 5 else 0
+                qqq_ret_5 = (qqq_close[-1] - qqq_close[-5]) / max(qqq_close[-5], 1e-10)
+                rel_str_5d = sym_ret_5 - qqq_ret_5
+                sym_ret_20 = (close_arr[-1] - close_arr[-20]) / max(close_arr[-20], 1e-10) if n >= 20 else 0
+                qqq_ret_20 = (qqq_close[-1] - qqq_close[-20]) / max(qqq_close[-20], 1e-10)
+                rel_str_20d = sym_ret_20 - qqq_ret_20
 
-            # 11) ROC(12)
-            roc_arr = _roc(close_arr, 12)
-            roc_val = float(roc_arr[-1]) if not np.isnan(roc_arr[-1]) else 0
+            # ── Volume Ratio ──
+            vol_ratio = float(np.mean(vol_arr[-5:])) / max(float(np.mean(vol_arr[-20:])), 1) if len(vol_arr) >= 20 else 1.0
 
-            # 12) Bull/Bear Power(13)
-            bull_arr, bear_arr = _bull_bear_power(high_arr, low_arr, close_arr, 13)
-            bull_val = float(bull_arr[-1])
-            bear_val = float(bear_arr[-1])
-            bp_val = bull_val + bear_val
+            # ── OBV Trend (5일 기울기) ──
+            obv = np.zeros(n)
+            for i in range(1, n):
+                if close_arr[i] > close_arr[i - 1]:
+                    obv[i] = obv[i - 1] + vol_arr[i]
+                elif close_arr[i] < close_arr[i - 1]:
+                    obv[i] = obv[i - 1] - vol_arr[i]
+                else:
+                    obv[i] = obv[i - 1]
+            obv_slope = (obv[-1] - obv[-5]) / max(abs(obv[-5]), 1e-10) if n >= 5 else 0
 
-            # ── Per-indicator signal judgment ──
+            # ═══════════════════════════════════════════════
+            # Indicator Signal Judgment
+            # ═══════════════════════════════════════════════
             ind_list = []
 
-            # 1) RSI
-            if rsi_val < 30:
-                ind_list.append({"name": "RSI(14)", "value": round(rsi_val, 1), "signal": "BUY"})
-            elif rsi_val > 70:
-                ind_list.append({"name": "RSI(14)", "value": round(rsi_val, 1), "signal": "SELL"})
+            # 1) RSI(2) — PRIMARY: <5 극단 매수, <10 매수, >90 매도, >95 극단 매도
+            if rsi2_val < 5:
+                ind_list.append({"name": "RSI(2)", "value": round(rsi2_val, 1), "signal": "BUY"})
+            elif rsi2_val < 10:
+                ind_list.append({"name": "RSI(2)", "value": round(rsi2_val, 1), "signal": "BUY"})
+            elif rsi2_val > 95:
+                ind_list.append({"name": "RSI(2)", "value": round(rsi2_val, 1), "signal": "SELL"})
+            elif rsi2_val > 90:
+                ind_list.append({"name": "RSI(2)", "value": round(rsi2_val, 1), "signal": "SELL"})
             else:
-                ind_list.append({"name": "RSI(14)", "value": round(rsi_val, 1), "signal": "NEUTRAL"})
+                ind_list.append({"name": "RSI(2)", "value": round(rsi2_val, 1), "signal": "NEUTRAL"})
 
-            # 2) Stochastic
+            # 2) Cumulative RSI(2) — 2일 합 <10 매수
+            if cum_rsi2 < 5:
+                ind_list.append({"name": "CumRSI(2)", "value": round(cum_rsi2, 1), "signal": "BUY"})
+            elif cum_rsi2 < 10:
+                ind_list.append({"name": "CumRSI(2)", "value": round(cum_rsi2, 1), "signal": "BUY"})
+            elif cum_rsi2 > 190:
+                ind_list.append({"name": "CumRSI(2)", "value": round(cum_rsi2, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "CumRSI(2)", "value": round(cum_rsi2, 1), "signal": "NEUTRAL"})
+
+            # 3) RSI(14)
+            if rsi14_val < 30:
+                ind_list.append({"name": "RSI(14)", "value": round(rsi14_val, 1), "signal": "BUY"})
+            elif rsi14_val > 70:
+                ind_list.append({"name": "RSI(14)", "value": round(rsi14_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "RSI(14)", "value": round(rsi14_val, 1), "signal": "NEUTRAL"})
+
+            # 4) Stochastic(5,3,3)
             if stoch_k_val < 20:
-                ind_list.append({"name": "STOCH(14,3)", "value": round(stoch_k_val, 1), "signal": "BUY"})
+                ind_list.append({"name": "STOCH(5,3)", "value": round(stoch_k_val, 1), "signal": "BUY"})
             elif stoch_k_val > 80:
-                ind_list.append({"name": "STOCH(14,3)", "value": round(stoch_k_val, 1), "signal": "SELL"})
+                ind_list.append({"name": "STOCH(5,3)", "value": round(stoch_k_val, 1), "signal": "SELL"})
             else:
-                ind_list.append({"name": "STOCH(14,3)", "value": round(stoch_k_val, 1), "signal": "NEUTRAL"})
+                ind_list.append({"name": "STOCH(5,3)", "value": round(stoch_k_val, 1), "signal": "NEUTRAL"})
 
-            # 3) StochRSI
-            if stoch_rsi < 20:
-                ind_list.append({"name": "StochRSI", "value": round(stoch_rsi, 1), "signal": "BUY"})
-            elif stoch_rsi > 80:
-                ind_list.append({"name": "StochRSI", "value": round(stoch_rsi, 1), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "StochRSI", "value": round(stoch_rsi, 1), "signal": "NEUTRAL"})
-
-            # 4) MACD
+            # 5) MACD Histogram
             if macd_hist > 0:
-                ind_list.append({"name": "MACD(12,26)", "value": round(macd_hist, 3), "signal": "BUY"})
+                ind_list.append({"name": "MACD Hist", "value": round(macd_hist, 3), "signal": "BUY"})
             elif macd_hist < 0:
-                ind_list.append({"name": "MACD(12,26)", "value": round(macd_hist, 3), "signal": "SELL"})
+                ind_list.append({"name": "MACD Hist", "value": round(macd_hist, 3), "signal": "SELL"})
             else:
-                ind_list.append({"name": "MACD(12,26)", "value": round(macd_hist, 3), "signal": "NEUTRAL"})
+                ind_list.append({"name": "MACD Hist", "value": round(macd_hist, 3), "signal": "NEUTRAL"})
 
-            # 5) ADX — trend strength; direction from +DI/-DI proxy
+            # 6) MFI(14)
+            if mfi_val < 20:
+                ind_list.append({"name": "MFI(14)", "value": round(mfi_val, 1), "signal": "BUY"})
+            elif mfi_val > 80:
+                ind_list.append({"name": "MFI(14)", "value": round(mfi_val, 1), "signal": "SELL"})
+            else:
+                ind_list.append({"name": "MFI(14)", "value": round(mfi_val, 1), "signal": "NEUTRAL"})
+
+            # 7) ADX(14) — 추세 강도
             if adx_val > 25:
-                # Strong trend — use price vs SMA as proxy for direction
-                sma_20 = float(np.mean(close_arr[-20:]))
-                if current_price > sma_20:
-                    ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": "BUY"})
-                else:
-                    ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": "SELL"})
+                adx_sig = "BUY" if current_price > sma200_val else "SELL"
             else:
-                ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": "NEUTRAL"})
+                adx_sig = "NEUTRAL"
+            ind_list.append({"name": "ADX(14)", "value": round(adx_val, 1), "signal": adx_sig})
 
-            # 6) Williams %R
-            if wr_val < -80:
-                ind_list.append({"name": "W%R(14)", "value": round(wr_val, 1), "signal": "BUY"})
-            elif wr_val > -20:
-                ind_list.append({"name": "W%R(14)", "value": round(wr_val, 1), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "W%R(14)", "value": round(wr_val, 1), "signal": "NEUTRAL"})
+            # 8) BB Squeeze — 스퀴즈=에너지 축적 (방향 중립)
+            bb_sig = "NEUTRAL"
+            if bb_squeeze:
+                bb_sig = "BUY" if current_price > sma200_val else "SELL"
+            ind_list.append({"name": "BB Squeeze", "value": round(bb_width * 100, 2), "signal": bb_sig})
 
-            # 7) CCI
-            if cci_val < -100:
-                ind_list.append({"name": "CCI(20)", "value": round(cci_val, 1), "signal": "BUY"})
-            elif cci_val > 100:
-                ind_list.append({"name": "CCI(20)", "value": round(cci_val, 1), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "CCI(20)", "value": round(cci_val, 1), "signal": "NEUTRAL"})
-
-            # 8) ATR — volatility, neutral by nature; high vol = caution
-            atr_pct = (atr_val / current_price) * 100
-            ind_list.append({"name": "ATR(14)", "value": round(atr_val, 2), "signal": "NEUTRAL"})
-
-            # 9) Highs/Lows
-            if current_price > hl_mid:
-                ind_list.append({"name": "Highs/Lows", "value": round(current_price - hl_mid, 2), "signal": "BUY"})
-            elif current_price < hl_mid:
-                ind_list.append({"name": "Highs/Lows", "value": round(current_price - hl_mid, 2), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "Highs/Lows", "value": 0, "signal": "NEUTRAL"})
-
-            # 10) Ultimate Oscillator
-            if uo_val < 30:
-                ind_list.append({"name": "UO(7,14,28)", "value": round(uo_val, 1), "signal": "BUY"})
-            elif uo_val > 70:
-                ind_list.append({"name": "UO(7,14,28)", "value": round(uo_val, 1), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "UO(7,14,28)", "value": round(uo_val, 1), "signal": "NEUTRAL"})
-
-            # 11) ROC
-            if roc_val > 0:
-                ind_list.append({"name": "ROC(12)", "value": round(roc_val, 2), "signal": "BUY"})
-            elif roc_val < 0:
-                ind_list.append({"name": "ROC(12)", "value": round(roc_val, 2), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "ROC(12)", "value": round(roc_val, 2), "signal": "NEUTRAL"})
-
-            # 12) Bull/Bear Power
-            if bp_val > 0:
-                ind_list.append({"name": "Bull/Bear", "value": round(bp_val, 2), "signal": "BUY"})
-            elif bp_val < 0:
-                ind_list.append({"name": "Bull/Bear", "value": round(bp_val, 2), "signal": "SELL"})
-            else:
-                ind_list.append({"name": "Bull/Bear", "value": round(bp_val, 2), "signal": "NEUTRAL"})
-
-            # ── Oscillator aggregate (12 indicators) ──
             osc_buy = sum(1 for x in ind_list if x["signal"] == "BUY")
             osc_sell = sum(1 for x in ind_list if x["signal"] == "SELL")
             osc_neutral = sum(1 for x in ind_list if x["signal"] == "NEUTRAL")
 
-            # ── Moving Averages (SMA & EMA × 6 periods = 12 signals) ──
+            # ═══════════════════════════════════════════════
+            # Moving Averages (핵심 5개 + Connors Exit)
+            # ═══════════════════════════════════════════════
             ma_list = []
-            ma_periods = [5, 10, 20, 50, 100, 200]
-            for p in ma_periods:
-                if len(close_arr) >= p:
-                    sma_v = float(np.mean(close_arr[-p:]))
-                    ema_v = float(_ema_arr(close_arr, p)[-1])
-                    sma_sig = "BUY" if current_price > sma_v else "SELL"
-                    ema_sig = "BUY" if current_price > ema_v else "SELL"
-                    ma_list.append({"name": f"SMA({p})", "value": round(sma_v, 2), "signal": sma_sig})
-                    ma_list.append({"name": f"EMA({p})", "value": round(ema_v, 2), "signal": ema_sig})
+            ma_data = [
+                ("SMA(200)", sma200_val),
+                ("EMA(200)", ema200_val),
+                ("EMA(20)", ema20_val),
+                ("EMA(10)", ema10_val),
+                ("EMA(5)", ema5_val),
+            ]
+            # 추가: SMA(5) — Connors exit signal
+            sma5_val = float(np.mean(close_arr[-5:])) if n >= 5 else current_price
+            ma_data.append(("SMA(5)", sma5_val))
+
+            for name, val in ma_data:
+                sig = "BUY" if current_price > val else "SELL"
+                ma_list.append({"name": name, "value": round(val, 2), "signal": sig})
 
             ma_buy = sum(1 for x in ma_list if x["signal"] == "BUY")
             ma_sell = sum(1 for x in ma_list if x["signal"] == "SELL")
-            ma_neutral = 0  # MA is always buy or sell
+            ma_neutral = 0
 
-            # ── Grand Total (oscillators + moving averages) — for display ──
             total_buy = osc_buy + ma_buy
             total_sell = osc_sell + ma_sell
             total_neutral = osc_neutral + ma_neutral
-            total_all = total_buy + total_sell + total_neutral
 
-            # ── Weighted Category Scoring (research-backed) ──
-            # Helper: convert signal list to score [-1, +1]
-            def _sig_score(signals):
-                if not signals:
-                    return 0.0
-                total = sum(1 if s == "BUY" else -1 if s == "SELL" else 0 for s in signals)
-                return total / len(signals)
+            # ═══════════════════════════════════════════════
+            # 5-Category Scoring (Connors RSI(2) 전략)
+            # ═══════════════════════════════════════════════
 
-            # Map indicators to categories by name
-            ind_by_name = {i["name"]: i["signal"] for i in ind_list}
+            # Category 1: RSI(2) Mean Reversion (35%) — 핵심 시그널
+            # RSI(2) 값을 -1~+1 스코어로 변환
+            # <5 = -1.0(강매수), <10 = -0.7, <20 = -0.3, 50 = 0, >80 = +0.3, >90 = +0.7, >95 = +1.0(강매도)
+            # 주의: 여기서 '매수'는 반전기대이므로 RSI 낮을 때 BUY score가 높음
+            if rsi2_val < 5:
+                rsi2_score = 1.0  # 극단적 과매도 → STRONG BUY
+            elif rsi2_val < 10:
+                rsi2_score = 0.7
+            elif rsi2_val < 20:
+                rsi2_score = 0.3
+            elif rsi2_val > 95:
+                rsi2_score = -1.0  # 극단적 과매수 → STRONG SELL
+            elif rsi2_val > 90:
+                rsi2_score = -0.7
+            elif rsi2_val > 80:
+                rsi2_score = -0.3
+            else:
+                rsi2_score = 0.0
 
-            # Category 1: Trend (MAs + ADX + Highs/Lows)
-            ma_score = (ma_buy - ma_sell) / max(ma_buy + ma_sell, 1)
-            trend_osc = [ind_by_name.get("ADX(14)", "NEUTRAL"), ind_by_name.get("Highs/Lows", "NEUTRAL")]
-            trend_score = 0.6 * ma_score + 0.4 * _sig_score(trend_osc)
+            # Cumulative RSI(2) 보정
+            if cum_rsi2 < 5:
+                rsi2_score = min(1.0, rsi2_score + 0.3)
+            elif cum_rsi2 < 10:
+                rsi2_score = min(1.0, rsi2_score + 0.15)
+            elif cum_rsi2 > 190:
+                rsi2_score = max(-1.0, rsi2_score - 0.3)
 
-            # Category 2: Momentum (RSI, ROC, UO, Bull/Bear)
-            mom_sigs = [ind_by_name.get(n, "NEUTRAL") for n in ["RSI(14)", "ROC(12)", "UO(7,14,28)", "Bull/Bear"]]
-            momentum_score = _sig_score(mom_sigs)
+            # Category 2: Trend Filter (25%) — SMA200 + EMA 정렬 + ADX
+            above_sma200 = 1 if current_price > sma200_val else -1
+            ema_aligned = 1 if (ema5_val > ema20_val > ema200_val) else (-1 if (ema5_val < ema20_val < ema200_val) else 0)
+            adx_strength = min(adx_val / 50, 1.0)  # 0~1 정규화
+            trend_score = 0.5 * above_sma200 + 0.3 * ema_aligned + 0.2 * (adx_strength if above_sma200 > 0 else -adx_strength)
 
-            # Category 3: MACD
-            macd_score = _sig_score([ind_by_name.get("MACD(12,26)", "NEUTRAL")])
+            # Category 3: Volume (15%) — Volume Ratio + MFI + OBV
+            vol_score_raw = 1.0 if vol_ratio >= 2.0 else (0.5 if vol_ratio >= 1.5 else (0.0 if vol_ratio >= 1.0 else -0.5))
+            mfi_score = (50 - mfi_val) / 50  # MFI < 50 → positive (buying pressure)
+            mfi_score = max(-1, min(1, mfi_score))
+            obv_score = 1.0 if obv_slope > 0.01 else (-1.0 if obv_slope < -0.01 else 0.0)
+            vol_score = 0.4 * vol_score_raw + 0.35 * mfi_score + 0.25 * obv_score
 
-            # Category 4: Mean-Reversion (Stoch, StochRSI, W%R, CCI)
-            mr_sigs = [ind_by_name.get(n, "NEUTRAL") for n in ["STOCH(14,3)", "StochRSI", "W%R(14)", "CCI(20)"]]
-            meanrev_score = _sig_score(mr_sigs)
-
-            # Category 5: Volume (regular + pre-market boost)
-            vol_ratio = float(np.mean(vol_arr[-5:])) / max(float(np.mean(vol_arr[-20:])), 1) if len(vol_arr) >= 20 else 1.0
-            vol_score = 1.0 if vol_ratio >= 2.0 else (0.5 if vol_ratio >= 1.5 else (0.0 if vol_ratio >= 1.0 else -0.5))
-
-            # C안: Pre-market volume confirmation boost
+            # Pre-market boost
             pre_vol_boost = 0
             try:
-                import yfinance as yf
                 tkr = yf.Ticker(sym)
                 info = tkr.info
                 pre_price = info.get("preMarketPrice")
                 mkt_state = info.get("marketState", "")
                 if pre_price and mkt_state in ("PRE", "PREPRE"):
-                    # Pre-market gap provides additional signal
                     prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose") or current_price
                     pre_gap = ((pre_price - prev_close) / prev_close) if prev_close else 0
-                    if abs(pre_gap) >= 0.01:  # 1%+ gap
+                    if abs(pre_gap) >= 0.01:
                         pre_vol_boost = 0.3 if pre_gap > 0 else -0.3
                         vol_score = min(1.0, max(-1.0, vol_score + pre_vol_boost))
             except Exception:
-                pass  # Pre-market data not available, use regular vol_score
+                pass
 
-            # ── Regime Detection via ADX ──
+            # Category 4: Relative Strength (15%) — QQQ 대비 성과
+            if qqq_close is not None:
+                rs_score = 0.6 * min(1, max(-1, rel_str_5d * 20)) + 0.4 * min(1, max(-1, rel_str_20d * 10))
+            else:
+                rs_score = 0.0
+
+            # Category 5: Volatility (10%) — BB 스퀴즈 + ATR 상태 + OPEX
+            squeeze_score = 0.5 if bb_squeeze else 0.0
+            atr_pct = atr_val / current_price
+            # 낮은 변동성(ATR < 2%) = 스퀴즈 환경에서 좋음
+            atr_score = 0.3 if atr_pct < 0.02 else (0.0 if atr_pct < 0.04 else -0.3)
+            opex_penalty = -0.5 if opex_week else 0.0
+            volatility_score = squeeze_score + atr_score + opex_penalty
+            volatility_score = max(-1, min(1, volatility_score))
+
+            # ── Regime Detection ──
             if adx_val > 25:
                 regime = "TRENDING"
-                w_trend, w_mom, w_macd, w_mr, w_vol = 0.40, 0.25, 0.15, 0.10, 0.10
+                w_rsi2, w_trend, w_vol, w_rs, w_volat = 0.30, 0.30, 0.15, 0.15, 0.10
             elif adx_val < 20:
                 regime = "SIDEWAYS"
-                w_trend, w_mom, w_macd, w_mr, w_vol = 0.15, 0.20, 0.20, 0.30, 0.15
+                # 횡보장에서 mean reversion이 더 잘 작동
+                w_rsi2, w_trend, w_vol, w_rs, w_volat = 0.45, 0.15, 0.15, 0.15, 0.10
             else:
                 regime = "MIXED"
-                w_trend, w_mom, w_macd, w_mr, w_vol = 0.30, 0.25, 0.20, 0.15, 0.10
+                w_rsi2, w_trend, w_vol, w_rs, w_volat = 0.35, 0.25, 0.15, 0.15, 0.10
 
-            # Weighted composite score [-1, +1]
+            # ── Weighted Composite ──
             weighted_raw = (
+                w_rsi2 * rsi2_score +
                 w_trend * trend_score +
-                w_mom * momentum_score +
-                w_macd * macd_score +
-                w_mr * meanrev_score +
-                w_vol * vol_score
+                w_vol * vol_score +
+                w_rs * rs_score +
+                w_volat * volatility_score
             )
 
-            # Volume confirmation: dampen signal if volume is low
-            vol_factor = 1.0 if vol_ratio >= 1.5 else 0.5
+            # Connors 추세 필터: SMA200 아래면 매수 시그널 감쇄
+            if current_price < sma200_val and weighted_raw > 0:
+                weighted_raw *= 0.3  # 하락추세에서 매수 시그널 70% 감쇄
+
+            # 거래량 확인: 저거래량이면 시그널 감쇄
+            vol_factor = 1.0 if vol_ratio >= 1.0 else 0.5
             weighted_final = weighted_raw * vol_factor
 
-            # Direction from weighted score
-            if weighted_final >= 0.35:
+            # ── Connors Exit Signal — Close > SMA(5) ──
+            connors_exit = current_price > sma5_val
+
+            # ── Direction 결정 ──
+            if weighted_final >= 0.40:
                 direction = "STRONG_BUY"
-            elif weighted_final >= 0.12:
+            elif weighted_final >= 0.15:
                 direction = "BUY"
-            elif weighted_final <= -0.35:
+            elif weighted_final <= -0.40:
                 direction = "STRONG_SELL"
-            elif weighted_final <= -0.12:
+            elif weighted_final <= -0.15:
+                direction = "SELL"
+            # Connors Exit: 보유 중이고 Close > SMA5이면 매도 추천
+            elif connors_exit and rsi2_val > 50:
                 direction = "SELL"
             else:
                 direction = "NEUTRAL"
 
-            # Confidence: scale weighted_final to 0-100
-            confidence = min(99, max(1, int(abs(weighted_final) * 100 + 50)))
+            # OPEX 주간 경고: 매수 시그널 약화
+            if opex_week and "BUY" in direction:
+                direction = "NEUTRAL"  # OPEX 주간에는 매수 보류
 
-            # P&L vs avg cost
+            confidence = min(99, max(1, int(abs(weighted_final) * 120 + 40)))
+
+            # P&L
             avg_cost = float(item.get("avg_cost") or 0)
             pnl_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost > 0 else None
 
-            # Target/Stop (ATR-based)
+            # Target/Stop (ATR 기반, 연구: 2.5×/1.5×)
             if "BUY" in direction:
-                target_price = round(current_price + 2 * atr_val, 2)
+                target_price = round(current_price + 2.5 * atr_val, 2)
                 stop_price = round(current_price - 1.5 * atr_val, 2)
             elif "SELL" in direction:
-                target_price = round(current_price - 2 * atr_val, 2)
+                target_price = round(current_price - 2.5 * atr_val, 2)
                 stop_price = round(current_price + 1.5 * atr_val, 2)
             else:
                 target_price = round(float(np.max(close_arr[-20:])), 2)
@@ -1715,66 +1752,79 @@ def _analyze_watchlist():
                 "pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
                 "direction": direction,
                 "confidence": confidence,
-                # Oscillators (12)
                 "osc_buy": osc_buy,
                 "osc_sell": osc_sell,
                 "osc_neutral": osc_neutral,
                 "indicators": ind_list,
-                # Moving Averages (up to 12)
                 "ma_buy": ma_buy,
                 "ma_sell": ma_sell,
                 "ma_neutral": ma_neutral,
                 "moving_averages": ma_list,
-                # Grand total (for display)
                 "total_buy": total_buy,
                 "total_sell": total_sell,
                 "total_neutral": total_neutral,
-                # Weighted scoring (research-backed)
                 "regime": regime,
                 "vol_factor": vol_factor,
                 "weighted_score": round(weighted_final, 3),
                 "category_scores": {
+                    "rsi2_reversion": round(rsi2_score, 3),
                     "trend": round(trend_score, 3),
-                    "momentum": round(momentum_score, 3),
-                    "macd": round(macd_score, 3),
-                    "mean_reversion": round(meanrev_score, 3),
                     "volume": round(vol_score, 3),
+                    "rel_strength": round(rs_score, 3),
+                    "volatility": round(volatility_score, 3),
                 },
                 "category_weights": {
-                    "trend": w_trend, "momentum": w_mom,
-                    "macd": w_macd, "mean_reversion": w_mr, "volume": w_vol,
+                    "rsi2_reversion": w_rsi2, "trend": w_trend,
+                    "volume": w_vol, "rel_strength": w_rs, "volatility": w_volat,
                 },
                 "target_price": target_price,
                 "stop_price": stop_price,
                 "atr": round(atr_val, 2),
                 "vol_ratio": round(vol_ratio, 2),
                 "pre_vol_boost": pre_vol_boost,
+                # 추가 Connors 전용 필드
+                "rsi2": round(rsi2_val, 1),
+                "cum_rsi2": round(cum_rsi2, 1),
+                "connors_exit": connors_exit,
+                "opex_week": opex_week,
+                "rel_str_5d": round(rel_str_5d * 100, 2),
+                "rel_str_20d": round(rel_str_20d * 100, 2),
+                "bb_squeeze": bb_squeeze,
             }
             results.append(result)
 
-            # Save alert to DB
+            # Save alert
             alert = {
                 "symbol": sym,
-                "alert_type": "technical_full",
+                "alert_type": "connors_rsi2",
                 "direction": direction,
                 "confidence": confidence,
-                "reason": f"{direction} (Score {weighted_final:+.2f}, {regime}, Vol×{vol_factor}): T{trend_score:+.2f} M{momentum_score:+.2f} MACD{macd_score:+.1f} MR{meanrev_score:+.2f} V{vol_score:+.1f}",
+                "reason": (
+                    f"{direction} (Score {weighted_final:+.2f}, {regime}): "
+                    f"RSI2={rsi2_val:.0f} CumRSI2={cum_rsi2:.0f} "
+                    f"T{trend_score:+.2f} V{vol_score:+.2f} RS{rs_score:+.2f} "
+                    f"{'OPEX' if opex_week else ''} {'SQUEEZE' if bb_squeeze else ''}"
+                ),
                 "current_price": current_price,
                 "target_price": target_price,
                 "stop_price": stop_price,
-                "strategy": "weighted_category",
+                "strategy": "connors_rsi2_atr",
                 "detail": {
                     "oscillators": {i["name"]: {"value": i["value"], "signal": i["signal"]} for i in ind_list},
                     "moving_averages": {i["name"]: {"value": i["value"], "signal": i["signal"]} for i in ma_list},
                     "regime": regime,
-                    "weighted_score": round(weighted_final, 3),
-                    "vol_factor": vol_factor,
+                    "rsi2": rsi2_val,
+                    "cum_rsi2": cum_rsi2,
+                    "connors_exit": connors_exit,
+                    "opex_week": opex_week,
+                    "rel_str_5d": rel_str_5d,
+                    "rel_str_20d": rel_str_20d,
+                    "bb_squeeze": bb_squeeze,
                 },
             }
             pg.insert_watchlist_alert(alert)
 
-            # Log signal for replay backtest
-            from datetime import date as _date_type
+            # Signal log
             pg.upsert_watchlist_signal_log({
                 "symbol": sym,
                 "signal_date": _date_type.today(),
@@ -1784,15 +1834,15 @@ def _analyze_watchlist():
                 "current_price": current_price,
                 "regime": regime,
                 "category_scores": {
+                    "rsi2_reversion": round(rsi2_score, 3),
                     "trend": round(trend_score, 3),
-                    "momentum": round(momentum_score, 3),
-                    "macd": round(macd_score, 3),
-                    "mean_reversion": round(meanrev_score, 3),
                     "volume": round(vol_score, 3),
+                    "rel_strength": round(rs_score, 3),
+                    "volatility": round(volatility_score, 3),
                 },
                 "category_weights": {
-                    "trend": w_trend, "momentum": w_mom,
-                    "macd": w_macd, "mean_reversion": w_mr, "volume": w_vol,
+                    "rsi2_reversion": w_rsi2, "trend": w_trend,
+                    "volume": w_vol, "rel_strength": w_rs, "volatility": w_volat,
                 },
                 "vol_ratio": round(vol_ratio, 2),
                 "vol_factor": vol_factor,
@@ -1800,19 +1850,23 @@ def _analyze_watchlist():
                 "stop_price": stop_price,
             })
 
-            # Telegram for STRONG signals or high-confidence directional
-            if "STRONG" in direction or (direction != "NEUTRAL" and confidence >= 65):
+            # Telegram
+            if "STRONG" in direction or (direction != "NEUTRAL" and confidence >= 60):
                 emoji = "\U0001f7e2" if "BUY" in direction else "\U0001f534"
-                label = {"STRONG_BUY": "Strong Buy", "BUY": "Buy", "STRONG_SELL": "Strong Sell", "SELL": "Sell"}.get(direction, direction)
-                vol_lbl = "High" if vol_ratio >= 1.5 else "Low"
+                label = {"STRONG_BUY": "Strong Buy", "BUY": "Buy",
+                         "STRONG_SELL": "Strong Sell", "SELL": "Sell"}.get(direction, direction)
+                opex_lbl = " [OPEX WEEK]" if opex_week else ""
+                squeeze_lbl = " [BB SQUEEZE]" if bb_squeeze else ""
                 asyncio.run(notifier.send(
-                    f"<b>{emoji} Watchlist: {label} {sym}</b>\n\n"
+                    f"<b>{emoji} Watchlist: {label} {sym}</b>{opex_lbl}{squeeze_lbl}\n\n"
                     f"Price: <b>${current_price:.2f}</b>\n"
+                    f"<b>RSI(2): {rsi2_val:.0f}</b> | CumRSI(2): {cum_rsi2:.0f}\n"
                     f"Score: <b>{weighted_final:+.3f}</b> | Regime: {regime}\n"
-                    f"Volume: ×{vol_ratio:.1f} ({vol_lbl})\n"
-                    f"Trend {trend_score:+.2f} · Mom {momentum_score:+.2f} · MACD {macd_score:+.1f}\n"
-                    f"MeanRev {meanrev_score:+.2f} · Vol {vol_score:+.1f}\n"
+                    f"vs QQQ: 5d {rel_str_5d*100:+.1f}% / 20d {rel_str_20d*100:+.1f}%\n"
+                    f"RSI2 {rsi2_score:+.2f} · Trend {trend_score:+.2f} · Vol {vol_score:+.2f}\n"
+                    f"RS {rs_score:+.2f} · Volat {volatility_score:+.2f}\n"
                     f"Target: ${target_price:.2f} / Stop: ${stop_price:.2f}\n"
+                    f"Exit: {'Close > SMA5' if connors_exit else 'Hold'}\n"
                     f"\u23f0 {datetime.now().strftime('%H:%M KST')}"
                 ))
 
@@ -1824,9 +1878,10 @@ def _analyze_watchlist():
         "status": "done",
         "analyzed_at": datetime.now().isoformat(),
         "count": len(results),
+        "strategy": "connors_rsi2_atr",
         "results": results,
     }, ttl=86400)
-    logger.info(f"Watchlist analysis done: {len(results)} symbols")
+    logger.info(f"Watchlist analysis done: {len(results)} symbols (Connors RSI2 strategy)")
 
 
 @app.get("/watchlist/analysis")
@@ -2603,10 +2658,42 @@ def _save_macro_snapshot(score_result: dict, raw_data: dict):
 async def get_macro_risk_adjustment():
     """현재 매크로 레짐 기반 리스크 조절 상태."""
     position_adj = pos_mgr.get_risk_adjustment()
-    trailing_adj = exit_mgr.get_trailing_params()
+    trailing_adj = exit_mgr.get_exit_params()
     return {
         "position_sizing": position_adj,
-        "trailing_stop": trailing_adj,
+        "exit_strategy": trailing_adj,
+    }
+
+
+@app.get("/exit-strategy")
+async def get_exit_strategy():
+    """5-Layer Auto-Exit 전략 현재 파라미터."""
+    params = exit_mgr.get_exit_params()
+    # 각 포지션의 ATR 정보 포함
+    positions = pg.get_open_positions()
+    pos_info = []
+    for p in positions:
+        entry_atr = float(p.get("entry_atr") or 0)
+        entry_price = float(p["entry_price"])
+        r_mult = 0
+        if entry_atr > 0 and p.get("current_price"):
+            r_mult = (float(p["current_price"]) - entry_price) / entry_atr
+        pos_info.append({
+            "position_id": p["position_id"],
+            "symbol": p["symbol"],
+            "entry_price": entry_price,
+            "current_price": float(p.get("current_price") or entry_price),
+            "entry_atr": entry_atr,
+            "hard_stop": float(p.get("hard_stop") or 0),
+            "stop_loss": float(p.get("stop_loss") or 0),
+            "trailing_active": bool(p.get("trailing_stop_active")),
+            "r_multiple": round(r_mult, 2),
+            "hold_days": (datetime.now(p["entry_time"].tzinfo) - p["entry_time"]).days
+                if p.get("entry_time") else 0,
+        })
+    return {
+        "params": params,
+        "positions": pos_info,
     }
 
 

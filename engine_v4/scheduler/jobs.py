@@ -27,7 +27,7 @@ from engine_v4.data.collector import DataCollector, UniverseManager
 from engine_v4.data.extended_hours import fetch_extended_hours
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
-from engine_v4.risk.exit_manager import ExitManager
+from engine_v4.risk.exit_manager import ExitManager, ExitAction
 from engine_v4.strategy.swing import SwingStrategy
 
 DEFAULT_INITIAL_CAPITAL = 2200.0
@@ -250,7 +250,11 @@ class SwingScheduler:
             asyncio.run(self.notifier.notify_error("daily_pipeline", str(e)))
 
     def _job_exit_check(self):
-        """오픈 포지션 청산 조건 체크 (Trailing Stop + Partial Exit + 기존 Exit)."""
+        """5-Layer Auto-Exit: ATR Trailing + Hard SL + Time Stop + RSI(2) + Regime.
+
+        auto_sell_enabled=true → 매도 시그널 자동 실행 (승인 불필요)
+        auto_sell_enabled=false → 기존 방식 (pending → 수동 승인)
+        """
         import yfinance as yf
 
         start = time.time()
@@ -265,6 +269,7 @@ class SwingScheduler:
                 return
 
             symbols = list(set(p["symbol"] for p in positions))
+            auto_sell = self.pg.get_config_value("auto_sell_enabled", "true") == "true"
 
             # 현재가 조회 (yfinance)
             current_prices: dict[str, float] = {}
@@ -288,17 +293,38 @@ class SwingScheduler:
                 if cp:
                     self.pg.update_position_price(p["position_id"], cp)
 
-            # Step 1: Trailing Stop 업데이트
-            trailing_updated = self.exit_mgr.update_trailing_stops(
-                positions, current_prices)
+            # Step 1: 5-Layer 복합 청산 체크
+            exit_actions = self.exit_mgr.check_exits(positions, current_prices)
+            auto_executed = 0
+
+            for action in exit_actions:
+                if auto_sell:
+                    # === 자동 매도 실행 ===
+                    self._auto_execute_exit(action)
+                    auto_executed += 1
+                else:
+                    # 기존 방식: pending 시그널 생성 (수동 승인 대기)
+                    sig = {
+                        "symbol": action.symbol,
+                        "signal_type": "EXIT",
+                        "entry_price": action.current_price,
+                        "exit_reason": action.exit_reason,
+                        "position_id": action.position_id,
+                        "status": "pending",
+                    }
+                    self.pg.insert_signal(sig)
 
             # Step 2: Partial Exit 체크
+            # 이미 exit_actions에서 전량 청산되지 않은 포지션만 대상
+            exited_pids = {a.position_id for a in exit_actions}
+            remaining_positions = [p for p in positions
+                                   if p["position_id"] not in exited_pids]
+
             partial_actions = self.exit_mgr.check_partial_exits(
-                positions, current_prices)
+                remaining_positions, current_prices)
             for action in partial_actions:
                 self.pg.partial_close_position(
                     action.position_id, action.exit_qty, action.current_price)
-                # 분할 청산 trade 기록
                 self.pg.insert_trade({
                     "position_id": action.position_id,
                     "symbol": action.symbol,
@@ -307,7 +333,6 @@ class SwingScheduler:
                     "price": action.current_price,
                     "is_paper": True,
                 })
-                # 시그널 생성
                 sig = {
                     "symbol": action.symbol,
                     "signal_type": "EXIT",
@@ -321,12 +346,34 @@ class SwingScheduler:
                             f"sold {action.exit_qty} @ ${action.current_price:.2f} "
                             f"(gain={action.gain_pct:+.1%})")
 
-            # Step 3: 가격/지표 업데이트 + 기존 청산 스캔
+            # Step 3: 가격/지표 업데이트 + 기존 추세 이탈 스캔
             self.collector.collect_prices(symbols, days=5)
             self.collector.compute_indicators(symbols)
             exits = self.strategy.scan_exits()
 
-            if exits:
+            # 기존 scan_exits 결과도 auto-sell 적용
+            if exits and auto_sell:
+                for sig in exits:
+                    pid = sig.get("position_id")
+                    if pid and pid not in exited_pids:
+                        pos = next((p for p in positions
+                                    if p["position_id"] == pid), None)
+                        if pos:
+                            cp = current_prices.get(sig["symbol"])
+                            if cp:
+                                action = ExitAction(
+                                    position_id=pid,
+                                    symbol=sig["symbol"],
+                                    current_price=cp,
+                                    exit_qty=float(pos.get("qty") or 1),
+                                    exit_reason=sig.get("exit_reason", "trend_break"),
+                                    gain_pct=(cp - float(pos["entry_price"])) / float(pos["entry_price"]),
+                                    layer="ScanExit",
+                                )
+                                self._auto_execute_exit(action)
+                                auto_executed += 1
+                                exited_pids.add(pid)
+            elif exits:
                 asyncio.run(self.notifier.notify_signals([], exits))
 
             # 스냅샷 생성
@@ -335,19 +382,106 @@ class SwingScheduler:
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("exit_check", "completed", elapsed, {
                 "positions": len(positions),
-                "exits": len(exits),
-                "trailing_updated": trailing_updated,
+                "auto_executed": auto_executed,
                 "partial_exits": len(partial_actions),
+                "scan_exits": len(exits),
+                "auto_sell_enabled": auto_sell,
             })
-            logger.info(f"Exit check: {len(exits)} exit signals, "
-                        f"{trailing_updated} trailing updates, "
-                        f"{len(partial_actions)} partial exits "
-                        f"from {len(positions)} positions in {elapsed:.1f}s")
+            logger.info(f"Exit check: {auto_executed} auto-exits, "
+                        f"{len(partial_actions)} partial exits, "
+                        f"{len(exits)} scan exits "
+                        f"from {len(positions)} positions in {elapsed:.1f}s "
+                        f"(auto_sell={'ON' if auto_sell else 'OFF'})")
 
         except Exception as e:
             self.pg.insert_pipeline_log("exit_check", "failed",
                                         time.time() - start, error_msg=str(e))
             logger.error(f"Exit check failed: {e}", exc_info=True)
+
+    def _auto_execute_exit(self, action: ExitAction):
+        """자동 매도 실행 — 포지션 종료 + trade 기록 + 시그널 + KIS 주문 + 텔레그램."""
+        try:
+            from engine_v4.broker.kis_client import KisClient
+            from engine_v4.config.settings import get_config
+
+            pid = action.position_id
+            symbol = action.symbol
+            price = action.current_price
+            qty = int(action.exit_qty) or 1
+
+            # 포지션 종료
+            self.pg.close_position(pid, price, action.exit_reason)
+
+            # Trade 기록
+            self.pg.insert_trade({
+                "position_id": pid,
+                "symbol": symbol,
+                "side": "SELL",
+                "qty": qty,
+                "price": price,
+                "is_paper": True,
+            })
+
+            # 시그널 기록 (auto-executed)
+            sig = {
+                "symbol": symbol,
+                "signal_type": "EXIT",
+                "entry_price": price,
+                "exit_reason": action.exit_reason,
+                "position_id": pid,
+                "status": "executed",
+            }
+            self.pg.insert_signal(sig)
+
+            # Auto-exit 플래그
+            with self.pg.get_conn() as conn:
+                conn.execute("""
+                    UPDATE swing_positions SET auto_exit = true
+                    WHERE position_id = %s
+                """, (pid,))
+                conn.commit()
+
+            # KIS 매도 주문
+            try:
+                cfg = get_config()
+                kis = KisClient(cfg)
+                order = kis.sell(symbol=symbol, qty=qty, price=price)
+                logger.info(f"KIS SELL order: {symbol} {qty} @ ${price:.2f} → "
+                            f"{order.order_id} ({order.message})")
+            except Exception as e:
+                logger.warning(f"KIS sell order failed for {symbol}: {e}")
+
+            # 텔레그램 알림 (auto-sell 명시)
+            pnl_pct = action.gain_pct
+            emoji = "\U0001f7e2" if pnl_pct > 0 else "\U0001f534"
+            reason_labels = {
+                "hard_stop": "Hard Stop (1.5×ATR)",
+                "atr_trailing_stop": "ATR Trailing Stop",
+                "time_stop": "Time Stop (15d)",
+                "rsi2_overbought": "RSI(2) Overbought",
+                "stop_loss": "Stop-Loss",
+                "take_profit": "Take-Profit",
+                "trend_break": "Trend Break",
+            }
+            reason_label = reason_labels.get(action.exit_reason, action.exit_reason)
+
+            msg = (
+                f"{emoji} <b>AUTO-SELL: {symbol}</b>\n"
+                f"Layer: <b>{action.layer}</b>\n"
+                f"Reason: {reason_label}\n"
+                f"Price: ${price:.2f} | P&L: <b>{pnl_pct:+.1%}</b>\n"
+                f"Qty: {qty} shares\n"
+                f"\U0001f916 <i>Automated exit — no approval needed</i>"
+            )
+            asyncio.run(self.notifier.send(msg))
+
+            logger.info(f"AUTO-SELL executed: {symbol} #{pid} @ ${price:.2f} "
+                        f"reason={action.exit_reason} layer={action.layer} "
+                        f"P&L={pnl_pct:+.1%}")
+
+        except Exception as e:
+            logger.error(f"Auto-sell failed for {action.symbol}: {e}",
+                         exc_info=True)
 
     def _job_refresh_universe(self):
         """유니버스 주간 갱신 + 팩터 모멘텀 계산."""

@@ -201,7 +201,8 @@ public class SwingService
                    stop_loss, take_profit, current_price, unrealized_pnl,
                    unrealized_pct, status, exit_price, exit_time, exit_reason,
                    realized_pnl, realized_pct, hold_days, signal_id, is_paper,
-                   partial_exited, trailing_stop_active, high_water_mark
+                   partial_exited, trailing_stop_active, high_water_mark,
+                   atr_14, entry_atr, hard_stop, auto_exit
             FROM swing_positions WHERE status = @status
             ORDER BY {orderCol} DESC LIMIT @limit OFFSET @offset", conn);
         cmd.Parameters.AddWithValue("@status", status);
@@ -231,7 +232,11 @@ public class SwingService
                 IsPaper: r.GetBoolean(19),
                 PartialExited: !r.IsDBNull(20) && r.GetBoolean(20),
                 TrailingStopActive: !r.IsDBNull(21) && r.GetBoolean(21),
-                HighWaterMark: r.IsDBNull(22) ? null : r.GetDecimal(22)
+                HighWaterMark: r.IsDBNull(22) ? null : r.GetDecimal(22),
+                Atr14: r.IsDBNull(23) ? null : r.GetDecimal(23),
+                EntryAtr: r.IsDBNull(24) ? null : r.GetDecimal(24),
+                HardStop: r.IsDBNull(25) ? null : r.GetDecimal(25),
+                AutoExit: !r.IsDBNull(26) && r.GetBoolean(26)
             ));
         }
         return (positions, total);
@@ -249,7 +254,8 @@ public class SwingService
                    stop_loss, take_profit, current_price, unrealized_pnl,
                    unrealized_pct, status, exit_price, exit_time, exit_reason,
                    realized_pnl, realized_pct, hold_days, signal_id, is_paper,
-                   partial_exited, trailing_stop_active, high_water_mark
+                   partial_exited, trailing_stop_active, high_water_mark,
+                   atr_14, entry_atr, hard_stop, auto_exit
             FROM swing_positions
             WHERE status = @status
             ORDER BY {orderCol} DESC LIMIT @limit", conn);
@@ -282,7 +288,11 @@ public class SwingService
                 IsPaper: r.GetBoolean(19),
                 PartialExited: !r.IsDBNull(20) && r.GetBoolean(20),
                 TrailingStopActive: !r.IsDBNull(21) && r.GetBoolean(21),
-                HighWaterMark: r.IsDBNull(22) ? null : r.GetDecimal(22)
+                HighWaterMark: r.IsDBNull(22) ? null : r.GetDecimal(22),
+                Atr14: r.IsDBNull(23) ? null : r.GetDecimal(23),
+                EntryAtr: r.IsDBNull(24) ? null : r.GetDecimal(24),
+                HardStop: r.IsDBNull(25) ? null : r.GetDecimal(25),
+                AutoExit: !r.IsDBNull(26) && r.GetBoolean(26)
             ));
         }
         return positions;
@@ -810,7 +820,8 @@ public class SwingService
                    stop_loss, take_profit, current_price, unrealized_pnl,
                    unrealized_pct, status, exit_price, exit_time, exit_reason,
                    realized_pnl, realized_pct, hold_days, signal_id, is_paper,
-                   partial_exited, trailing_stop_active, high_water_mark
+                   partial_exited, trailing_stop_active, high_water_mark,
+                   atr_14, entry_atr, hard_stop, auto_exit
             FROM swing_positions
             WHERE symbol = @sym AND status = 'open'
             ORDER BY entry_time DESC LIMIT 1", conn);
@@ -845,7 +856,11 @@ public class SwingService
                         IsPaper: r4.GetBoolean(19),
                         PartialExited: !r4.IsDBNull(20) && r4.GetBoolean(20),
                         TrailingStopActive: !r4.IsDBNull(21) && r4.GetBoolean(21),
-                        HighWaterMark: r4.IsDBNull(22) ? null : r4.GetDecimal(22)
+                        HighWaterMark: r4.IsDBNull(22) ? null : r4.GetDecimal(22),
+                        Atr14: r4.IsDBNull(23) ? null : r4.GetDecimal(23),
+                        EntryAtr: r4.IsDBNull(24) ? null : r4.GetDecimal(24),
+                        HardStop: r4.IsDBNull(25) ? null : r4.GetDecimal(25),
+                        AutoExit: !r4.IsDBNull(26) && r4.GetBoolean(26)
                     )
                 };
             }

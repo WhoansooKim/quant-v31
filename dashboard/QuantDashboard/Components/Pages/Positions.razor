@@ -423,10 +423,14 @@
     private string GetExitReasonClass(string? reason) => reason switch
     {
         "stop_loss" => "exit-sl",
+        "hard_stop" => "exit-sl",
         "take_profit" => "exit-tp",
         "trend_break" => "exit-trend",
         "partial_exit" => "exit-partial",
         "trailing_stop" => "exit-trail",
+        "atr_trailing_stop" => "exit-trail",
+        "time_stop" => "exit-time",
+        "rsi2_overbought" => "exit-rsi",
         _ => ""
     };
 }

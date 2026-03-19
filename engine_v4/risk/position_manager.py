@@ -157,6 +157,21 @@ class PositionManager:
         if signal.get("signal_id"):
             self.pg.mark_signal_executed(signal["signal_id"])
 
+        # ATR 기반 청산 파라미터 설정
+        try:
+            from engine_v4.risk.exit_manager import ExitManager
+            exit_mgr = ExitManager(self.pg, macro_scorer=self.macro_scorer)
+            atr_result = exit_mgr.setup_position_atr(
+                position_id, symbol, entry_price)
+            if atr_result:
+                # Hard stop을 ATR 기반으로 업데이트
+                self.pg.update_position_stop_loss(
+                    position_id, atr_result["hard_stop"])
+                logger.info(f"ATR-based hard stop set: ${atr_result['hard_stop']:.2f} "
+                            f"(ATR={atr_result['atr']:.2f})")
+        except Exception as e:
+            logger.warning(f"ATR setup failed for {symbol}: {e}")
+
         logger.info(f"Opened position #{position_id}: {symbol} "
                     f"{sizing['qty']} shares @ ${entry_price:.2f} "
                     f"(${sizing['amount']:.2f}, {sizing['pct_of_account']:.1%})")

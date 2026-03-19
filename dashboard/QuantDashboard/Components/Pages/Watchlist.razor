@@ -61,24 +61,32 @@
         var volFactor = r.TryGetProperty("vol_factor", out var vfv) ? vfv.GetDouble() : 1.0;
         var wScore = r.TryGetProperty("weighted_score", out var wsv) ? wsv.GetDouble() : 0;
         var volRatio = r.TryGetProperty("vol_ratio", out var vrv) ? vrv.GetDouble() : 1.0;
-        double catTrend = 0, catMom = 0, catMacd = 0, catMr = 0, catVol = 0;
+        double catRsi2 = 0, catTrend = 0, catVol = 0, catRs = 0, catVolat = 0;
         if (r.TryGetProperty("category_scores", out var cs))
         {
+            catRsi2 = cs.TryGetProperty("rsi2_reversion", out var cr2) ? cr2.GetDouble() : 0;
             catTrend = cs.TryGetProperty("trend", out var ct) ? ct.GetDouble() : 0;
-            catMom = cs.TryGetProperty("momentum", out var cm) ? cm.GetDouble() : 0;
-            catMacd = cs.TryGetProperty("macd", out var cmd) ? cmd.GetDouble() : 0;
-            catMr = cs.TryGetProperty("mean_reversion", out var cmr) ? cmr.GetDouble() : 0;
             catVol = cs.TryGetProperty("volume", out var cv) ? cv.GetDouble() : 0;
+            catRs = cs.TryGetProperty("rel_strength", out var crs) ? crs.GetDouble() : 0;
+            catVolat = cs.TryGetProperty("volatility", out var cvl) ? cvl.GetDouble() : 0;
         }
-        double wTrend = 0.30, wMom = 0.25, wMacd = 0.20, wMr = 0.15, wVol = 0.10;
+        double wRsi2 = 0.35, wTrend = 0.25, wVol = 0.15, wRs = 0.15, wVolat = 0.10;
         if (r.TryGetProperty("category_weights", out var cw))
         {
-            wTrend = cw.TryGetProperty("trend", out var cwt) ? cwt.GetDouble() : 0.30;
-            wMom = cw.TryGetProperty("momentum", out var cwm) ? cwm.GetDouble() : 0.25;
-            wMacd = cw.TryGetProperty("macd", out var cwmd) ? cwmd.GetDouble() : 0.20;
-            wMr = cw.TryGetProperty("mean_reversion", out var cwmr) ? cwmr.GetDouble() : 0.15;
-            wVol = cw.TryGetProperty("volume", out var cwv) ? cwv.GetDouble() : 0.10;
+            wRsi2 = cw.TryGetProperty("rsi2_reversion", out var cwr) ? cwr.GetDouble() : 0.35;
+            wTrend = cw.TryGetProperty("trend", out var cwt) ? cwt.GetDouble() : 0.25;
+            wVol = cw.TryGetProperty("volume", out var cwv) ? cwv.GetDouble() : 0.15;
+            wRs = cw.TryGetProperty("rel_strength", out var cwrs) ? cwrs.GetDouble() : 0.15;
+            wVolat = cw.TryGetProperty("volatility", out var cwvl) ? cwvl.GetDouble() : 0.10;
         }
+        // Connors RSI(2) extra fields
+        var rsi2Val = r.TryGetProperty("rsi2", out var r2v) ? r2v.GetDouble() : 50;
+        var cumRsi2 = r.TryGetProperty("cum_rsi2", out var cr2v) ? cr2v.GetDouble() : 100;
+        var connorsExit = r.TryGetProperty("connors_exit", out var cev) && cev.GetBoolean();
+        var opexWeek = r.TryGetProperty("opex_week", out var oev) && oev.GetBoolean();
+        var bbSqueeze = r.TryGetProperty("bb_squeeze", out var bsv) && bsv.GetBoolean();
+        var relStr5d = r.TryGetProperty("rel_str_5d", out var rs5) ? rs5.GetDouble() : 0;
+        var relStr20d = r.TryGetProperty("rel_str_20d", out var rs20) ? rs20.GetDouble() : 0;
 
         <div class="section-card analysis-card" style="margin-bottom:0.3rem">
             <!-- Level 1: Compact Header -->
@@ -156,14 +164,24 @@
                                 </div>
                             </div>
 
+                            <!-- Connors RSI(2) Key Metrics -->
+                            <div style="display:flex; gap:0.5rem; font-size:0.68rem; margin:0.2rem 0; justify-content:center; flex-wrap:wrap">
+                                <span title="RSI(2) — Connors 핵심" style="font-weight:700; color:@(rsi2Val < 10 ? "var(--green)" : rsi2Val > 90 ? "var(--red)" : "var(--text-secondary)")">RSI(2): @rsi2Val.ToString("F0")</span>
+                                <span title="2일 누적 RSI(2)" class="text-muted">CumRSI2: @cumRsi2.ToString("F0")</span>
+                                <span title="QQQ 대비 5일 상대강도" class="@(relStr5d > 0 ? "text-green" : relStr5d < 0 ? "text-red" : "text-muted")">vs QQQ: @(relStr5d >= 0 ? "+" : "")@relStr5d.ToString("F1")%</span>
+                                @if (connorsExit) { <span class="text-yellow" title="Connors Exit: Close > SMA(5)">EXIT</span> }
+                                @if (opexWeek) { <span class="text-yellow" title="옵션만기 주간 — 매수 보류 권장">OPEX</span> }
+                                @if (bbSqueeze) { <span class="text-green" title="Bollinger 스퀴즈 — 에너지 축적 중">SQUEEZE</span> }
+                            </div>
+
                             <div class="category-breakdown">
                                 @{
                                     var cats = new (string Name, double Score, double Weight)[] {
+                                        ("RSI(2)", catRsi2, wRsi2),
                                         ("Trend", catTrend, wTrend),
-                                        ("Momentum", catMom, wMom),
-                                        ("MACD", catMacd, wMacd),
-                                        ("MeanRev", catMr, wMr),
                                         ("Volume", catVol, wVol),
+                                        ("Rel.Str", catRs, wRs),
+                                        ("Volatility", catVolat, wVolat),
                                     };
                                 }
                                 @foreach (var c in cats)
