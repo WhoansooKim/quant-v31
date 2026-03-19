@@ -219,7 +219,7 @@ public class AuthService
         await using var conn = new NpgsqlConnection(_connStr);
         await conn.OpenAsync();
         await using var cmd = new NpgsqlCommand(
-            "UPDATE users SET role = @r WHERE id = @id AND role != 'admin'", conn);
+            "UPDATE users SET role = @r WHERE id = @id", conn);
         cmd.Parameters.AddWithValue("r", newRole);
         cmd.Parameters.AddWithValue("id", userId);
         var rows = await cmd.ExecuteNonQueryAsync();

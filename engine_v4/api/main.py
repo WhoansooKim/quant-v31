@@ -1383,6 +1383,24 @@ def _analyze_watchlist():
         bear = low - ema_s
         return bull, bear
 
+    # ── 실시간 현재가 조회 (장중이면 실시간, 장외면 종가) ──
+    live_prices = {}
+    try:
+        live_data = yf.download(symbols, period="1d", interval="1m", progress=False)
+        if not live_data.empty:
+            for sym in symbols:
+                try:
+                    if len(symbols) == 1:
+                        col = live_data["Close"].dropna()
+                    else:
+                        col = live_data["Close"][sym].dropna()
+                    if len(col) > 0:
+                        live_prices[sym] = float(col.iloc[-1])
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Watchlist live price fetch failed: {e}")
+
     for item in items:
         sym = item["symbol"]
         try:
@@ -1395,7 +1413,8 @@ def _analyze_watchlist():
             if n < 50:
                 continue
 
-            current_price = float(close_arr[-1])
+            # 실시간 가격 사용 (없으면 일봉 종가 fallback)
+            current_price = live_prices.get(sym, float(close_arr[-1]))
 
             # ── Calculate all 12 indicators ──
             # 1) RSI(14)
@@ -1811,11 +1830,36 @@ def _analyze_watchlist():
 
 
 @app.get("/watchlist/analysis")
-async def get_watchlist_analysis():
-    """워치리스트 분석 결과 조회 (캐시)."""
+async def get_watchlist_analysis(refresh_price: bool = False):
+    """워치리스트 분석 결과 조회 (캐시). refresh_price=true이면 현재가 실시간 갱신."""
     result = cache.get_json("watchlist_analysis")
     if not result:
         return {"status": "no_results", "message": "Run POST /watchlist/analyze first"}
+
+    # 실시간 가격 갱신 옵션
+    if refresh_price and result.get("status") == "done" and result.get("results"):
+        import yfinance as yf
+        symbols = [r["symbol"] for r in result["results"]]
+        try:
+            live = yf.download(symbols, period="1d", interval="1m", progress=False)
+            if not live.empty:
+                for r in result["results"]:
+                    sym = r["symbol"]
+                    try:
+                        col = live["Close"].dropna() if len(symbols) == 1 else live["Close"][sym].dropna()
+                        if len(col) > 0:
+                            new_price = round(float(col.iloc[-1]), 2)
+                            old_price = r.get("current_price", 0)
+                            r["current_price"] = new_price
+                            # P&L 재계산
+                            avg_cost = r.get("avg_cost", 0)
+                            if avg_cost and avg_cost > 0:
+                                r["pnl_pct"] = round((new_price - avg_cost) / avg_cost * 100, 2)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     return result
 
 
@@ -1888,6 +1932,8 @@ async def get_watchlist_chart(symbol: str, period: str = "1d"):
         "5d":  {"period": "5d",  "interval": "30m", "prepost": False},
         "1mo": {"period": "1mo", "interval": "1d",  "prepost": False},
         "6mo": {"period": "6mo", "interval": "1d",  "prepost": False},
+        "1y":  {"period": "1y",  "interval": "1d",  "prepost": False},
+        "5y":  {"period": "5y",  "interval": "1wk", "prepost": False},
     }
 
     try:
@@ -1942,6 +1988,10 @@ async def get_watchlist_chart(symbol: str, period: str = "1d"):
             elif period == "5d":
                 ts = idx.tz_convert("US/Eastern") if idx.tzinfo else idx
                 points.append({"time": ts.strftime("%m/%d %H:%M"), "price": p})
+            elif period in ("1y", "5y"):
+                ts = idx
+                fmt = "%Y-%m" if period == "5y" else "%Y-%m-%d"
+                points.append({"time": ts.strftime(fmt), "price": p})
             else:
                 ts = idx
                 points.append({"time": ts.strftime("%m/%d"), "price": p})

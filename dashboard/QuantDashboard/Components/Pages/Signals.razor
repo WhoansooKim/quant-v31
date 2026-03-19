@@ -1,5 +1,6 @@
 @page "/signals"
 @attribute [Authorize]
+@implements IDisposable
 @inject SwingService Db
 @inject IHttpClientFactory HttpFactory
 @inject IJSRuntime JS
@@ -660,6 +661,7 @@
     private bool analyzing;
     private bool scoring;
     private string? statusMsg;
+    private CancellationTokenSource _cts = new();
 
     // Pagination
     private const int SigPageSize = 10;
@@ -717,6 +719,43 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadSignals();
+        // 페이지 진입 시 실행 중인 AI 분석이 있으면 자동으로 폴링 재개
+        await DetectAndResumeAnalysis();
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+
+    /// <summary>AI analyze-status가 running이면 폴링 재개</summary>
+    private async Task DetectAndResumeAnalysis()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/ai/analyze-status");
+            var status = resp.TryGetProperty("status", out var s) ? s.GetString() : "idle";
+            if (status == "running")
+            {
+                analyzing = true;
+                var done = resp.TryGetProperty("done", out var d) ? d.GetInt32() : 0;
+                var total = resp.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
+                statusMsg = $"AI analyzing... {done}/{total} done (resumed tracking)";
+                StateHasChanged();
+                _ = Task.Run(async () =>
+                {
+                    try { await PollAnalyzeStatus(); }
+                    finally
+                    {
+                        analyzing = false;
+                        await InvokeAsync(async () => { await LoadSignals(); StateHasChanged(); });
+                    }
+                });
+            }
+        }
+        catch { }
     }
 
     private async Task LoadSignals()
@@ -756,11 +795,13 @@
     private async Task ScanSignals()
     {
         scanning = true;
-        statusMsg = null;
+        statusMsg = "Scan started...";
+        StateHasChanged();
         try
         {
             var client = HttpFactory.CreateClient("Engine");
             var resp = await client.PostAsync("/scan", null);
+            if (_cts.IsCancellationRequested) return;
             if (resp.IsSuccessStatusCode)
             {
                 var json = await resp.Content.ReadAsStringAsync();
@@ -775,7 +816,8 @@
         }
         catch (Exception ex)
         {
-            statusMsg = $"Scan error: {ex.Message}";
+            if (!_cts.IsCancellationRequested)
+                statusMsg = $"Scan error: {ex.Message}";
         }
         finally
         {
@@ -867,11 +909,13 @@
         {
             var client = HttpFactory.CreateClient("Engine");
             var resp = await client.PostAsync($"/signals/{signalId}/analyze", null);
+            if (_cts.IsCancellationRequested) return;
             if (resp.IsSuccessStatusCode)
             {
                 statusMsg = "AI analysis started (1 signal)...";
                 StateHasChanged();
                 await PollAnalyzeStatus();
+                if (!_cts.IsCancellationRequested) await LoadSignals();
             }
             else
             {
@@ -881,7 +925,8 @@
         }
         catch (Exception ex)
         {
-            statusMsg = $"Error: {ex.Message}";
+            if (!_cts.IsCancellationRequested)
+                statusMsg = $"Error: {ex.Message}";
         }
         finally
         {
@@ -898,6 +943,7 @@
         {
             var client = HttpFactory.CreateClient("Engine");
             var resp = await client.PostAsync("/signals/analyze-pending", null);
+            if (_cts.IsCancellationRequested) return;
             if (resp.IsSuccessStatusCode)
             {
                 var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
@@ -912,6 +958,7 @@
                 statusMsg = $"AI analysis started: {total} signals ({mode})...";
                 StateHasChanged();
                 await PollAnalyzeStatus();
+                if (!_cts.IsCancellationRequested) await LoadSignals();
             }
             else
             {
@@ -921,7 +968,8 @@
         }
         catch (Exception ex)
         {
-            statusMsg = $"Error: {ex.Message}";
+            if (!_cts.IsCancellationRequested)
+                statusMsg = $"Error: {ex.Message}";
         }
         finally
         {
@@ -931,10 +979,13 @@
 
     private async Task PollAnalyzeStatus()
     {
+        var token = _cts.Token;
         var client = HttpFactory.CreateClient("Engine");
         for (int i = 0; i < 120; i++)  // 최대 10분 (120 x 5s)
         {
-            await Task.Delay(5000);
+            try { await Task.Delay(5000, token); } catch (TaskCanceledException) { return; }
+            if (token.IsCancellationRequested) return;
+
             try
             {
                 var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/ai/analyze-status");
@@ -945,7 +996,7 @@
                     var total = resp.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
                     var current = resp.TryGetProperty("current", out var c) ? c.GetString() : "";
                     statusMsg = $"AI analyzing... {done}/{total} done{(string.IsNullOrEmpty(current) ? "" : $" (now: {current})")}";
-                    StateHasChanged();
+                    await InvokeAsync(StateHasChanged);
                     continue;
                 }
                 if (status == "done")
@@ -953,7 +1004,6 @@
                     var analyzed = resp.TryGetProperty("analyzed", out var a) ? a.GetInt32() : 0;
                     var mode = resp.TryGetProperty("mode", out var md) ? md.GetString() : "";
                     statusMsg = $"AI analysis completed: {analyzed} signals ({mode})";
-                    await LoadSignals();
                     return;
                 }
                 if (status == "error")
@@ -964,13 +1014,11 @@
                 }
                 // idle or unknown
                 statusMsg = "AI analysis finished.";
-                await LoadSignals();
                 return;
             }
             catch { /* polling error, retry */ }
         }
         statusMsg = "AI analysis timed out. Check results manually.";
-        await LoadSignals();
     }
 
     private void ShowAiDetail(SwingSignal signal)

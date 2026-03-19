@@ -1,5 +1,6 @@
 @page "/pipeline"
 @attribute [Authorize]
+@implements IDisposable
 @inject SwingService Db
 @inject IHttpClientFactory HttpFactory
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
@@ -574,6 +575,7 @@
     // ── UI State ──
     private string? runningStep;
     private string? statusMsg;
+    private CancellationTokenSource _cts = new();
 
     // ── Popup State ──
     private int popupStep;
@@ -589,6 +591,74 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadAllData();
+        // 페이지 진입 시 실행 중인 파이프라인 감지 → 자동 폴링 재개
+        await DetectAndResumeRunningStep();
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+
+    /// <summary>pipeline_log에서 최근 10분 이내 started 상태(completed/failed 없는)를 찾아 폴링 재개</summary>
+    private async Task DetectAndResumeRunningStep()
+    {
+        try
+        {
+            var recentLogs = pipelineLogs;
+            if (!recentLogs.Any()) return;
+
+            // 최근 10분 이내 started 로그 검색
+            var cutoff = DateTime.Now.AddMinutes(-10);
+            var startedLog = recentLogs.FirstOrDefault(l =>
+                l.Status == "started" && l.CreatedAt >= cutoff);
+            if (startedLog == null) return;
+
+            // 같은 step의 completed/failed가 이미 있으면 실행 중이 아님
+            var hasFinished = recentLogs.Any(l =>
+                l.StepName == startedLog.StepName &&
+                l.CreatedAt >= startedLog.CreatedAt &&
+                (l.Status == "completed" || l.Status == "failed"));
+            if (hasFinished) return;
+
+            // 실행 중 → 폴링 재개
+            var stepName = startedLog.StepName;
+            var uiStep = stepName switch
+            {
+                "full_pipeline" => "full",
+                "collect" => "collect",
+                "universe_refresh" => "universe",
+                "scan" => "scan",
+                _ => "full"
+            };
+
+            runningStep = uiStep;
+            statusMsg = $"{stepName} is running... (resumed tracking)";
+            StateHasChanged();
+
+            // 남은 시간 계산 (최대 5분 - 이미 경과한 시간)
+            var elapsed = (DateTime.Now - startedLog.CreatedAt).TotalSeconds;
+            var remaining = Math.Max(30, 300 - (int)elapsed);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await PollUntilDone(stepName, remaining);
+                }
+                finally
+                {
+                    runningStep = null;
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAllData();
+                        StateHasChanged();
+                    });
+                }
+            });
+        }
+        catch { }
     }
 
     private async Task LoadAllData()
@@ -698,6 +768,7 @@
     {
         runningStep = "universe";
         statusMsg = null;
+        var token = _cts.Token;
         try
         {
             var beforeCount = universeCount;
@@ -709,7 +780,7 @@
                 StateHasChanged();
                 for (int i = 0; i < 20; i++)
                 {
-                    await Task.Delay(3000);
+                    try { await Task.Delay(3000, token); } catch (TaskCanceledException) { return; }
                     var newCount = await Db.GetUniverseCountAsync();
                     if (newCount != beforeCount || i >= 5)
                     {
@@ -724,7 +795,7 @@
             }
         }
         catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
-        finally { runningStep = null; await LoadAllData(); }
+        finally { runningStep = null; if (!token.IsCancellationRequested) await LoadAllData(); }
     }
 
     private async Task CollectData()
@@ -738,7 +809,7 @@
             if (resp.IsSuccessStatusCode)
             {
                 statusMsg = "Data collection started...";
-                await PollUntilDone("collect", 300);   // max 5min
+                await PollUntilDone("collect", 300);
             }
             else
             {
@@ -746,7 +817,7 @@
             }
         }
         catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
-        finally { runningStep = null; await LoadAllData(); }
+        finally { runningStep = null; if (!_cts.IsCancellationRequested) await LoadAllData(); }
     }
 
     private async Task ScanSignals()
@@ -771,7 +842,7 @@
             }
         }
         catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
-        finally { runningStep = null; await LoadAllData(); }
+        finally { runningStep = null; if (!_cts.IsCancellationRequested) await LoadAllData(); }
     }
 
     private async Task RunFullPipeline()
@@ -785,7 +856,7 @@
             if (resp.IsSuccessStatusCode)
             {
                 statusMsg = "Full pipeline started...";
-                await PollUntilDone("full_pipeline", 300);   // max 5min
+                await PollUntilDone("full_pipeline", 300);
             }
             else
             {
@@ -793,23 +864,34 @@
             }
         }
         catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
-        finally { runningStep = null; await LoadAllData(); }
+        finally { runningStep = null; if (!_cts.IsCancellationRequested) await LoadAllData(); }
     }
 
     private async Task PollUntilDone(string stepName, int maxSeconds)
     {
-        var pollStart = DateTime.UtcNow;
+        var token = _cts.Token;
         for (int i = 0; i < maxSeconds / 3; i++)
         {
-            await Task.Delay(3000);
-            logCurrentPage = 1;
-            pipelineLogs = await Db.GetPipelineLogsAsync(0, LogPageSize);
-            StateHasChanged();
+            try
+            {
+                await Task.Delay(3000, token);
+            }
+            catch (TaskCanceledException) { return; }
 
-            // Find the latest log for this step that was created after we started
+            if (token.IsCancellationRequested) return;
+
+            try
+            {
+                logCurrentPage = 1;
+                pipelineLogs = await Db.GetPipelineLogsAsync(0, LogPageSize);
+                await InvokeAsync(StateHasChanged);
+            }
+            catch { continue; }
+
+            // step의 completed/failed 로그 찾기 (최근 로그 중)
             var latest = pipelineLogs.FirstOrDefault(l =>
-                l.StepName == stepName && l.CreatedAt >= pollStart.AddSeconds(-2));
-            if (latest != null && (latest.Status == "completed" || latest.Status == "failed"))
+                l.StepName == stepName && (l.Status == "completed" || l.Status == "failed"));
+            if (latest != null)
             {
                 statusMsg = latest.Status == "completed"
                     ? $"{stepName} completed in {latest.ElapsedSec:F1}s"

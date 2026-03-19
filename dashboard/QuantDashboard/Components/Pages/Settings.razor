@@ -310,7 +310,10 @@
                             </td>
                             <td class="text-muted">@(u.Email ?? "-")</td>
                             <td>
-                                <span class="status-chip @(u.Role == "admin" ? "status-buy" : "status-pending")">@u.Role</span>
+                                <a href="javascript:void(0)" @onclick="() => OpenChangeRole(u.Id, u.Username, u.Role)"
+                                   style="text-decoration:none; cursor:pointer" title="Click to change role">
+                                    <span class="status-chip @(u.Role == "admin" ? "status-buy" : "status-pending")" style="cursor:pointer">@u.Role</span>
+                                </a>
                             </td>
                             <td>
                                 @if (u.IsApproved)
@@ -378,6 +381,47 @@
                     <button class="btn-sm" @onclick="ExecuteDeleteUser"
                             style="padding:4px 16px; background:#ef4444; color:white; border:none; border-radius:4px">
                         Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- Change Role Modal -->
+    @if (_changeRoleVisible)
+    {
+        <div class="modal-overlay" @onclick="() => _changeRoleVisible = false">
+            <div class="modal-content" style="max-width:360px" @onclick:stopPropagation>
+                <h4 style="margin:0 0 0.8rem; color:#a78bfa">
+                    <span class="material-symbols-outlined" style="vertical-align:middle">badge</span>
+                    Change Role
+                </h4>
+                <p style="font-size:0.82rem; color:#94a3b8; margin-bottom:1rem">
+                    User: <strong style="color:#e2e8f0">@_changeRoleUsername</strong>
+                    <br />
+                    Current Role: <span class="status-chip status-pending" style="font-size:0.72rem">@_changeRoleOld</span>
+                </p>
+
+                @if (!string.IsNullOrEmpty(_changeRoleMsg))
+                {
+                    <div class="alert-info" style="margin-bottom:0.8rem; font-size:0.8rem">@_changeRoleMsg</div>
+                }
+
+                <div style="margin-bottom:1rem">
+                    <label class="form-label">New Role</label>
+                    <select class="form-input" @bind="_changeRoleNew" style="font-size:0.85rem">
+                        @foreach (var r in _roles)
+                        {
+                            <option value="@r" disabled="@(r == _changeRoleOld)">@r @(r == _changeRoleOld ? "(current)" : "")</option>
+                        }
+                    </select>
+                </div>
+                <div style="display:flex; gap:0.5rem; justify-content:flex-end">
+                    <button class="btn-sm btn-reject" @onclick="() => _changeRoleVisible = false"
+                            style="padding:4px 16px">Cancel</button>
+                    <button class="btn-sm btn-approve" @onclick="ExecuteChangeRole" disabled="@_changeRoleSaving"
+                            style="padding:4px 16px">
+                        @(_changeRoleSaving ? "Saving..." : "Change")
                     </button>
                 </div>
             </div>
@@ -636,6 +680,15 @@
     private int _deleteUserId;
     private string _deleteUsername = "";
 
+    // Change Role modal
+    private bool _changeRoleVisible;
+    private int _changeRoleUserId;
+    private string _changeRoleUsername = "";
+    private string _changeRoleOld = "";
+    private string _changeRoleNew = "";
+    private string? _changeRoleMsg;
+    private bool _changeRoleSaving;
+
     // Password Reset modal
     private bool _resetPwVisible;
     private int _resetPwUserId;
@@ -715,6 +768,7 @@
         {
             allUsers = await Auth.GetAllUsersAsync();
             _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+            _roles = await Auth.GetRolesAsync();
         }
     }
 
@@ -750,6 +804,43 @@
         _deleteConfirmVisible = false;
         allUsers = await Auth.GetAllUsersAsync();
         _pendingUserCount = allUsers.Count(u => !u.IsApproved && u.Role != "admin");
+    }
+
+    private async Task OpenChangeRole(int userId, string username, string currentRole)
+    {
+        // Ensure roles list is loaded
+        if (!_roles.Any())
+            _roles = await Auth.GetRolesAsync();
+        _changeRoleUserId = userId;
+        _changeRoleUsername = username;
+        _changeRoleOld = currentRole;
+        _changeRoleNew = _roles.FirstOrDefault(r => r != currentRole) ?? "";
+        _changeRoleMsg = null;
+        _changeRoleSaving = false;
+        _changeRoleVisible = true;
+    }
+
+    private async Task ExecuteChangeRole()
+    {
+        if (string.IsNullOrEmpty(_changeRoleNew) || _changeRoleNew == _changeRoleOld)
+        {
+            _changeRoleMsg = "Please select a different role";
+            return;
+        }
+        _changeRoleSaving = true;
+        StateHasChanged();
+        try
+        {
+            await Auth.ChangeRoleAsync(_changeRoleUserId, _changeRoleNew);
+            userMsg = $"User '{_changeRoleUsername}' role changed to '{_changeRoleNew}'";
+            _changeRoleVisible = false;
+            allUsers = await Auth.GetAllUsersAsync();
+        }
+        catch (Exception ex)
+        {
+            _changeRoleMsg = $"Error: {ex.Message}";
+        }
+        finally { _changeRoleSaving = false; }
     }
 
     private void OpenResetPw(int userId, string username)

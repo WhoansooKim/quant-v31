@@ -203,7 +203,7 @@
                     <!-- RIGHT: Chart with Period Selector (50%) -->
                     <div class="wl-level2-right">
                         <div class="chart-period-bar">
-                            @foreach (var p in new[] { ("1D","1d"), ("5D","5d"), ("1M","1mo"), ("6M","6mo") })
+                            @foreach (var p in new[] { ("1D","1d"), ("5D","5d"), ("1M","1mo"), ("6M","6mo"), ("1Y","1y"), ("5Y","5y") })
                             {
                                 var pVal = p.Item2;
                                 var isActive = (selectedPeriod.GetValueOrDefault(sym, "1d") == pVal);
@@ -852,6 +852,7 @@ else
     private string? statusMsg;
     private string? analyzedAt;
     private bool analyzing;
+    private CancellationTokenSource _cts = new();
     private bool adding;
     private bool showRegistered = false;
     private bool showBacktest = false;
@@ -945,6 +946,8 @@ else
     protected override async Task OnInitializedAsync()
     {
         await LoadAll();
+        // 페이지 진입 시 실행 중인 분석 감지 → 자동 폴링 재개
+        await DetectAndResumeAnalysis();
         // 60초마다 sparkline + 확장된 차트 자동 갱신
         _autoRefreshTimer = new System.Threading.Timer(async _ =>
         {
@@ -955,6 +958,58 @@ else
             }
             catch { }
         }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+
+    /// <summary>분석 상태가 running이면 폴링 재개</summary>
+    private async Task DetectAndResumeAnalysis()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis");
+            var status = resp.TryGetProperty("status", out var st) ? st.GetString() : null;
+            if (status == "running")
+            {
+                analyzing = true;
+                statusMsg = "Analysis is running... (resumed tracking)";
+                StateHasChanged();
+                _ = Task.Run(async () =>
+                {
+                    try { await PollAnalysisUntilDone(); }
+                    finally
+                    {
+                        analyzing = false;
+                        await InvokeAsync(async () =>
+                        {
+                            await LoadAnalysis();
+                            statusMsg = $"Analysis complete: {analysisResults.Count} symbols analyzed";
+                            StateHasChanged();
+                        });
+                    }
+                });
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>분석 완료까지 폴링 (CancellationToken 지원)</summary>
+    private async Task PollAnalysisUntilDone()
+    {
+        var token = _cts.Token;
+        var client = HttpFactory.CreateClient("Engine");
+        for (int i = 0; i < 40; i++) // 최대 ~2분 (40 x 3s)
+        {
+            try { await Task.Delay(3000, token); } catch (TaskCanceledException) { return; }
+            if (token.IsCancellationRequested) return;
+            try
+            {
+                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis");
+                var status = resp.TryGetProperty("status", out var st) ? st.GetString() : null;
+                if (status == "done") return;
+                if (status != "running") return; // error or unknown
+            }
+            catch { }
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -1133,7 +1188,7 @@ else
         try
         {
             var client = HttpFactory.CreateClient("Engine");
-            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis?refresh_price=true");
             analysisResults.Clear();
             if (resp.TryGetProperty("results", out var arr))
             {
@@ -1208,22 +1263,19 @@ else
             var client = HttpFactory.CreateClient("Engine");
             client.Timeout = TimeSpan.FromSeconds(120);
             await client.PostAsync("/watchlist/analyze", null);
+            if (_cts.IsCancellationRequested) return;
 
-            for (int i = 0; i < 20; i++)
-            {
-                await Task.Delay(3000);
-                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis");
-                if (resp.TryGetProperty("status", out var st) && st.GetString() == "done")
-                {
-                    await LoadAnalysis();
-                    statusMsg = $"Analysis complete: {analysisResults.Count} symbols analyzed";
-                    StateHasChanged();
-                    return;
-                }
-            }
-            statusMsg = "Analysis timed out. Refresh to check.";
+            await PollAnalysisUntilDone();
+            if (_cts.IsCancellationRequested) return;
+
+            await LoadAnalysis();
+            statusMsg = $"Analysis complete: {analysisResults.Count} symbols analyzed";
         }
-        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            if (!_cts.IsCancellationRequested)
+                statusMsg = $"Error: {ex.Message}";
+        }
         finally { analyzing = false; }
     }
 
@@ -1450,6 +1502,8 @@ else
 
     public void Dispose()
     {
+        _cts.Cancel();
+        _cts.Dispose();
         _autoRefreshTimer?.Dispose();
     }
 }
