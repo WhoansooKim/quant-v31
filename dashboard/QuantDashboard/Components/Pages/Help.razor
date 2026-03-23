@@ -284,7 +284,8 @@
                     <strong>L3. 시간 스탑:</strong> 15일 보유 후 수익이 없으면 자동 청산<br/>
                     <strong>L4. RSI(2) 과매수:</strong> RSI(2) > 90이면 단기 과열 → 이익실현 자동 청산<br/>
                     <strong>L5. 레짐 적응:</strong> CRISIS 시 ATR 배수 2.0×(긴축), RISK_ON 시 3.0×(느슨) 자동 조절<br/>
-                    <strong>부분 청산:</strong> 7% 수익 시 보유량 50% 선매도 (이익 확보)
+                    <strong>이익실현 (TP):</strong> +20% 수익 달성 시 전량 청산 (백테스트 검증 완료)<br/>
+                    <strong>부분 청산:</strong> +12% 수익 시 보유량 50% 선매도 (이익 확보 + 나머지 TP20%까지 보유)
                 </div>
             </div>
         </div>
@@ -967,27 +968,101 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
-    <!-- 7. 워치리스트 — Connors RSI(2) 평균회귀 전략 -->
+    <!-- 7. 워치리스트 — 5-Layer TQM 전략 -->
     <!-- ═══════════════════════════════════════════════════ -->
     <div class="section-card help-section">
         <h4 class="help-title help-toggle" onclick="toggleHelpSection('7')">
             <span class="help-section-arrow" id="help-icon-7">&#x25bc;</span>
             <span class="material-symbols-outlined">star</span>
-            7. 워치리스트 — Connors RSI(2) 평균회귀 전략
+            7. 워치리스트 — 5-Layer Tactical Quality Momentum
         </h4>
         <div id="help-body-7">
         <p class="text-muted" style="line-height:1.7">
-            워치리스트는 <strong>대형 기술주(Mag 7 등)</strong>를 위한 독립 모니터링 기능입니다.
-            Larry Connors의 <strong>RSI(2) 평균회귀 전략</strong> 기반으로, 1주~15일 단기 매수/매도 타이밍을 잡습니다.
-            (논문: Connors &amp; Alvarez, "Short Term Trading Strategies That Work", 연간 수익률 26.6%, 승률 75%)
+            워치리스트는 <strong>대형 기술우량주(AAPL, MSFT, GOOGL, NVDA 등)</strong>를 위한 독립 모니터링 기능입니다.
+            <strong>월 2회 중기 매매</strong>에 최적화된 5계층 시그널 시스템으로, 매수/매도 타이밍을 포착합니다.
+            학술 논문 기반: Faber(2007), Antonacci(2014), O'Neil(IBD), Weinstein(1988), Carter(TTM Squeeze),
+            Connors(2008), Novy-Marx(2013), AQR(2014), Kaufman(2013), Grossman-Zhou(1993).
         </p>
 
         <div class="help-card" style="border-left: 3px solid #8b5cf6; margin-top:1rem">
-            <h5 class="help-subtitle">핵심 원리: RSI(2) 평균회귀</h5>
+            <h5 class="help-subtitle">5-Layer 시그널 시스템</h5>
+            <table class="data-table help-table">
+                <thead><tr><th>Layer</th><th>이름</th><th>역할</th><th>핵심 로직</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td><strong>L1</strong></td>
+                        <td>레짐 필터</td>
+                        <td>시장 전체 방향 판단</td>
+                        <td>QQQ &gt; SMA(200) + VIX &lt; 30 + 3M/6M 절대 모멘텀. <strong>BEARISH이면 매수 차단</strong></td>
+                    </tr>
+                    <tr>
+                        <td><strong>L2</strong></td>
+                        <td>종목 랭킹</td>
+                        <td>어떤 종목이 강한가</td>
+                        <td>IBD RS Rating (3/6/9/12M 가중 모멘텀) + Weinstein Stage (1~4). <strong>Stage 4이면 매수 차단</strong></td>
+                    </tr>
+                    <tr>
+                        <td><strong>L3</strong></td>
+                        <td>진입 타이밍</td>
+                        <td>언제 사는가</td>
+                        <td>BB/KC Squeeze 해소(FIRED!) + RSI(2) 과매도 + 거래량 서지. <strong>Squeeze FIRED = 최강 진입</strong></td>
+                    </tr>
+                    <tr>
+                        <td><strong>L4</strong></td>
+                        <td>포지션 사이징</td>
+                        <td>얼마나 사는가</td>
+                        <td>Quarter-Kelly + ATR 기반 + 시즌 조절 (11~4월 100%, 5~10월 70%)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>L5</strong></td>
+                        <td>매도 (Exit)</td>
+                        <td>언제 파는가</td>
+                        <td>KAMA(10,2,30) 이탈 + Connors SMA(5) + ATR Trailing + Graduated Drawdown</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p style="margin-top:0.5rem; font-size:0.8rem; color:var(--text-secondary)">
+                + <strong>Quality Score</strong>: 총이익률(GP/Assets) + ROE + 부채비율 + 영업이익률 → Finnhub 데이터 (Novy-Marx 2013, AQR QMJ 2014)
+            </p>
+        </div>
+
+        <div class="help-card" style="border-left: 3px solid #f59e0b; margin-top:1rem">
+            <h5 class="help-subtitle">Composite Score (0~100)</h5>
+            <p style="line-height:1.7">6개 팩터를 가중 합산한 종합 점수입니다. 65점 이상이면 매수 유리, 35점 이하면 매수 위험.</p>
+            <table class="data-table help-table">
+                <thead><tr><th>팩터</th><th>비중</th><th>설명</th></tr></thead>
+                <tbody>
+                    <tr><td>Timing (L3)</td><td>25%</td><td>BB Squeeze + RSI(2) 진입 타이밍</td></tr>
+                    <tr><td>RS Ranking (L2)</td><td>20%</td><td>IBD 상대강도 + Weinstein Stage</td></tr>
+                    <tr><td>Quality</td><td>20%</td><td>GP/Assets + ROE + 부채비율</td></tr>
+                    <tr><td>Regime (L1)</td><td>15%</td><td>QQQ 추세 + VIX + 절대 모멘텀</td></tr>
+                    <tr><td>Trend</td><td>10%</td><td>SMA(50/200) 정렬 + ADX</td></tr>
+                    <tr><td>Momentum</td><td>10%</td><td>QQQ 대비 5d/20d 상대강도</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="help-card" style="border-left: 3px solid #ef4444; margin-top:1rem">
+            <h5 class="help-subtitle">Graduated Drawdown Defense (4단계 방어)</h5>
+            <p style="line-height:1.7">Grossman-Zhou(1993) 기반 점진적 위험 관리. 단일 킬스위치보다 훨씬 효과적입니다.</p>
+            <table class="data-table help-table">
+                <thead><tr><th>Drawdown</th><th>단계</th><th>조치</th></tr></thead>
+                <tbody>
+                    <tr style="color:#22c55e"><td>0~5%</td><td>NORMAL</td><td>정상 운영</td></tr>
+                    <tr style="color:#eab308"><td>5~8%</td><td>CAUTION</td><td>신규 진입 금지, 손절 1.5×ATR 긴축</td></tr>
+                    <tr style="color:#f97316"><td>8~12%</td><td>DEFENSIVE</td><td>포지션 50% 축소, 손절 1.0×ATR 긴축</td></tr>
+                    <tr style="color:#ef4444"><td>12%+</td><td>EMERGENCY</td><td>80% 현금화, 최강 종목만 유지</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="help-card" style="border-left: 3px solid #22c55e; margin-top:1rem">
+            <h5 class="help-subtitle">핵심 원리: RSI(2) 평균회귀 (Connors)</h5>
             <p style="line-height:1.7">
                 RSI(2)는 <strong>2일간의 가격 변화만</strong> 보는 초단기 지표입니다. 일반 RSI(14)보다 훨씬 민감하여,
                 대형주가 <strong>단기 과매도(RSI(2) &lt; 5)</strong> 상태에서 빠르게 반등하는 패턴을 포착합니다.
                 "좋은 주식이 잠깐 싸질 때 사서, 정상 가격으로 돌아올 때 파는" 전략입니다.
+                (Connors &amp; Alvarez, "Short Term Trading Strategies That Work", 승률 75%)
             </p>
         </div>
 
@@ -1063,8 +1138,9 @@
         <div class="help-note">
             <span class="help-note-icon">&#x1f4a1;</span>
             <div>
-                <strong>Connors RSI(2) Key Metrics:</strong> 워치리스트 분석 결과에서 RSI(2), CumRSI(2), vs QQQ 상대강도,
-                EXIT(종가 &gt; SMA5) / OPEX(옵션 만기 주간) / SQUEEZE(BB 수축) 배지를 한눈에 확인할 수 있습니다.
+                <strong>5-Layer TQM 패널:</strong> 워치리스트 분석 결과에서 5개 Layer(REGIME / RS+Stage / TIMING / QUALITY / EXIT)를
+                한 줄로 확인할 수 있습니다. Composite Score(0~100)는 헤더 우측에, 기존 Connors 지표(RSI(2), CumRSI(2), QQQ 상대강도,
+                EXIT/OPEX/SQUEEZE 배지)도 그대로 표시됩니다.
             </div>
         </div>
         </div>
@@ -1091,8 +1167,8 @@
             <div class="help-strat-step">
                 <div class="help-strat-num">2</div>
                 <strong>설정 확인</strong>
-                <p>Settings에서 초기 자본($1,000), 포지션 비율(20%), 최대 동시 보유(3종목) 확인.
-                   20%면 한 종목에 $200 투자. 3종목이면 최대 $600 사용, $400은 현금 보유.</p>
+                <p>Settings에서 초기 자본($1,000), 포지션 비율(10%), 최대 동시 보유(10종목) 확인.
+                   10%면 한 종목에 $100 투자. 10종목 분산으로 리스크 관리.</p>
             </div>
             <div class="help-strat-step">
                 <div class="help-strat-num">3</div>
@@ -1187,7 +1263,7 @@
                 <tr>
                     <td><strong>Watchlist</strong></td>
                     <td>외부 보유 종목 모니터링</td>
-                    <td>관심 종목 추가 → Connors RSI(2) 평균회귀 분석 자동 실행. SMA200 필터 + OPEX 감쇠 + QQQ 상대강도. BUY/SELL/NEUTRAL 판정.</td>
+                    <td>기술우량주 등록 → <strong>5-Layer TQM</strong> 분석 자동 실행. Regime Filter + RS Rating + BB Squeeze + Quality Score + KAMA Exit. Composite Score 0~100 + BUY/SELL/NEUTRAL 판정.</td>
                 </tr>
                 <tr>
                     <td><strong>Settings</strong></td>
@@ -1308,8 +1384,8 @@
             <thead><tr><th>설정</th><th>기본값</th><th>의미</th></tr></thead>
             <tbody>
                 <tr><td>initial_capital</td><td>$1,000</td><td>초기 투자 자금</td></tr>
-                <tr><td>position_pct</td><td>20%</td><td>한 종목에 투자하는 비율</td></tr>
-                <tr><td>max_positions</td><td>3</td><td>동시 보유 가능 최대 종목 수</td></tr>
+                <tr><td>position_pct</td><td>10%</td><td>한 종목에 투자하는 비율 (최대 10종목 × 10% = 100%)</td></tr>
+                <tr><td>max_positions</td><td>10</td><td>동시 보유 가능 최대 종목 수 (분산 투자)</td></tr>
                 <tr><td>max_daily_entries</td><td>2</td><td>하루 최대 진입 가능 횟수</td></tr>
                 <tr><td>price_range</td><td>$10~$60</td><td>매수 대상 주가 범위</td></tr>
                 <tr><td>composite_score_min</td><td>50</td><td>시그널 생성 최소 AI 점수</td></tr>
@@ -1319,7 +1395,8 @@
                 <tr><td>time_stop_days</td><td>15</td><td>시간 스탑 일수 (L3)</td></tr>
                 <tr><td>rsi2_exit_threshold</td><td>90</td><td>RSI(2) 과매수 청산 기준 (L4)</td></tr>
                 <tr><td>atr_trailing_activation_r</td><td>1.0</td><td>트레일링 활성화 R배수 (1R=1xATR)</td></tr>
-                <tr><td>partial_exit_threshold</td><td>7%</td><td>부분 청산 실행 수익률</td></tr>
+                <tr><td>take_profit_pct</td><td>20%</td><td>이익실현 목표 (백테스트 검증: 1990~2026 18구간 중 10승)</td></tr>
+                <tr><td>partial_exit_threshold</td><td>12%</td><td>부분 청산 실행 수익률 (+12%에서 50% 선매도)</td></tr>
                 <tr><td>partial_exit_pct</td><td>50%</td><td>부분 청산 시 매도 비율</td></tr>
                 <tr><td>lstm_enabled</td><td>true</td><td>LSTM 예측 사용 여부</td></tr>
                 <tr><td>lstm_weight_in_technical</td><td>0.5</td><td>기술 점수 내 LSTM 비중 (50%)</td></tr>
@@ -1390,8 +1467,9 @@
                     <strong>리스크 관리 원칙</strong>
                     <ul class="help-list" style="margin-top:0.5rem">
                         <li>한 종목에 전체 자산의 <strong>20% 이상 투자하지 않습니다</strong> (기본값).</li>
-                        <li>동시에 <strong>3종목 이상 보유하지 않습니다</strong> (기본값).</li>
+                        <li>동시에 <strong>10종목까지 분산 보유</strong>합니다 (종목당 10%).</li>
                         <li>하루에 <strong>2건 이상 진입하지 않습니다</strong> (기본값).</li>
+                        <li><strong>+12%에서 50% 분할청산</strong>, 나머지는 <strong>+20% TP</strong>까지 보유합니다.</li>
                         <li><strong>5-Layer Auto-Sell</strong>이 이익을 자동으로 보호합니다 (ATR/Hard/Time/RSI2/레짐).</li>
                         <li>부분 청산으로 이익을 미리 확보합니다.</li>
                         <li>매도는 <strong>완전 자동</strong> — 감정적 판단 배제로 규율 있는 청산을 보장합니다.</li>
