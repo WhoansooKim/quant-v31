@@ -104,7 +104,7 @@ engine_v4/
 | Phase E: Real-time Events | COMPLETE | Event scanning + SSE push + Events 대시보드 |
 | Phase F: Telegram + KIS Toggle | COMPLETE | Telegram 알림, live/paper 토글, SEC EDGAR |
 | Capital Injection | COMPLETE | deposit/withdraw 기록 + TWR 스냅샷 반영 |
-| Watchlist | COMPLETE | **Connors RSI(2) 평균회귀 전략** (SMA200 필터 + OPEX 감쇠 + QQQ 상대강도 + BB Squeeze) + 3단계 접기 |
+| Watchlist | COMPLETE | **5-Layer TQM 전략** (Regime Filter + IBD RS + BB Squeeze + Quality Score + KAMA Exit) + Connors RSI(2) 호환 |
 | Collapsible Sidebar | COMPLETE | 아코디언 사이드바 (접으면 아이콘만 표시) |
 | Ticker Bar (Live) | COMPLETE | 오픈 포지션 심볼의 현재가 실시간 표시 |
 | Help Page (Korean) | COMPLETE | 12섹션 전체 한글 가이드 (5-Layer Auto-Sell + Connors RSI(2) + 시간외 거래 + TWR) |

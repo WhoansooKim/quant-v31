@@ -88,6 +88,47 @@
         var relStr5d = r.TryGetProperty("rel_str_5d", out var rs5) ? rs5.GetDouble() : 0;
         var relStr20d = r.TryGetProperty("rel_str_20d", out var rs20) ? rs20.GetDouble() : 0;
 
+        // 5-Layer TQM fields
+        var compositeScore = r.TryGetProperty("composite_score", out var csv) ? csv.GetDouble() : 0;
+        // Layer 1: Regime
+        string l1Trend = "?"; double l1Vix = 0; bool l1Allowed = true; double l1Mom3m = 0;
+        if (r.TryGetProperty("layer1_regime", out var l1j)) {
+            l1Trend = l1j.TryGetProperty("market_trend", out var mt) ? mt.GetString() ?? "?" : "?";
+            l1Vix = l1j.TryGetProperty("vix", out var vx) ? vx.GetDouble() : 0;
+            l1Allowed = !l1j.TryGetProperty("entry_allowed", out var ea) || ea.ValueKind != System.Text.Json.JsonValueKind.False;
+            l1Mom3m = l1j.TryGetProperty("momentum_3m", out var m3) ? m3.GetDouble() : 0;
+        }
+        // Layer 2: Ranking
+        double l2Rs = 50; string l2Stage = "?"; double l2Mom6m = 0;
+        if (r.TryGetProperty("layer2_ranking", out var l2j)) {
+            l2Rs = l2j.TryGetProperty("rs_rating", out var rr) ? rr.GetDouble() : 50;
+            l2Stage = l2j.TryGetProperty("stage", out var st) ? st.GetString() ?? "?" : "?";
+            l2Mom6m = l2j.TryGetProperty("momentum_6m", out var m6) ? m6.GetDouble() : 0;
+        }
+        // Layer 3: Entry
+        double l3Score = 50; bool l3SqFired = false; bool l3MomPos = false;
+        if (r.TryGetProperty("layer3_entry", out var l3j)) {
+            l3Score = l3j.TryGetProperty("score", out var s3) ? s3.GetDouble() : 50;
+            l3SqFired = l3j.TryGetProperty("squeeze_fired", out var sf) && sf.ValueKind == System.Text.Json.JsonValueKind.True;
+            l3MomPos = l3j.TryGetProperty("momentum_positive", out var mp) && mp.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        // Layer 4: Sizing
+        double l4Pct = 15;
+        if (r.TryGetProperty("layer4_sizing", out var l4j)) {
+            l4Pct = l4j.TryGetProperty("suggested_pct", out var sp) ? sp.GetDouble() : 15;
+        }
+        // Layer 5: Exit
+        double l5Kama = 0; bool l5KamaExit = false;
+        if (r.TryGetProperty("layer5_exit", out var l5j)) {
+            l5Kama = l5j.TryGetProperty("kama", out var k5) ? k5.GetDouble() : 0;
+            l5KamaExit = l5j.TryGetProperty("kama_exit", out var ke) && ke.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        // Quality
+        double qualScore = 50;
+        if (r.TryGetProperty("quality", out var qj)) {
+            qualScore = qj.TryGetProperty("score", out var qs) ? qs.GetDouble() : 50;
+        }
+
         <div class="section-card analysis-card" style="margin-bottom:0.3rem">
             <!-- Level 1: Compact Header -->
             <div class="analysis-compact-header" @onclick="() => ToggleCard(sym)">
@@ -117,7 +158,8 @@
                     <canvas id="spark-@sym" width="80" height="28"
                             style="vertical-align:middle; flex-shrink:0"></canvas>
                     <span class="compact-verdict @dirCss">@dirLabel</span>
-                    <span class="compact-score" style="color:var(--text-secondary)">@(wScore >= 0 ? "+" : "")@wScore.ToString("F3")</span>
+                    <span class="compact-score" title="Composite Score (0-100)" style="font-weight:700; color:@(compositeScore >= 65 ? "var(--green)" : compositeScore <= 35 ? "var(--red)" : "var(--text-secondary)")">@compositeScore.ToString("F0")</span>
+                    <span class="compact-score" style="color:var(--text-secondary); font-size:0.65rem">@(wScore >= 0 ? "+" : "")@wScore.ToString("F3")</span>
                 </div>
             </div>
 
@@ -172,6 +214,47 @@
                                 @if (connorsExit) { <span class="text-yellow" title="Connors Exit: Close > SMA(5)">EXIT</span> }
                                 @if (opexWeek) { <span class="text-yellow" title="옵션만기 주간 — 매수 보류 권장">OPEX</span> }
                                 @if (bbSqueeze) { <span class="text-green" title="Bollinger 스퀴즈 — 에너지 축적 중">SQUEEZE</span> }
+                            </div>
+
+                            <!-- 5-Layer TQM Signal Panel -->
+                            <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:0.3rem; margin:0.3rem 0; padding:0.3rem; background:var(--s0); border-radius:6px; font-size:0.62rem">
+                                <div style="text-align:center" title="Layer 1: 시장 레짐 (Faber SMA + VIX)">
+                                    <div style="font-weight:700; color:var(--text-secondary); margin-bottom:0.1rem">REGIME</div>
+                                    <div style="font-weight:700; color:@(l1Trend == "BULLISH" ? "var(--green)" : l1Trend == "BEARISH" ? "var(--red)" : "var(--yellow)")">
+                                        @(l1Trend == "BULLISH" ? "Bull" : l1Trend == "BEARISH" ? "Bear" : l1Trend == "CAUTIOUS" ? "Caution" : "Weak")
+                                    </div>
+                                    <div class="text-muted">VIX @l1Vix.ToString("F0")</div>
+                                </div>
+                                <div style="text-align:center" title="Layer 2: RS Rating + Weinstein Stage">
+                                    <div style="font-weight:700; color:var(--text-secondary); margin-bottom:0.1rem">RS / STAGE</div>
+                                    <div style="font-weight:700; color:@(l2Rs >= 70 ? "var(--green)" : l2Rs <= 30 ? "var(--red)" : "var(--text-primary)")">RS @l2Rs.ToString("F0")</div>
+                                    <div style="color:@(l2Stage == "STAGE_2" ? "var(--green)" : l2Stage == "STAGE_4" ? "var(--red)" : "var(--text-secondary)")">@(l2Stage.Replace("STAGE_", "S"))</div>
+                                </div>
+                                <div style="text-align:center" title="Layer 3: 진입 타이밍 (Squeeze + RSI2 + PEAD)">
+                                    <div style="font-weight:700; color:var(--text-secondary); margin-bottom:0.1rem">TIMING</div>
+                                    <div style="font-weight:700; color:@(l3Score >= 65 ? "var(--green)" : l3Score <= 35 ? "var(--red)" : "var(--text-primary)")">@l3Score.ToString("F0")/100</div>
+                                    <div>
+                                        @if (l3SqFired) { <span style="color:var(--green); font-weight:700">FIRED!</span> }
+                                        else if (bbSqueeze) { <span style="color:var(--yellow)">Squeeze</span> }
+                                        else { <span class="text-muted">—</span> }
+                                    </div>
+                                </div>
+                                <div style="text-align:center" title="Quality Score (GP/Assets + ROE + Margin)">
+                                    <div style="font-weight:700; color:var(--text-secondary); margin-bottom:0.1rem">QUALITY</div>
+                                    <div style="font-weight:700; color:@(qualScore >= 65 ? "var(--green)" : qualScore <= 35 ? "var(--red)" : "var(--text-primary)")">@qualScore.ToString("F0")/100</div>
+                                    <div class="text-muted">@l4Pct.ToString("F0")% size</div>
+                                </div>
+                                <div style="text-align:center" title="Layer 5: 매도 신호 (KAMA + ATR Stop)">
+                                    <div style="font-weight:700; color:var(--text-secondary); margin-bottom:0.1rem">EXIT</div>
+                                    @if (l5KamaExit) {
+                                        <div style="font-weight:700; color:var(--red)">KAMA Exit</div>
+                                    } else if (connorsExit) {
+                                        <div style="font-weight:700; color:var(--yellow)">SMA5 Exit</div>
+                                    } else {
+                                        <div style="font-weight:700; color:var(--green)">Hold</div>
+                                    }
+                                    <div class="text-muted">K @l5Kama.ToString("F1")</div>
+                                </div>
                             </div>
 
                             <div class="category-breakdown">
