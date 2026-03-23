@@ -5,191 +5,312 @@
 @inject IJSRuntime JS
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
-<PageTitle>Swing V4 - Home</PageTitle>
+<PageTitle>Swing V4 - Dashboard</PageTitle>
 
 <div class="page-header">
-    <h3>Portfolio Overview</h3>
+    <h3>Portfolio Dashboard</h3>
     <span class="text-muted" style="font-size:0.7rem">
-        @DateTime.Now.ToString("yyyy-MM-dd HH:mm")
+        @DateTime.Now.ToString("yyyy-MM-dd HH:mm") KST
     </span>
 </div>
 
-<!-- 4 KPI Cards -->
-<div class="stat-grid cols-4">
+<!-- ═══ Row 1: 5 KPI Cards ═══ -->
+<div class="stat-grid cols-5">
     <div class="stat-card">
-        <span class="stat-label">Total Value</span>
-        <span class="stat-value">
-            @if (snapshot != null && snapshot.TotalValueUsd.HasValue)
-            {
-                @($"${snapshot.TotalValueUsd:N2}")
-            }
-            else
-            {
-                <span>$2,200.00</span>
-            }
-        </span>
-        @if (snapshot?.TotalValueKrw != null)
+        <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">account_balance_wallet</span> Total Value</span>
+        <span class="stat-value">@(snapshot != null ? $"${snapshot.TotalValueUsd:N2}" : "--")</span>
+        @if (snapshot?.CashUsd != null)
         {
-            <span class="stat-sub">&#8361;@($"{snapshot.TotalValueKrw:N0}")</span>
+            <span class="stat-sub">Cash $@($"{snapshot.CashUsd:N2}") · Invested $@($"{snapshot.InvestedUsd:N2}")</span>
         }
     </div>
-
     <div class="stat-card">
-        <span class="stat-label">Daily P&L</span>
-        <span class="stat-value @(dailyPnl >= 0 ? "text-green" : "text-red")">
-            @(dailyPnl >= 0 ? "+" : "")$@($"{dailyPnl:N2}")
-        </span>
+        <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">trending_up</span> Cumulative</span>
+        <span class="stat-value @CumCls">@(cumReturn != 0 ? $"{(cumReturn >= 0 ? "+" : "")}{cumReturn * 100:F2}%" : "--")</span>
+        @if (snapshot?.MaxDrawdown != null)
+        {
+            <span class="stat-sub text-red">MDD @($"{snapshot.MaxDrawdown * 100:F1}")%</span>
+        }
+    </div>
+    <div class="stat-card">
+        <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">today</span> Daily P&L</span>
+        <span class="stat-value @DailyCls">@(snapshot != null ? $"{(dailyPnl >= 0 ? "+" : "")}${dailyPnl:N2}" : "--")</span>
         @if (snapshot?.DailyReturn != null)
         {
-            <span class="stat-sub @(snapshot.DailyReturn >= 0 ? "text-green" : "text-red")">
-                @(snapshot.DailyReturn >= 0 ? "+" : "")@($"{snapshot.DailyReturn * 100:F2}")%
-            </span>
+            <span class="stat-sub @DailyCls">@(snapshot.DailyReturn >= 0 ? "+" : "")@($"{snapshot.DailyReturn * 100:F2}")%</span>
         }
     </div>
-
     <div class="stat-card">
-        <span class="stat-label">Cumulative Return</span>
-        <span class="stat-value @(cumReturn >= 0 ? "text-green" : "text-red")">
-            @(cumReturn >= 0 ? "+" : "")@($"{cumReturn * 100:F2}")%
-        </span>
-    </div>
-
-    <div class="stat-card">
-        <span class="stat-label">Positions</span>
-        <span class="stat-value">@openPositions.Count / 4</span>
+        <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">monitoring</span> Positions</span>
+        <span class="stat-value">@openPositions.Count<span style="font-size:0.7rem; color:var(--text-secondary)"> / @maxPositions</span></span>
         @if (pendingSignals > 0)
         {
             <span class="stat-sub" style="color:var(--sideways)">@pendingSignals pending</span>
         }
     </div>
-</div>
-
-<!-- Backtest Projection -->
-@if (latestBt != null)
-{
-    <div class="section-card" style="margin-top:0rem; margin-bottom:1rem">
-        <h4 class="section-title">Backtest Projection
-            <span class="text-muted" style="font-size:0.72rem; font-weight:400; margin-left:auto">
-                @latestBt.StartDate.ToString("yy/MM") - @latestBt.EndDate.ToString("yy/MM")
+    <div class="stat-card">
+        <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">public</span> Macro</span>
+        @if (macroScore.HasValue)
+        {
+            var mCls = macroScore >= 60 ? "text-green" : macroScore >= 40 ? "text-yellow" : "text-red";
+            <span class="stat-value @mCls">@macroScore.Value.ToString("F0")</span>
+            <span class="stat-sub">
+                <span class="badge" style="font-size:0.6rem; padding:1px 5px; background:@MacroRegimeColor">@macroRegime</span>
             </span>
+        }
+        else
+        {
+            <span class="stat-value text-muted">--</span>
+        }
+    </div>
+</div>
+
+<!-- ═══ Row 2: Equity Curve with Trade Markers ═══ -->
+<div class="section-card" style="margin-top:0.75rem">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem">
+        <h4 class="section-title" style="margin:0">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">show_chart</span>
+            Equity Curve
         </h4>
-        <div class="stat-grid cols-4">
-            <div class="stat-card">
-                <span class="stat-label">CAGR</span>
-                <span class="stat-value @((latestBt.Cagr ?? 0) >= 0 ? "text-green" : "text-red")">
-                    @($"{(latestBt.Cagr ?? 0) * 100:F1}")%
-                </span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Total Return</span>
-                <span class="stat-value @((latestBt.TotalReturn ?? 0) >= 0 ? "text-green" : "text-red")">
-                    @($"{(latestBt.TotalReturn ?? 0) * 100:F1}")%
-                </span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Sharpe</span>
-                <span class="stat-value">@($"{latestBt.SharpeRatio:F2}")</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">Max Drawdown</span>
-                <span class="stat-value text-red">@($"{(latestBt.MaxDrawdown ?? 0) * 100:F1}")%</span>
-            </div>
+        <div class="tab-bar" style="margin:0; border:0; gap:2px">
+            @foreach (var (label, days) in Periods)
+            {
+                var d = days;
+                <button class="btn-period @(selectedDays == d ? "btn-period-active" : "")"
+                        @onclick="() => ChangePeriod(d)">@label</button>
+            }
         </div>
-        <a href="/backtest" class="bt-projection-link">
-            View full backtest →
-        </a>
     </div>
-}
-else
-{
-    <div class="section-card" style="margin-top:0rem; margin-bottom:1rem">
-        <h4 class="section-title">Backtest Projection</h4>
-        <p class="text-muted" style="font-size:0.85rem">
-            No backtest data yet. <a href="/backtest" class="bt-projection-link">Run a backtest</a> to see projected performance.
-        </p>
+    <div style="height:300px; position:relative">
+        <canvas id="dashEquityChart"></canvas>
     </div>
-}
-
-<!-- Open Positions Table -->
-<div class="section-card" style="margin-top:1rem">
-    <h4 class="section-title">Open Positions</h4>
-    @if (openPositions.Any())
-    {
-        <div class="table-responsive">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Qty</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>P&L</th>
-                        <th>P&L %</th>
-                        <th>SL / TP</th>
-                        <th>Days</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var p in openPositions)
-                    {
-                        var pnlClass = (p.UnrealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
-                        var holdDays = (DateTime.Now - p.EntryTime).Days;
-                        <tr>
-                            <td><SymbolLink Symbol="@p.Symbol" OnSymbolClick="OpenModal" /></td>
-                            <td>@p.Qty</td>
-                            <td>$@p.EntryPrice.ToString("F2")</td>
-                            <td>@(p.CurrentPrice != null ? $"${p.CurrentPrice:F2}" : "--")</td>
-                            <td class="@pnlClass">
-                                @(p.UnrealizedPnl != null ? $"{(p.UnrealizedPnl >= 0 ? "+" : "")}${p.UnrealizedPnl:F2}" : "--")
-                            </td>
-                            <td class="@pnlClass">
-                                @(p.UnrealizedPct != null ? $"{(p.UnrealizedPct >= 0 ? "+" : "")}{p.UnrealizedPct * 100:F2}%" : "--")
-                            </td>
-                            <td>
-                                <span class="text-red">@(p.StopLoss != null ? $"${p.StopLoss:F2}" : "--")</span>
-                                /
-                                <span class="text-green">@(p.TakeProfit != null ? $"${p.TakeProfit:F2}" : "--")</span>
-                            </td>
-                            <td>@holdDays</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-    }
-    else
-    {
-        <p class="text-muted">No open positions</p>
-    }
-</div>
-
-<!-- Equity Curve Chart -->
-<div class="section-card" style="margin-top:1rem">
-    <h4 class="section-title">Equity Curve</h4>
-    <div style="height:250px">
-        <canvas id="equityCurveChart"></canvas>
-    </div>
-</div>
-
-<!-- Recent Activity -->
-<div class="section-card" style="margin-top:1rem">
-    <h4 class="section-title">Recent Activity</h4>
     @if (recentTrades.Any())
     {
-        @foreach (var t in recentTrades.Take(5))
+        <div style="display:flex; gap:1rem; margin-top:0.4rem; font-size:0.65rem; color:var(--text-secondary)">
+            <span><span style="color:#22c55e; font-weight:700">▲</span> BUY</span>
+            <span><span style="color:#ef4444; font-weight:700">▼</span> SELL</span>
+            <span style="margin-left:auto">@snapHistory.Count data points · @recentTrades.Count trades</span>
+        </div>
+    }
+</div>
+
+<!-- ═══ Row 3: Two-Column (Positions + Macro) ═══ -->
+<div class="dash-grid-2col" style="margin-top:0.75rem">
+    <!-- Left: Open Positions -->
+    <div class="section-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem">
+            <h4 class="section-title" style="margin:0">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">inventory_2</span>
+                Open Positions
+            </h4>
+            <a href="/positions" class="text-muted" style="font-size:0.7rem; text-decoration:none">View All →</a>
+        </div>
+        @if (openPositions.Any())
         {
-            var cls = t.Side == "BUY" ? "text-green" : "text-red";
-            <div class="activity-item">
-                <span class="@cls" style="font-weight:600">@(t.Side == "BUY" ? "+" : "-") @t.Symbol</span>
-                <span>@t.Qty shares @@ $@t.Price.ToString("F2")</span>
-                <span class="text-muted">@t.ExecutedAt.ToString("MM/dd HH:mm")</span>
+            <div class="table-responsive">
+                <table class="data-table" style="font-size:0.78rem">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>P&L %</th>
+                            <th class="hide-mobile">Days</th>
+                            <th class="hide-mobile">SL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var p in openPositions)
+                        {
+                            var cls = (p.UnrealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
+                            var hold = (DateTime.Now - p.EntryTime).Days;
+                            <tr @ondblclick="() => OpenModal(p.Symbol)" style="cursor:pointer">
+                                <td style="font-weight:700">@p.Symbol</td>
+                                <td>$@p.EntryPrice.ToString("F2")</td>
+                                <td>@(p.CurrentPrice != null ? $"${p.CurrentPrice:F2}" : "--")</td>
+                                <td class="@cls" style="font-weight:600">@(p.UnrealizedPct != null ? $"{(p.UnrealizedPct >= 0 ? "+" : "")}{p.UnrealizedPct * 100:F2}%" : "--")</td>
+                                <td class="hide-mobile">@hold d</td>
+                                <td class="hide-mobile text-red">@(p.StopLoss != null ? $"${p.StopLoss:F2}" : "--")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div style="display:flex; justify-content:space-between; padding:0.4rem 0.2rem 0; border-top:1px solid var(--bd); font-size:0.75rem; font-weight:600">
+                <span>Total Invested: $@TotalInvested.ToString("N2")</span>
+                <span class="@(TotalPnl >= 0 ? "text-green" : "text-red")">P&L: @(TotalPnl >= 0 ? "+" : "")$@TotalPnl.ToString("N2") (@(TotalInvested > 0 ? $"{(TotalPnl >= 0 ? "+" : "")}{(double)(TotalPnl / TotalInvested) * 100:F2}%" : "0%"))</span>
             </div>
         }
-    }
-    else
-    {
-        <p class="text-muted">No recent trades</p>
-    }
+        else
+        {
+            <p class="text-muted" style="font-size:0.8rem">No open positions</p>
+        }
+    </div>
+
+    <!-- Right: Macro Indicators -->
+    <div class="section-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem">
+            <h4 class="section-title" style="margin:0">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">public</span>
+                Macro Indicators
+            </h4>
+            @if (!string.IsNullOrEmpty(macroScoredAt))
+            {
+                <span class="text-muted" style="font-size:0.6rem">@macroScoredAt</span>
+            }
+        </div>
+        @if (macroJson.HasValue)
+        {
+            var m = macroJson.Value;
+            <!-- Overall Score Header -->
+            <div class="macro-header">
+                <div class="macro-gauge">
+                    <svg viewBox="0 0 120 70" style="width:100px; height:58px">
+                        <path d="M 10 65 A 50 50 0 0 1 110 65" fill="none" stroke="var(--s3)" stroke-width="8" stroke-linecap="round"/>
+                        <path d="M 10 65 A 50 50 0 0 1 110 65" fill="none" stroke="@MacroRegimeColor" stroke-width="8" stroke-linecap="round"
+                              stroke-dasharray="@($"{(macroScore ?? 0) / 100 * 157:F0}") 157"/>
+                    </svg>
+                    <div class="macro-gauge-val" style="color:@MacroRegimeColor">@macroScore?.ToString("F0")</div>
+                </div>
+                <div style="flex:1">
+                    <span class="badge" style="font-size:0.65rem; padding:2px 8px; background:@MacroRegimeColor; color:white; margin-bottom:0.3rem; display:inline-block">@macroRegime</span>
+                    <div style="font-size:0.72rem; color:var(--text-secondary); line-height:1.4">
+                        @if (macroRegime == "FAVORABLE") { <span>매크로 환경 우호적 — 풀사이즈 진입 가능</span> }
+                        else if (macroRegime == "NEUTRAL") { <span>중립 환경 — 기본 사이징 유지</span> }
+                        else if (macroRegime == "CAUTIOUS") { <span>주의 환경 — 포지션 축소 권장</span> }
+                        else { <span>리스크오프 — 신규 진입 차단</span> }
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sub-signals Table -->
+            <div class="table-responsive" style="margin-top:0.5rem">
+                <table class="data-table macro-table">
+                    <thead>
+                        <tr>
+                            <th>Indicator</th>
+                            <th>Value</th>
+                            <th style="width:40%">Score</th>
+                            <th style="text-align:right">Pts</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var (key, label, rawKey, rawFmt) in MacroSubs)
+                        {
+                            if (!m.TryGetProperty(key, out var sub)) continue;
+                            var score = sub.TryGetProperty("score", out var sv) ? sv.GetDouble() : 50;
+                            var barColor = score >= 60 ? "#22c55e" : score >= 40 ? "#eab308" : "#ef4444";
+                            var rawVal = "--";
+                            if (!string.IsNullOrEmpty(rawKey) && m.TryGetProperty("raw_data", out var rd) && rd.TryGetProperty(rawKey, out var rv) && rv.ValueKind == System.Text.Json.JsonValueKind.Number)
+                            {
+                                rawVal = string.Format(rawFmt, rv.GetDouble());
+                            }
+                            <tr>
+                                <td style="font-weight:600">@label</td>
+                                <td class="text-muted">@rawVal</td>
+                                <td>
+                                    <div class="macro-bar-bg" style="height:8px"><div class="macro-bar" style="width:@score%; background:@barColor"></div></div>
+                                </td>
+                                <td style="text-align:right; font-weight:700; color:@barColor">@score.ToString("F0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p class="text-muted" style="font-size:0.8rem">No macro data available</p>
+        }
+    </div>
+</div>
+
+<!-- ═══ Row 4: Watchlist Summary + Recent Activity ═══ -->
+<div class="dash-grid-2col" style="margin-top:0.75rem">
+    <!-- Left: Watchlist -->
+    <div class="section-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem">
+            <h4 class="section-title" style="margin:0">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">visibility</span>
+                Watchlist Signals
+            </h4>
+            <a href="/watchlist" class="text-muted" style="font-size:0.7rem; text-decoration:none">View All →</a>
+        </div>
+        @if (watchlistSignals.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table" style="font-size:0.78rem">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Price</th>
+                            <th>Signal</th>
+                            <th style="width:30%">Confidence</th>
+                            <th>Regime</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var ws in watchlistSignals)
+                        {
+                            var dirCls = ws.Direction == "BUY" ? "badge-green" : ws.Direction == "SELL" ? "badge-red" : "badge-yellow";
+                            var confColor = ws.Confidence >= 70 ? "#22c55e" : ws.Confidence >= 50 ? "#eab308" : "#9ca3af";
+                            var scoreCls = ws.Score > 0 ? "text-green" : ws.Score < 0 ? "text-red" : "";
+                            <tr>
+                                <td style="font-weight:700">@ws.Symbol</td>
+                                <td>$@ws.Price.ToString("F2")</td>
+                                <td>
+                                    <span class="badge @dirCls" style="font-size:0.65rem; padding:1px 6px">@ws.Direction</span>
+                                    <span class="@scoreCls" style="font-size:0.68rem; margin-left:0.2rem">@ws.Score.ToString("+0.00;-0.00")</span>
+                                </td>
+                                <td>
+                                    <div style="display:flex; align-items:center; gap:0.3rem">
+                                        <div class="macro-bar-bg" style="height:7px; flex:1"><div class="macro-bar" style="width:@ws.Confidence%; background:@confColor"></div></div>
+                                        <span style="font-weight:700; font-size:0.72rem; color:@confColor; min-width:28px; text-align:right">@ws.Confidence%</span>
+                                    </div>
+                                </td>
+                                <td><span class="text-muted" style="font-size:0.7rem">@ws.Regime</span></td>
+                                <td class="text-muted" style="font-size:0.7rem">@ws.Date</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p class="text-muted" style="font-size:0.8rem">No watchlist signals. <a href="/watchlist">Run analysis</a></p>
+        }
+    </div>
+
+    <!-- Right: Recent Activity -->
+    <div class="section-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem">
+            <h4 class="section-title" style="margin:0">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">history</span>
+                Recent Trades
+            </h4>
+            <a href="/signals" class="text-muted" style="font-size:0.7rem; text-decoration:none">View All →</a>
+        </div>
+        @if (recentTrades.Any())
+        {
+            @foreach (var t in recentTrades.Take(8))
+            {
+                var cls = t.Side == "BUY" ? "text-green" : "text-red";
+                var icon = t.Side == "BUY" ? "arrow_upward" : "arrow_downward";
+                <div class="activity-item">
+                    <span class="material-symbols-outlined @cls" style="font-size:14px">@icon</span>
+                    <span class="@cls" style="font-weight:600; min-width:50px">@t.Symbol</span>
+                    <span style="font-size:0.75rem">@t.Qty shares @@ $@t.Price.ToString("F2")</span>
+                    <span class="text-muted" style="font-size:0.68rem; margin-left:auto">@t.ExecutedAt.ToString("MM/dd HH:mm")</span>
+                </div>
+            }
+        }
+        else
+        {
+            <p class="text-muted" style="font-size:0.8rem">No recent trades</p>
+        }
+    </div>
 </div>
 
 <SymbolDetailModal Visible="@modalVisible" Symbol="@modalSymbol" OnClose="CloseModal" />
@@ -199,17 +320,57 @@ else
     private List<SwingPosition> openPositions = new();
     private List<SwingTrade> recentTrades = new();
     private List<SwingSnapshot> snapHistory = new();
-    private SwingBacktestRun? latestBt;
     private int pendingSignals;
     private decimal dailyPnl;
     private double cumReturn;
+    private int maxPositions = 4;
 
-    // Modal state
+    // Macro
+    private System.Text.Json.JsonElement? macroJson;
+    private double? macroScore;
+    private string macroRegime = "";
+    private string macroScoredAt = "";
+
+    // Watchlist
+    private List<WatchlistSignalSummary> watchlistSignals = new();
+
+    // Macro sub-signal definitions
+    private static readonly (string key, string label, string rawKey, string rawFmt)[] MacroSubs = {
+        ("risk_off", "Risk-Off (VIX)", "vix", "VIX {0:F1}"),
+        ("yield_curve", "Yield 10Y", "yield_10y", "{0:F2}%"),
+        ("copper_gold", "Cu/Au Ratio", "copper_gold_ratio", "{0:F4}"),
+        ("dollar_trend", "Dollar (DXY)", "dxy", "{0:F1}"),
+        ("btc_momentum", "BTC Momentum", "", ""),
+        ("oil_wti", "Oil (WTI)", "wti", "${0:F1}"),
+    };
+
+    // Chart period
+    private int selectedDays = 30;
+    private static readonly (string Label, int Days)[] Periods = {
+        ("1W", 7), ("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365)
+    };
+
+    // Modal
     private bool modalVisible;
     private string modalSymbol = "";
-
     private void OpenModal(string symbol) { modalSymbol = symbol; modalVisible = true; }
     private void CloseModal() { modalVisible = false; }
+
+    // Computed
+    private decimal TotalInvested => openPositions.Sum(p => p.EntryPrice * p.Qty);
+    private decimal TotalPnl => openPositions.Sum(p => (p.CurrentPrice ?? p.EntryPrice) * p.Qty) - TotalInvested;
+
+    // Helpers
+    private string CumCls => cumReturn >= 0 ? "text-green" : "text-red";
+    private string DailyCls => dailyPnl >= 0 ? "text-green" : "text-red";
+    private string MacroRegimeColor => macroRegime switch
+    {
+        "FAVORABLE" => "#22c55e",
+        "NEUTRAL" => "#eab308",
+        "CAUTIOUS" => "#f97316",
+        "RISK-OFF" or "RISK_OFF" => "#ef4444",
+        _ => "#60a5fa"
+    };
 
     protected override async Task OnInitializedAsync()
     {
@@ -217,51 +378,167 @@ else
         {
             var snapTask = Db.GetLatestSnapshotAsync();
             var posTask = Db.GetOpenPositionsAsync();
-            var tradeTask = Db.GetRecentTradesAsync(5);
-            var histTask = Db.GetSnapshotHistoryAsync(30);
+            var tradeTask = Db.GetRecentTradesAsync(50);
+            var histTask = Db.GetSnapshotHistoryAsync(selectedDays);
             var sigTask = Db.GetPendingSignalCountAsync();
-            var btTask = Db.GetLatestBacktestRunAsync();
 
-            await Task.WhenAll(snapTask, posTask, tradeTask, histTask, sigTask, btTask);
+            await Task.WhenAll(snapTask, posTask, tradeTask, histTask, sigTask);
 
             snapshot = snapTask.Result;
             openPositions = posTask.Result;
             recentTrades = tradeTask.Result;
             snapHistory = histTask.Result;
             pendingSignals = sigTask.Result;
-            latestBt = btTask.Result;
-
             dailyPnl = snapshot?.DailyPnlUsd ?? 0;
             cumReturn = snapshot?.CumulativeReturn ?? 0;
+            _chartPending = snapHistory.Any();
+
+            // Load macro + watchlist via HTTP (non-blocking)
+            _ = LoadMacroAsync();
+            _ = LoadWatchlistSignalsAsync();
         }
         catch { }
     }
 
+    private async Task LoadMacroAsync()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetAsync("/macro");
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                macroJson = json;
+                macroScore = json.TryGetProperty("macro_score", out var ms) ? ms.GetDouble() : null;
+                macroRegime = json.TryGetProperty("regime", out var rg) ? rg.GetString() ?? "" : "";
+                if (json.TryGetProperty("scored_at", out var sa))
+                    macroScoredAt = sa.GetString()?.Substring(0, Math.Min(16, sa.GetString()?.Length ?? 0)) ?? "";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch { }
+    }
+
+    private async Task LoadWatchlistSignalsAsync()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetAsync("/watchlist/signal-log?limit=50");
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                if (json.TryGetProperty("logs", out var logs))
+                {
+                    var latest = new Dictionary<string, WatchlistSignalSummary>();
+                    foreach (var log in logs.EnumerateArray())
+                    {
+                        var sym = log.TryGetProperty("symbol", out var s) ? s.GetString() ?? "" : "";
+                        var date = log.TryGetProperty("signal_date", out var sd) ? sd.GetString() ?? "" : "";
+                        if (latest.ContainsKey(sym) && string.Compare(latest[sym].Date, date) >= 0) continue;
+                        latest[sym] = new WatchlistSignalSummary(
+                            Symbol: sym,
+                            Direction: log.TryGetProperty("direction", out var d) ? d.GetString() ?? "NEUTRAL" : "NEUTRAL",
+                            Score: log.TryGetProperty("weighted_score", out var ws) ? ws.GetDouble() : 0,
+                            Confidence: log.TryGetProperty("confidence", out var c) ? c.GetInt32() : 0,
+                            Price: log.TryGetProperty("current_price", out var p) ? (decimal)p.GetDouble() : 0,
+                            Regime: log.TryGetProperty("regime", out var r) ? r.GetString() ?? "" : "",
+                            Date: date
+                        );
+                    }
+                    watchlistSignals = latest.Values.OrderBy(x => x.Symbol).ToList();
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private async Task ChangePeriod(int days)
+    {
+        selectedDays = days;
+        try
+        {
+            snapHistory = await Db.GetSnapshotHistoryAsync(days);
+            recentTrades = await Db.GetRecentTradesAsync(days <= 30 ? 50 : 200);
+            _chartPending = snapHistory.Any();
+            StateHasChanged();
+        }
+        catch { }
+    }
+
+    private bool _chartPending;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender && snapHistory.Any())
+        if (_chartPending && snapHistory.Any())
         {
-            try
-            {
-                var labels = snapHistory.Select(s => s.Time.ToString("MM/dd")).ToArray();
-                var values = snapHistory.Select(s => (double)(s.TotalValueUsd ?? 0)).ToArray();
-                var datasets = new[]
-                {
-                    new {
-                        label = "Portfolio Value ($)",
-                        data = values,
-                        borderColor = "#197fe6",
-                        backgroundColor = "rgba(25,127,230,0.08)",
-                        fill = true,
-                        tension = 0.3,
-                        pointRadius = 0,
-                        borderWidth = 2
-                    }
-                };
-                await JS.InvokeVoidAsync("chartHelper.createLine",
-                    "equityCurveChart", labels, datasets, (object?)null);
-            }
-            catch { }
+            _chartPending = false;
+            await RenderEquityChart();
         }
     }
+
+    private async Task RenderEquityChart()
+    {
+        if (!snapHistory.Any()) return;
+        try
+        {
+            var labels = snapHistory.Select(s => s.Time.ToString("yyyy-MM-dd")).ToArray();
+            var values = snapHistory.Select(s => (double)(s.TotalValueUsd ?? 0)).ToArray();
+            var count = labels.Length;
+
+            // Build date→index for trade markers
+            var dateToIndex = new Dictionary<string, int>();
+            for (int i = 0; i < labels.Length; i++)
+                dateToIndex[labels[i]] = i;
+
+            var buyValues = new double?[count];
+            var sellValues = new double?[count];
+            var buyMeta = new object?[count];
+            var sellMeta = new object?[count];
+
+            foreach (var t in recentTrades)
+            {
+                var tradeDate = t.ExecutedAt.ToString("yyyy-MM-dd");
+                if (!dateToIndex.TryGetValue(tradeDate, out var idx)) continue;
+                var meta = new Dictionary<string, object?>
+                {
+                    ["date"] = tradeDate, ["symbol"] = t.Symbol, ["qty"] = t.Qty,
+                    ["price"] = t.Price
+                };
+                if (t.Side == "BUY")
+                {
+                    buyValues[idx] = values[idx];
+                    buyMeta[idx] = meta;
+                }
+                else
+                {
+                    sellValues[idx] = values[idx];
+                    sellMeta[idx] = meta;
+                }
+            }
+
+            var eqDs = new object[]
+            {
+                new {
+                    label = "Portfolio Value ($)",
+                    data = values,
+                    borderColor = "#197fe6",
+                    backgroundColor = "rgba(25,127,230,0.08)",
+                    fill = true, tension = 0.3, pointRadius = 0, borderWidth = 2
+                }
+            };
+            var buyData = new { values = buyValues, meta = buyMeta };
+            var sellData = new { values = sellValues, meta = sellMeta };
+            await JS.InvokeVoidAsync("chartHelper.createLineWithTrades",
+                "dashEquityChart", labels, eqDs, buyData, sellData, null);
+        }
+        catch { }
+    }
+
+    // Internal record for watchlist signal summary
+    private record WatchlistSignalSummary(
+        string Symbol, string Direction, double Score, int Confidence,
+        decimal Price, string Regime, string Date);
 }

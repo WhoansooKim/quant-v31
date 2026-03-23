@@ -27,6 +27,15 @@
 
 <!-- Status Tabs -->
 <div class="tab-bar">
+    <button class="tab-btn @(activeTab == "active" ? "active" : "")" style="@(activeTab == "active" ? "" : "border-color:#22c55e; color:#22c55e")"
+            @onclick='() => SetTab("active")'>
+        <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">play_circle</span>
+        ACTIVE
+        @if (activeCount > 0)
+        {
+            <span class="tab-badge" style="background:#22c55e">@activeCount</span>
+        }
+    </button>
     @foreach (var tab in new[] { "pending", "approved", "executed", "rejected", "expired", "all" })
     {
         <button class="tab-btn @(activeTab == tab ? "active" : "")"
@@ -45,7 +54,112 @@
     <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
 }
 
+<!-- Active Holdings Table -->
+@if (activeTab == "active")
+{
+    <div class="section-card" style="margin-top:0.5rem">
+        @if (activeSignals.Any())
+        {
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Entry Date</th>
+                            <th>Entry Price</th>
+                            <th>Current</th>
+                            <th>P&L</th>
+                            <th>P&L %</th>
+                            <th class="hide-mobile">Qty</th>
+                            <th class="hide-mobile">Hold</th>
+                            <th class="hide-mobile">SL / Hard SL</th>
+                            <th class="hide-mobile">TP</th>
+                            <th class="hide-mobile">Trail</th>
+                            <th>AI</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var a in activeSignals)
+                        {
+                            var pnlCls = (a.UnrealizedPct ?? 0) >= 0 ? "text-green" : "text-red";
+                            <tr @ondblclick="() => OpenModal(a.Signal.Symbol)" style="cursor:pointer">
+                                <td style="font-weight:700">
+                                    <a href="https://edition.cnn.com/markets/stocks/@a.Signal.Symbol" target="_blank" rel="noopener" @onclick:stopPropagation="true" style="color:var(--primary); text-decoration:none">@a.Signal.Symbol</a>
+                                </td>
+                                <td>@a.Signal.ExecutedAt?.ToString("MM/dd")</td>
+                                <td>$@(a.Signal.EntryPrice?.ToString("F2") ?? "--")</td>
+                                <td style="font-weight:600">$@a.CurrentPrice.ToString("F2")</td>
+                                <td class="@pnlCls" style="font-weight:600">@(a.UnrealizedPnl.HasValue ? $"{(a.UnrealizedPnl >= 0 ? "+" : "")}${a.UnrealizedPnl:F2}" : "--")</td>
+                                <td class="@pnlCls" style="font-weight:700">@(a.UnrealizedPct.HasValue ? $"{(a.UnrealizedPct >= 0 ? "+" : "")}{a.UnrealizedPct * 100:F2}%" : "--")</td>
+                                <td class="hide-mobile">@a.Qty</td>
+                                <td class="hide-mobile">@(a.HoldDays)d</td>
+                                <td class="hide-mobile text-red">
+                                    @(a.StopLoss.HasValue ? $"${a.StopLoss:F2}" : "--")
+                                    @if (a.HardStop.HasValue)
+                                    {
+                                        <span style="color:#ef4444; font-size:0.7rem"> / $@a.HardStop.Value.ToString("F2")</span>
+                                    }
+                                </td>
+                                <td class="hide-mobile text-green">@(a.Signal.TakeProfit.HasValue ? $"${a.Signal.TakeProfit:F2}" : "--")</td>
+                                <td class="hide-mobile">
+                                    @if (a.TrailingStopActive)
+                                    {
+                                        <span class="badge badge-green" style="font-size:0.65rem">ON</span>
+                                        @if (a.HighWaterMark.HasValue)
+                                        {
+                                            <span class="text-muted" style="font-size:0.65rem">HW $@a.HighWaterMark.Value.ToString("F2")</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted" style="font-size:0.65rem">OFF</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (a.Signal.LlmScore != null)
+                                    {
+                                        <span class="ai-score ai-score-@GetAiScoreClass(a.Signal.LlmScore.Value)"
+                                              title="@GetAiTooltip(a.Signal)" style="cursor:pointer"
+                                              @onclick="() => ShowAiDetail(a.Signal)">
+                                            @a.Signal.LlmScore
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted">--</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (a.Signal.CompositeScore != null)
+                                    {
+                                        <span class="composite-score composite-@GetCompositeClass(a.Signal.CompositeScore.Value)"
+                                              style="cursor:pointer"
+                                              @onclick="() => ShowFactorDetail(a.Signal)">
+                                            @a.Signal.CompositeScore.Value.ToString("F0")
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted">--</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <p class="text-muted" style="padding:1rem">No active holdings</p>
+        }
+    </div>
+}
+
 <!-- Signals Table -->
+@if (activeTab != "active")
+{
 <div class="section-card" style="margin-top:0.5rem">
     @if (signals.Any())
     {
@@ -187,6 +301,7 @@
         <p class="text-muted" style="padding:1rem">No signals found for this filter</p>
     }
 </div>
+}
 
 <!-- AI Analysis Detail Popup -->
 @if (aiDetailVisible && aiDetailSignal != null)
@@ -236,18 +351,20 @@
     </div>
 }
 
-<!-- Factor Score Detail Popup -->
+<!-- Factor Score Detail (Inline below table) -->
 @if (factorDetailVisible && factorDetailSignal != null)
 {
-    <div class="modal-overlay" @onclick="CloseFactorDetail">
-        <div class="modal-panel" style="max-width:860px; width:95vw" @onclick:stopPropagation="true">
-            <div class="modal-header">
-                <h4>Factor Score — @factorDetailSignal.Symbol</h4>
-                <button class="btn-close" @onclick="CloseFactorDetail">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
-            </div>
-            <div class="modal-body">
+    <div class="section-card" style="margin-top:0.5rem" id="factor-detail-section">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem">
+            <h4 style="margin:0; font-size:0.95rem">
+                <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle; color:var(--accent-blue)">analytics</span>
+                Factor Score — @factorDetailSignal.Symbol
+            </h4>
+            <button class="btn-sm" style="background:var(--s2); border:1px solid var(--bd); color:var(--text-secondary); cursor:pointer" @onclick="CloseFactorDetail">
+                <span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">close</span> Close
+            </button>
+        </div>
+        <div>
                 <!-- Header: Composite Score + Regime -->
                 <div style="display:flex; align-items:center; gap:1rem; margin-bottom:0.75rem">
                     <span class="composite-score-large composite-@GetCompositeClass(factorDetailSignal.CompositeScore ?? 0)">
@@ -645,7 +762,6 @@
                         <span>Scored: @factorDetailSignal.FactorScoredAt.Value.ToString("MM/dd HH:mm")</span>
                     }
                 </div>
-            </div>
         </div>
     </div>
 }
@@ -654,8 +770,10 @@
 
 @code {
     private List<SwingSignal> signals = new();
-    private string activeTab = "pending";
+    private List<ActiveSignal> activeSignals = new();
+    private string activeTab = "active";
     private int pendingCount;
+    private int activeCount;
     private bool scanning;
     private bool processing;
     private bool analyzing;
@@ -762,11 +880,24 @@
     {
         try
         {
-            var status = activeTab == "all" ? null : activeTab;
-            var offset = (sigCurrentPage - 1) * SigPageSize;
-            var result = await Db.GetSignalsPagedAsync(status, offset, SigPageSize);
-            signals = result.Items;
-            sigTotalCount = result.TotalCount;
+            // Always load active count for badge
+            activeSignals = await Db.GetActiveSignalsAsync();
+            activeCount = activeSignals.Count;
+
+            if (activeTab == "active")
+            {
+                // Active tab uses its own data source
+                signals = new();
+                sigTotalCount = 0;
+            }
+            else
+            {
+                var status = activeTab == "all" ? null : activeTab;
+                var offset = (sigCurrentPage - 1) * SigPageSize;
+                var result = await Db.GetSignalsPagedAsync(status, offset, SigPageSize);
+                signals = result.Items;
+                sigTotalCount = result.TotalCount;
+            }
             pendingCount = await Db.GetPendingSignalCountAsync();
         }
         catch (Exception ex) { statusMsg = $"Load error: {ex.Message}"; }
@@ -1126,6 +1257,9 @@
         }
         factorDetailVisible = true;
         StateHasChanged();
+        // Scroll to factor detail section
+        await Task.Delay(50);
+        await JS.InvokeVoidAsync("eval", "document.getElementById('factor-detail-section')?.scrollIntoView({behavior:'smooth',block:'start'})");
 
         // Load crowding + short interest in background
         _ = LoadSymbolExtras(signal.Symbol);
@@ -1170,6 +1304,7 @@
     private async Task RunFundamental(string symbol)
     {
         analyzingFundamental = true;
+        statusMsg = $"Running fundamental analysis for {symbol}...";
         StateHasChanged();
         try
         {
@@ -1179,13 +1314,21 @@
             {
                 var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
                 fundamentalResult = json;
-                fundamentalScore = json.TryGetProperty("fundamental_score", out var fs) ? fs.GetInt32() : 0;
+                fundamentalScore = json.TryGetProperty("fundamental_score", out var fs)
+                    ? (int)fs.GetDouble() : 0;
+                statusMsg = $"Fundamental analysis done: {symbol} score {fundamentalScore}";
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                statusMsg = $"Fundamental failed ({resp.StatusCode}): {body}";
             }
         }
-        catch { }
+        catch (Exception ex) { statusMsg = $"Fundamental error: {ex.Message}"; }
         finally
         {
             analyzingFundamental = false;
+            StateHasChanged();
         }
     }
 

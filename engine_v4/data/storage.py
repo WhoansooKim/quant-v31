@@ -230,13 +230,20 @@ class PostgresStore:
             conn.commit()
             return cur.rowcount > 0
 
-    def mark_signal_executed(self, signal_id: int) -> bool:
+    def mark_signal_executed(self, signal_id: int, position_id: int = None) -> bool:
         with self.get_conn() as conn:
-            cur = conn.execute("""
-                UPDATE swing_signals
-                SET status = 'executed', executed_at = now()
-                WHERE signal_id = %s AND status = 'approved'
-            """, (signal_id,))
+            if position_id is not None:
+                cur = conn.execute("""
+                    UPDATE swing_signals
+                    SET status = 'executed', executed_at = now(), position_id = %s
+                    WHERE signal_id = %s AND status = 'approved'
+                """, (position_id, signal_id))
+            else:
+                cur = conn.execute("""
+                    UPDATE swing_signals
+                    SET status = 'executed', executed_at = now()
+                    WHERE signal_id = %s AND status = 'approved'
+                """, (signal_id,))
             conn.commit()
             return cur.rowcount > 0
 

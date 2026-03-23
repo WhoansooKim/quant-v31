@@ -90,6 +90,77 @@ public class SwingService
         return signals;
     }
 
+    public async Task<List<ActiveSignal>> GetActiveSignalsAsync()
+    {
+        var list = new List<ActiveSignal>();
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT s.signal_id, s.time, s.symbol, s.signal_type, s.entry_price,
+                   s.stop_loss, s.take_profit, s.return_20d_rank, s.trend_aligned,
+                   s.breakout_5d, s.volume_surge, s.exit_reason, s.position_id,
+                   s.status, s.approved_at, s.executed_at,
+                   s.llm_score, s.llm_analysis, s.llm_analyzed_at,
+                   s.technical_score, s.sentiment_score, s.flow_score,
+                   s.quality_score, s.value_score,
+                   s.composite_score, s.macro_score, s.factor_detail, s.factor_scored_at,
+                   p.current_price, p.unrealized_pnl, p.unrealized_pct,
+                   COALESCE(p.hold_days, EXTRACT(DAY FROM now() - p.entry_time)::int),
+                   p.qty, p.stop_loss AS p_sl, p.hard_stop,
+                   p.trailing_stop_active, p.high_water_mark
+            FROM swing_signals s
+            JOIN swing_positions p ON s.position_id = p.position_id
+            WHERE s.signal_type = 'ENTRY' AND p.status = 'open'
+            ORDER BY p.entry_time DESC", conn);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            var sig = new SwingSignal(
+                SignalId: r.GetInt64(0), Time: r.GetDateTime(1), Symbol: r.GetString(2),
+                SignalType: r.GetString(3),
+                EntryPrice: r.IsDBNull(4) ? null : r.GetDecimal(4),
+                StopLoss: r.IsDBNull(5) ? null : r.GetDecimal(5),
+                TakeProfit: r.IsDBNull(6) ? null : r.GetDecimal(6),
+                Return20dRank: r.IsDBNull(7) ? null : r.GetDouble(7),
+                TrendAligned: !r.IsDBNull(8) && r.GetBoolean(8),
+                Breakout5d: !r.IsDBNull(9) && r.GetBoolean(9),
+                VolumeSurge: !r.IsDBNull(10) && r.GetBoolean(10),
+                ExitReason: r.IsDBNull(11) ? null : r.GetString(11),
+                PositionId: r.IsDBNull(12) ? null : r.GetInt64(12),
+                Status: r.GetString(13),
+                ApprovedAt: r.IsDBNull(14) ? null : r.GetDateTime(14),
+                ExecutedAt: r.IsDBNull(15) ? null : r.GetDateTime(15),
+                LlmScore: r.IsDBNull(16) ? null : r.GetInt32(16),
+                LlmAnalysis: r.IsDBNull(17) ? null : r.GetString(17),
+                LlmAnalyzedAt: r.IsDBNull(18) ? null : r.GetDateTime(18),
+                TechnicalScore: r.IsDBNull(19) ? null : r.GetDouble(19),
+                SentimentScore: r.IsDBNull(20) ? null : r.GetDouble(20),
+                FlowScore: r.IsDBNull(21) ? null : r.GetDouble(21),
+                QualityScore: r.IsDBNull(22) ? null : r.GetDouble(22),
+                ValueScore: r.IsDBNull(23) ? null : r.GetDouble(23),
+                CompositeScore: r.IsDBNull(24) ? null : r.GetDouble(24),
+                MacroScore: r.IsDBNull(25) ? null : r.GetDouble(25),
+                FactorDetail: r.IsDBNull(26) ? null : r.GetString(26),
+                FactorScoredAt: r.IsDBNull(27) ? null : r.GetDateTime(27)
+            );
+            list.Add(new ActiveSignal(
+                Signal: sig,
+                CurrentPrice: r.IsDBNull(28) ? 0 : r.GetDecimal(28),
+                UnrealizedPnl: r.IsDBNull(29) ? null : r.GetDecimal(29),
+                UnrealizedPct: r.IsDBNull(30) ? null : r.GetDouble(30),
+                HoldDays: r.IsDBNull(31) ? 0 : r.GetInt32(31),
+                Qty: r.GetDecimal(32),
+                StopLoss: r.IsDBNull(33) ? null : r.GetDecimal(33),
+                HardStop: r.IsDBNull(34) ? null : r.GetDecimal(34),
+                TrailingStopActive: !r.IsDBNull(35) && r.GetBoolean(35),
+                HighWaterMark: r.IsDBNull(36) ? null : r.GetDecimal(36)
+            ));
+        }
+        return list;
+    }
+
     public async Task<(List<SwingSignal> Items, int TotalCount)> GetSignalsPagedAsync(string? status, int offset, int limit)
     {
         await using var conn = new NpgsqlConnection(_connStr);
@@ -769,7 +840,7 @@ public class SwingService
                    llm_score, llm_analysis, llm_analyzed_at,
                    technical_score, sentiment_score, flow_score,
                    quality_score, value_score,
-                   composite_score, factor_detail, factor_scored_at
+                   composite_score, macro_score, factor_detail, factor_scored_at
             FROM swing_signals WHERE symbol = @sym
             ORDER BY time DESC LIMIT 1", conn);
         cmd3.Parameters.AddWithValue("@sym", symbol);

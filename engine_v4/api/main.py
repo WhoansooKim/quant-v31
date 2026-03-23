@@ -1454,7 +1454,7 @@ def _analyze_watchlist():
                     std_i = np.std(close_arr[i - 19:i + 1])
                     sma_i = np.mean(close_arr[i - 19:i + 1])
                     bw_history.append(2 * 2 * std_i / max(sma_i, 1e-10))
-                bb_squeeze = bb_width <= (np.percentile(bw_history, 10) if bw_history else bb_width)
+                bb_squeeze = bool(bb_width <= (np.percentile(bw_history, 10) if bw_history else bb_width))
             else:
                 bb_width = 0
                 bb_squeeze = False
@@ -1705,7 +1705,7 @@ def _analyze_watchlist():
             weighted_final = weighted_raw * vol_factor
 
             # ── Connors Exit Signal — Close > SMA(5) ──
-            connors_exit = current_price > sma5_val
+            connors_exit = bool(current_price > sma5_val)
 
             # ── Direction 결정 ──
             if weighted_final >= 0.40:

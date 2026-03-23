@@ -153,9 +153,9 @@ class PositionManager:
             "is_paper": is_paper,
         })
 
-        # 시그널 상태 업데이트
+        # 시그널 상태 업데이트 (position_id 역참조 포함)
         if signal.get("signal_id"):
-            self.pg.mark_signal_executed(signal["signal_id"])
+            self.pg.mark_signal_executed(signal["signal_id"], position_id)
 
         # ATR 기반 청산 파라미터 설정
         try:
@@ -222,7 +222,7 @@ class PositionManager:
 
         # 시그널 상태 업데이트
         if signal.get("signal_id"):
-            self.pg.mark_signal_executed(signal["signal_id"])
+            self.pg.mark_signal_executed(signal["signal_id"], position_id)
 
         pnl = (exit_price - float(pos["entry_price"])) * qty
         logger.info(f"Closed position #{position_id}: {pos['symbol']} "

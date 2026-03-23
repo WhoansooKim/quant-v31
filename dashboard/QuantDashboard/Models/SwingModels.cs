@@ -32,6 +32,20 @@ public record SwingSignal(
     DateTime? FactorScoredAt
 );
 
+// ─── 활성 시그널 (오픈 포지션 연결) ───
+public record ActiveSignal(
+    SwingSignal Signal,
+    decimal CurrentPrice,
+    decimal? UnrealizedPnl,
+    double? UnrealizedPct,
+    int HoldDays,
+    decimal Qty,
+    decimal? StopLoss,
+    decimal? HardStop,
+    bool TrailingStopActive,
+    decimal? HighWaterMark
+);
+
 // ─── 스윙 포지션 ───
 public record SwingPosition(
     long PositionId,

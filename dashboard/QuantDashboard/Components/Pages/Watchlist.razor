@@ -82,9 +82,9 @@
         // Connors RSI(2) extra fields
         var rsi2Val = r.TryGetProperty("rsi2", out var r2v) ? r2v.GetDouble() : 50;
         var cumRsi2 = r.TryGetProperty("cum_rsi2", out var cr2v) ? cr2v.GetDouble() : 100;
-        var connorsExit = r.TryGetProperty("connors_exit", out var cev) && cev.GetBoolean();
-        var opexWeek = r.TryGetProperty("opex_week", out var oev) && oev.GetBoolean();
-        var bbSqueeze = r.TryGetProperty("bb_squeeze", out var bsv) && bsv.GetBoolean();
+        var connorsExit = r.TryGetProperty("connors_exit", out var cev) && (cev.ValueKind == System.Text.Json.JsonValueKind.True || (cev.ValueKind == System.Text.Json.JsonValueKind.String && cev.GetString() == "True"));
+        var opexWeek = r.TryGetProperty("opex_week", out var oev) && (oev.ValueKind == System.Text.Json.JsonValueKind.True || (oev.ValueKind == System.Text.Json.JsonValueKind.String && oev.GetString() == "True"));
+        var bbSqueeze = r.TryGetProperty("bb_squeeze", out var bsv) && (bsv.ValueKind == System.Text.Json.JsonValueKind.True || (bsv.ValueKind == System.Text.Json.JsonValueKind.String && bsv.GetString() == "True"));
         var relStr5d = r.TryGetProperty("rel_str_5d", out var rs5) ? rs5.GetDouble() : 0;
         var relStr20d = r.TryGetProperty("rel_str_20d", out var rs20) ? rs20.GetDouble() : 0;
 
@@ -1206,17 +1206,25 @@ else
         try
         {
             var client = HttpFactory.CreateClient("Engine");
-            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/watchlist/analysis?refresh_price=true");
-            analysisResults.Clear();
-            if (resp.TryGetProperty("results", out var arr))
+            var resp = await client.GetAsync("/watchlist/analysis?refresh_price=true");
+            if (resp.IsSuccessStatusCode)
             {
-                foreach (var item in arr.EnumerateArray())
-                    analysisResults.Add(item);
+                var json = await resp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+                analysisResults.Clear();
+                if (json.TryGetProperty("results", out var arr))
+                {
+                    foreach (var item in arr.EnumerateArray())
+                        analysisResults.Add(item);
+                }
+                if (json.TryGetProperty("analyzed_at", out var at))
+                    analyzedAt = at.GetString();
             }
-            if (resp.TryGetProperty("analyzed_at", out var at))
-                analyzedAt = at.GetString();
+            else
+            {
+                statusMsg = $"Analysis load failed: {resp.StatusCode}";
+            }
         }
-        catch { }
+        catch (Exception ex) { statusMsg = $"Analysis error: {ex.Message}"; }
     }
 
     private async Task AddSymbol()

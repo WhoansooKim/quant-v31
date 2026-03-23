@@ -1,4 +1,5 @@
 @inject SwingService Db
+@inject ILogger<SymbolDetailModal> Logger
 
 @if (Visible && !string.IsNullOrEmpty(Symbol))
 {
@@ -241,7 +242,7 @@
             {
                 _d = await Db.GetSymbolDetailAsync(Symbol);
             }
-            catch { }
+            catch (Exception ex) { Logger.LogError(ex, "SymbolDetailModal failed for {Symbol}", Symbol); }
             finally { _loading = false; }
         }
         else if (!Visible)
