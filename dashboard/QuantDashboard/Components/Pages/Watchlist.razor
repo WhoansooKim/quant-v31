@@ -1125,39 +1125,33 @@ else
 
     private async Task RenderAllSparklines()
     {
-        foreach (var r in analysisResults)
-        {
-            var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
-            if (string.IsNullOrEmpty(sym)) continue;
-            try { await FetchAndRenderSparkline(sym); }
-            catch { }
-        }
+        // 모든 sparkline을 병렬로 동시 렌더링 (순차 → 병렬)
+        var tasks = analysisResults
+            .Select(r => r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "")
+            .Where(sym => !string.IsNullOrEmpty(sym))
+            .Select(sym => FetchAndRenderSparkline(sym))
+            .ToList();
+        await Task.WhenAll(tasks);
         lastSparklineUpdate = DateTime.Now;
     }
 
     /// <summary>타이머에 의한 자동 갱신: sparkline + 확장된 intraday 차트</summary>
     private async Task RefreshAllCharts()
     {
-        // Sparkline 전체 갱신
-        foreach (var r in analysisResults)
-        {
-            var sym = r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "";
-            if (string.IsNullOrEmpty(sym)) continue;
-            try { await FetchAndRenderSparkline(sym); }
-            catch { }
-        }
+        // Sparkline 전체 병렬 갱신
+        var sparkTasks = analysisResults
+            .Select(r => r.TryGetProperty("symbol", out var sv) ? sv.GetString() ?? "" : "")
+            .Where(sym => !string.IsNullOrEmpty(sym))
+            .Select(sym => FetchAndRenderSparkline(sym))
+            .ToList();
+        await Task.WhenAll(sparkTasks);
         lastSparklineUpdate = DateTime.Now;
 
-        // 확장된 카드의 intraday 차트도 갱신
-        foreach (var sym in expandedCards.ToList())
-        {
-            try
-            {
-                var period = selectedPeriod.GetValueOrDefault(sym, "1d");
-                await FetchAndRenderChart(sym, period);
-            }
-            catch { }
-        }
+        // 확장된 카드의 intraday 차트도 병렬 갱신
+        var chartTasks = expandedCards.ToList()
+            .Select(sym => FetchAndRenderChart(sym, selectedPeriod.GetValueOrDefault(sym, "1d")))
+            .ToList();
+        await Task.WhenAll(chartTasks);
     }
 
     private async Task FetchAndRenderSparkline(string sym)
