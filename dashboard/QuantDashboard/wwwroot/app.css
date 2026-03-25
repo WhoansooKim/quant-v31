@@ -1893,6 +1893,11 @@ th.sortable .sort-arrow { font-size: 0.65rem; margin-left: 3px; opacity: 0.9; }
 .step-spin {
     animation: step-rotate 1s linear infinite;
 }
+.btn-running {
+    background: linear-gradient(135deg, #f59e0b, #d97706) !important;
+    pointer-events: none;
+    opacity: 0.95;
+}
 
 @keyframes step-rotate {
     from { transform: rotate(0deg); }

@@ -20,16 +20,17 @@
             </span>
             Engine @(engineOnline ? "Online" : "Offline")
         </span>
-        <button class="btn-action" @onclick="RunFullPipeline" disabled="@(runningStep != null)">
+        <button class="btn-action @(runningStep == "full" ? "btn-running" : "")" @onclick="RunFullPipeline" disabled="@(runningStep != null)">
             @if (runningStep == "full")
             {
-                <span class="material-symbols-outlined step-spin" style="font-size:18px">progress_activity</span>
+                <span class="material-symbols-outlined step-spin" style="font-size:18px">sync</span>
+                <span>Running...</span>
             }
             else
             {
                 <span class="material-symbols-outlined" style="font-size:18px">play_arrow</span>
+                <span>Run Full Pipeline</span>
             }
-            Run Full Pipeline
         </button>
     </div>
 </div>
@@ -49,14 +50,18 @@
         <div class="step-label">1. Universe</div>
         <div class="step-metric">@universeCount</div>
         <div class="step-metric-sub">종목</div>
-        <button class="btn-sm" style="width:100%"
+        <button class="btn-sm @(runningStep == "universe" ? "btn-running" : "")" style="width:100%"
                 @onclick="RefreshUniverse"
                 disabled="@(runningStep != null)">
             @if (runningStep == "universe")
             {
-                <span class="material-symbols-outlined step-spin" style="font-size:14px">progress_activity</span>
+                <span class="material-symbols-outlined step-spin" style="font-size:14px">sync</span>
+                <span>Running...</span>
             }
-            Refresh Universe
+            else
+            {
+                <span>Refresh Universe</span>
+            }
         </button>
     </div>
 
@@ -81,14 +86,18 @@
                 <span>지표 종목</span>
             }
         </div>
-        <button class="btn-sm" style="width:100%"
+        <button class="btn-sm @(runningStep == "collect" ? "btn-running" : "")" style="width:100%"
                 @onclick="CollectData"
                 disabled="@(runningStep != null)">
             @if (runningStep == "collect")
             {
-                <span class="material-symbols-outlined step-spin" style="font-size:14px">progress_activity</span>
+                <span class="material-symbols-outlined step-spin" style="font-size:14px">sync</span>
+                <span>Collecting...</span>
             }
-            Collect Data
+            else
+            {
+                <span>Collect Data</span>
+            }
         </button>
     </div>
 
@@ -104,14 +113,18 @@
         <div class="step-label">3. Scan</div>
         <div class="step-metric">@signalCounts.GetValueOrDefault("pending", 0)</div>
         <div class="step-metric-sub">pending 시그널</div>
-        <button class="btn-sm" style="width:100%"
+        <button class="btn-sm @(runningStep == "scan" ? "btn-running" : "")" style="width:100%"
                 @onclick="ScanSignals"
                 disabled="@(runningStep != null)">
             @if (runningStep == "scan")
             {
-                <span class="material-symbols-outlined step-spin" style="font-size:14px">progress_activity</span>
+                <span class="material-symbols-outlined step-spin" style="font-size:14px">sync</span>
+                <span>Scanning...</span>
             }
-            Scan Signals
+            else
+            {
+                <span>Scan Signals</span>
+            }
         </button>
     </div>
 
@@ -870,6 +883,8 @@
     private async Task PollUntilDone(string stepName, int maxSeconds)
     {
         var token = _cts.Token;
+        var startedAt = DateTime.UtcNow.AddSeconds(-2); // 시작 시점 기록 (약간의 여유)
+
         for (int i = 0; i < maxSeconds / 3; i++)
         {
             try
@@ -888,9 +903,11 @@
             }
             catch { continue; }
 
-            // step의 completed/failed 로그 찾기 (최근 로그 중)
+            // 현재 실행의 completed/failed 로그만 찾기 (시작 시점 이후 로그)
             var latest = pipelineLogs.FirstOrDefault(l =>
-                l.StepName == stepName && (l.Status == "completed" || l.Status == "failed"));
+                l.StepName == stepName
+                && (l.Status == "completed" || l.Status == "failed")
+                && l.CreatedAt >= startedAt);
             if (latest != null)
             {
                 statusMsg = latest.Status == "completed"
@@ -898,6 +915,11 @@
                     : $"{stepName} failed: {latest.ErrorMsg}";
                 return;
             }
+
+            // 진행 상황 표시
+            var elapsedSec = (int)(DateTime.UtcNow - startedAt).TotalSeconds;
+            statusMsg = $"{stepName} running... ({elapsedSec}s)";
+            await InvokeAsync(StateHasChanged);
         }
         statusMsg = $"{stepName}: polling timeout ({maxSeconds}s) — may still be running";
     }
