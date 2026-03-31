@@ -66,6 +66,11 @@ class PositionManager:
         """
         pct = float(self.pg.get_config_value("position_pct", str(self.cfg.position_pct)))
 
+        # position_pct 안전 검증: 1 초과이면 % 단위로 입력한 것 → 소수로 변환
+        if pct > 1.0:
+            logger.warning(f"position_pct={pct} > 1.0 — treating as percentage, converting to {pct/100}")
+            pct = pct / 100.0
+
         # 매크로 레짐 기반 사이즈 조절
         macro_enabled = self.pg.get_config_value("macro_enabled", "true") == "true"
         regime = "NEUTRAL"

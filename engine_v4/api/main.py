@@ -636,10 +636,20 @@ async def get_all_config():
 
 @app.put("/config/{key}")
 async def update_config(key: str, body: ConfigUpdate):
-    ok = pg.update_config(key, body.value)
+    # position_pct 안전 검증: 1 초과이면 % 단위로 입력한 것 → 소수로 변환
+    value = body.value
+    if key == "position_pct":
+        try:
+            v = float(value)
+            if v > 1.0:
+                value = str(round(v / 100.0, 4))
+                logger.warning(f"position_pct={v} > 1.0 — auto-corrected to {value}")
+        except ValueError:
+            pass
+    ok = pg.update_config(key, value)
     if not ok:
         raise HTTPException(404, f"Config key '{key}' not found")
-    return {"status": "updated", "key": key, "value": body.value}
+    return {"status": "updated", "key": key, "value": value}
 
 
 # ═══════════════════════════════════════════════════════════
