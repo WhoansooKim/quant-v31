@@ -57,7 +57,7 @@ quant-v31/
 ```
 
 ## DB 연결 정보
-- PostgreSQL: postgresql://quant:QuantV31!Secure@localhost:5432/quantdb
+- PostgreSQL: postgresql://quant:***@localhost:5432/quantdb
 - Redis: redis://localhost:6379
 - conda 환경: quant-v31 (python 3.11)
 
