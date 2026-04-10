@@ -258,12 +258,12 @@ class PostgresStore:
             return cur.rowcount
 
     def get_today_entry_count(self) -> int:
-        """오늘 승인/체결된 ENTRY 시그널 수."""
+        """오늘 체결된 ENTRY 시그널 수 (executed만 카운트, approved는 일시 상태이므로 제외)."""
         with self.get_conn() as conn:
             row = conn.execute("""
                 SELECT count(*) as cnt FROM swing_signals
                 WHERE signal_type = 'ENTRY'
-                  AND status IN ('approved', 'executed')
+                  AND status = 'executed'
                   AND time::date = CURRENT_DATE
             """).fetchone()
         return row["cnt"]

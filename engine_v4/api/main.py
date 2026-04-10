@@ -304,6 +304,12 @@ async def approve_signal(signal_id: int):
     if sig["status"] != "pending":
         raise HTTPException(400, f"Signal status is '{sig['status']}', not 'pending'")
 
+    # ENTRY 시그널: 승인 전에 validation 먼저 (approve 후 자기 자신이 daily count에 포함되는 버그 방지)
+    if sig["signal_type"] == "ENTRY":
+        valid, reason = pos_mgr.validate_entry(sig["symbol"], float(sig["entry_price"]))
+        if not valid:
+            raise HTTPException(400, f"Entry validation failed: {reason}")
+
     # 승인
     pg.approve_signal(signal_id)
 
@@ -316,7 +322,7 @@ async def approve_signal(signal_id: int):
             pg.reject_signal(signal_id)
             raise HTTPException(400, "Entry execution failed (limits or validation)")
 
-        # KIS 주문
+        # KIS 주문 (live 모드에서 실패 시 경고만 — DB 포지션은 유지)
         order = kis.buy(
             symbol=sig["symbol"],
             qty=result["qty"],
@@ -324,6 +330,9 @@ async def approve_signal(signal_id: int):
         )
         result["order_id"] = order.order_id
         result["kis_message"] = order.message
+        if kis.is_connected and not order.success:
+            logger.error(f"KIS BUY order failed for {sig['symbol']}: {order.message}")
+            result["kis_warning"] = f"KIS order failed: {order.message}. DB position created but broker order may need manual action."
 
         # 텔레그램 알림
         await notifier.notify_trade({
@@ -345,6 +354,9 @@ async def approve_signal(signal_id: int):
         )
         result["order_id"] = order.order_id
         result["kis_message"] = order.message
+        if kis.is_connected and not order.success:
+            logger.error(f"KIS SELL order failed for {result['symbol']}: {order.message}")
+            result["kis_warning"] = f"KIS order failed: {order.message}. Manual sell may be required."
 
         # 텔레그램 알림
         await notifier.notify_trade({
@@ -609,10 +621,106 @@ async def account_info():
         "invested_usd": balance.invested_usd,
         "profit_usd": balance.profit_usd,
         "profit_rate": balance.profit_rate,
+        "withdrawable_usd": balance.withdrawable_usd,
         "holdings": balance.holdings,
         "db_positions": pg.get_open_position_count(),
         "max_positions": config.max_positions,
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# KIS Broker API
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/broker/status")
+async def broker_status():
+    """KIS 브로커 연결 상태 + 연결 테스트."""
+    return kis.test_connection()
+
+
+@app.get("/broker/balance")
+async def broker_balance():
+    """KIS 실제 잔고 조회 (보유종목 포함)."""
+    balance = kis.get_balance()
+    return {
+        "connected": kis.is_connected,
+        "total_value_usd": balance.total_value_usd,
+        "cash_usd": balance.cash_usd,
+        "invested_usd": balance.invested_usd,
+        "profit_usd": balance.profit_usd,
+        "profit_rate": balance.profit_rate,
+        "withdrawable_usd": balance.withdrawable_usd,
+        "holdings": balance.holdings,
+        "message": balance.message,
+    }
+
+
+@app.get("/broker/quote/{symbol}")
+async def broker_quote(symbol: str):
+    """KIS 종목 시세 조회."""
+    q = kis.get_quote(symbol.upper())
+    return {
+        "symbol": q.symbol,
+        "price": q.price,
+        "change": q.change,
+        "change_pct": q.change_pct,
+        "volume": q.volume,
+        "high": q.high,
+        "low": q.low,
+        "open": q.open,
+        "prev_close": q.prev_close,
+        "message": q.message,
+    }
+
+
+@app.get("/broker/pending-orders")
+async def broker_pending_orders():
+    """KIS 미체결 주문 목록."""
+    orders = kis.get_pending_orders()
+    return {
+        "connected": kis.is_connected,
+        "orders": [vars(o) for o in orders],
+        "count": len(orders),
+    }
+
+
+@app.post("/broker/cancel/{order_id}")
+async def broker_cancel_order(order_id: str):
+    """KIS 미체결 주문 취소."""
+    result = kis.cancel_order(order_id)
+    if not result.success:
+        raise HTTPException(400, f"Cancel failed: {result.message}")
+    return {"status": "cancelled", "order_id": order_id}
+
+
+@app.get("/broker/orderable/{symbol}")
+async def broker_orderable(symbol: str, price: float | None = None):
+    """KIS 주문 가능 금액/수량 조회."""
+    info = kis.get_orderable_amount(symbol.upper(), price)
+    return {
+        "symbol": symbol.upper(),
+        "orderable_cash": info.orderable_cash,
+        "orderable_qty": info.orderable_qty,
+        "message": info.message,
+    }
+
+
+@app.get("/broker/orders")
+async def broker_daily_orders(start: str | None = None, end: str | None = None):
+    """KIS 일별 주문 내역."""
+    from datetime import date as date_type
+    start_date = date_type.fromisoformat(start) if start else None
+    end_date = date_type.fromisoformat(end) if end else None
+    orders = kis.get_daily_orders(start_date, end_date)
+    return {"orders": orders, "count": len(orders)}
+
+
+@app.get("/broker/sync")
+async def broker_sync_positions():
+    """DB 포지션 ↔ KIS 보유종목 동기화 비교."""
+    db_positions = pg.get_open_positions()
+    result = kis.sync_positions(db_positions)
+    return result
 
 
 @app.get("/scheduler")

@@ -20,8 +20,11 @@ class SwingSettings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379", alias="REDIS_URL")
 
     # ── KIS 한국투자증권 ──
+    kis_user_id: str = Field(default="", alias="KIS_USER_ID")
     kis_app_key: str = Field(default="", alias="KIS_APP_KEY")
     kis_app_secret: str = Field(default="", alias="KIS_APP_SECRET")
+    kis_virtual_app_key: str = Field(default="", alias="KIS_VIRTUAL_APP_KEY")
+    kis_virtual_app_secret: str = Field(default="", alias="KIS_VIRTUAL_APP_SECRET")
     kis_account_no: str = Field(default="", alias="KIS_ACCOUNT_NO")
     kis_is_paper: bool = Field(default=True, alias="KIS_IS_PAPER")
 

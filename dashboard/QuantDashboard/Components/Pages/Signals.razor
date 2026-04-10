@@ -936,9 +936,28 @@
             if (resp.IsSuccessStatusCode)
             {
                 var json = await resp.Content.ReadAsStringAsync();
-                statusMsg = $"Scan completed. {json}";
-                activeTab = "pending";
+                // Parse scan result for readable message
+                try
+                {
+                    var scanResult = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(json);
+                    var entries = scanResult?.GetValueOrDefault("entries").GetInt32() ?? 0;
+                    var exits = scanResult?.GetValueOrDefault("exits").GetInt32() ?? 0;
+                    var elapsed = scanResult?.GetValueOrDefault("elapsed_sec").GetDouble() ?? 0;
+                    statusMsg = $"Scan completed — {entries} entry, {exits} exit signal(s) found ({elapsed:F1}s)";
+                }
+                catch { statusMsg = $"Scan completed. {json}"; }
+
+                // Reload data keeping current tab (new pending signals shown via badge count)
                 await LoadSignals();
+
+                // If new pending signals found, auto-switch to pending tab only if user was on a "discovery" tab
+                var newPending = await Db.GetPendingSignalCountAsync();
+                if (newPending > 0 && activeTab != "active")
+                {
+                    activeTab = "pending";
+                    sigCurrentPage = 1;
+                    await LoadSignals();
+                }
             }
             else
             {
