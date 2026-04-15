@@ -2086,7 +2086,11 @@ async def get_replay_backtest():
 
 @app.get("/ticker")
 async def get_ticker_data():
-    """티커바 데이터 — 오픈 포지션 심볼 현재가."""
+    """티커바 데이터 — 오픈 포지션 심볼 현재가 (Redis 캐시 60초)."""
+    cached = cache.get_json("ticker_data")
+    if cached:
+        return cached
+
     positions = pg.get_open_positions()
     if not positions:
         return {"tickers": []}
@@ -2119,7 +2123,9 @@ async def get_ticker_data():
         logger.warning(f"Ticker data fetch failed: {e}")
 
     tickers.sort(key=lambda t: t["symbol"])
-    return {"tickers": tickers}
+    result = {"tickers": tickers}
+    cache.set_json("ticker_data", result, ttl=60)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2502,7 +2508,7 @@ async def get_market_overview():
         "advance": up, "decline": down, "unchanged": len(sectors) - up - down,
         "updated_at": datetime.now().isoformat(),
     }
-    cache.set_json("market_overview", result, ttl=600)
+    cache.set_json("market_overview", result, ttl=1800)
     return result
 
 
