@@ -27,6 +27,13 @@
     <div class="stat-card">
         <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">trending_up</span> Cumulative</span>
         <span class="stat-value @CumCls">@(cumReturn != 0 ? $"{(cumReturn >= 0 ? "+" : "")}{cumReturn * 100:F2}%" : "--")</span>
+        @if (snapshot?.TradingPnl != null)
+        {
+            var netPnl = snapshot.TradingPnl ?? 0;
+            var grossPnl = netPnl + (double)totalCommission;
+            var grossCls = grossPnl >= 0 ? "text-green" : "text-red";
+            <span class="stat-sub @grossCls">Gross @(grossPnl >= 0 ? "+" : "")$@($"{grossPnl:N2}")</span>
+        }
         @if (snapshot?.MaxDrawdown != null)
         {
             <span class="stat-sub text-red">MDD @($"{snapshot.MaxDrawdown * 100:F1}")%</span>

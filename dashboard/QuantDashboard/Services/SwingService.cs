@@ -418,7 +418,8 @@ public class SwingService
         await using var cmd = new NpgsqlCommand(@"
             SELECT time, total_value_usd, total_value_krw, cash_usd,
                    invested_usd, daily_pnl_usd, daily_return,
-                   cumulative_return, max_drawdown, open_positions, exchange_rate
+                   cumulative_return, max_drawdown, open_positions, exchange_rate,
+                   trading_pnl
             FROM swing_snapshots ORDER BY time DESC LIMIT 1", conn);
 
         await using var r = await cmd.ExecuteReaderAsync();
@@ -435,7 +436,8 @@ public class SwingService
             CumulativeReturn: r.IsDBNull(7) ? null : r.GetDouble(7),
             MaxDrawdown: r.IsDBNull(8) ? null : r.GetDouble(8),
             OpenPositions: r.IsDBNull(9) ? 0 : r.GetInt32(9),
-            ExchangeRate: r.IsDBNull(10) ? null : r.GetDouble(10)
+            ExchangeRate: r.IsDBNull(10) ? null : r.GetDouble(10),
+            TradingPnl: r.IsDBNull(11) ? null : r.GetDouble(11)
         );
     }
 

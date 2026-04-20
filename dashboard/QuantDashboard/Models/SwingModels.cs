@@ -105,7 +105,8 @@ public record SwingSnapshot(
     double? CumulativeReturn,
     double? MaxDrawdown,
     int OpenPositions,
-    double? ExchangeRate
+    double? ExchangeRate,
+    double? TradingPnl = null
 );
 
 // ─── 런타임 설정 ───
