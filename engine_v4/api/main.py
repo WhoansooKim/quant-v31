@@ -606,6 +606,26 @@ async def portfolio_history(days: int = 30):
 
 
 # ═══════════════════════════════════════════════════════════
+# Commission (수수료)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/commissions")
+async def get_commissions():
+    """수수료 현황 조회."""
+    data = pg.get_total_commissions()
+    rate = float(pg.get_config_value("commission_rate", "0.0025"))
+    return {
+        "commission_rate": rate,
+        "commission_rate_pct": f"{rate * 100:.2f}%",
+        "total_commission": round(float(data["total_commission"]), 2),
+        "buy_commission": round(float(data["buy_commission"]), 2),
+        "sell_commission": round(float(data["sell_commission"]), 2),
+        "total_volume": round(float(data["total_volume"]), 2),
+        "trade_count": data["trade_count"],
+    }
+
+
+# ═══════════════════════════════════════════════════════════
 # Account
 # ═══════════════════════════════════════════════════════════
 
@@ -1199,14 +1219,18 @@ def _generate_snapshot() -> dict:
     closed = pg.get_closed_positions(limit=9999)
     realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
 
-    # 4) 포트폴리오 계산
+    # 3.5) 총 수수료 차감
+    comm_data = pg.get_total_commissions()
+    total_commission = float(comm_data["total_commission"])
+
+    # 4) 포트폴리오 계산 (수수료 차감)
     capital_adj = pg.get_total_capital_adjustments()
-    cash_usd = INITIAL_CAPITAL + capital_adj + realized_pnl - entry_cost
+    cash_usd = INITIAL_CAPITAL + capital_adj + realized_pnl - entry_cost - total_commission
     total_value = cash_usd + invested_usd
 
-    # 5) 순수 트레이딩 손익 (입출금 제외)
+    # 5) 순수 트레이딩 손익 (입출금 제외, 수수료 차감)
     unrealized_pnl = invested_usd - entry_cost
-    trading_pnl = realized_pnl + unrealized_pnl
+    trading_pnl = realized_pnl + unrealized_pnl - total_commission
 
     total_invested = INITIAL_CAPITAL + capital_adj
     cumulative_return = trading_pnl / total_invested if total_invested > 0 else 0
@@ -1258,7 +1282,7 @@ def _generate_snapshot() -> dict:
 
     logger.info(f"Snapshot: total=${total_value:.2f}, cash=${cash_usd:.2f}, "
                 f"invested=${invested_usd:.2f}, positions={open_count}, "
-                f"daily_pnl=${daily_pnl:.2f}")
+                f"daily_pnl=${daily_pnl:.2f}, commission=${total_commission:.2f}")
 
     return snap
 

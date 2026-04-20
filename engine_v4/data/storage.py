@@ -417,6 +417,13 @@ class PostgresStore:
     # ─── Trades ───────────────────────────────────────────
 
     def insert_trade(self, trade: dict) -> int:
+        total_amount = trade.get("total_amount", trade["qty"] * trade["price"])
+        # 수수료 자동 계산 (commission_rate config, 기본 0.25%)
+        if trade.get("commission") is not None and trade["commission"] > 0:
+            commission = trade["commission"]
+        else:
+            rate = float(self.get_config_value("commission_rate", "0.0025"))
+            commission = round(total_amount * rate, 4)
         with self.get_conn() as conn:
             row = conn.execute("""
                 INSERT INTO swing_trades
@@ -426,11 +433,24 @@ class PostgresStore:
                 RETURNING trade_id
             """, (trade.get("position_id"), trade.get("signal_id"),
                   trade["symbol"], trade["side"], trade["qty"],
-                  trade["price"], trade.get("total_amount", trade["qty"] * trade["price"]),
-                  trade.get("order_id"), trade.get("commission", 0),
+                  trade["price"], total_amount,
+                  trade.get("order_id"), commission,
                   trade.get("is_paper", True))).fetchone()
             conn.commit()
         return row["trade_id"]
+
+    def get_total_commissions(self) -> dict:
+        """전체 수수료 합계 조회."""
+        with self.get_conn() as conn:
+            row = conn.execute("""
+                SELECT coalesce(sum(commission), 0) as total_commission,
+                       coalesce(sum(case when side='BUY' then commission else 0 end), 0) as buy_commission,
+                       coalesce(sum(case when side='SELL' then commission else 0 end), 0) as sell_commission,
+                       coalesce(sum(total_amount), 0) as total_volume,
+                       count(*) as trade_count
+                FROM swing_trades
+            """).fetchone()
+        return dict(row)
 
     def get_trades(self, limit: int = 50) -> list[dict]:
         with self.get_conn() as conn:

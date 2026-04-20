@@ -63,6 +63,11 @@
             <span class="stat-value text-muted">--</span>
         }
     </div>
+    <div class="stat-card">
+        <span class="stat-label"><span class="material-symbols-outlined" style="font-size:14px; vertical-align:middle">receipt_long</span> Commission</span>
+        <span class="stat-value text-red">$@totalCommission.ToString("N2")</span>
+        <span class="stat-sub text-muted">@(commissionTrades)건 / @commissionRatePct</span>
+    </div>
 </div>
 
 <!-- ═══ Row 2: Equity Curve with Trade Markers ═══ -->
@@ -325,6 +330,11 @@
     private double cumReturn;
     private int maxPositions = 4;
 
+    // Commission
+    private decimal totalCommission;
+    private int commissionTrades;
+    private string commissionRatePct = "0.25%";
+
     // Macro
     private System.Text.Json.JsonElement? macroJson;
     private double? macroScore;
@@ -393,9 +403,10 @@
             cumReturn = snapshot?.CumulativeReturn ?? 0;
             _chartPending = snapHistory.Any();
 
-            // Load macro + watchlist via HTTP (non-blocking)
+            // Load macro + watchlist + commission via HTTP (non-blocking)
             _ = LoadMacroAsync();
             _ = LoadWatchlistSignalsAsync();
+            _ = LoadCommissionAsync();
         }
         catch { }
     }
@@ -538,6 +549,23 @@
     }
 
     // Internal record for watchlist signal summary
+    private async Task LoadCommissionAsync()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/commissions");
+            if (resp.TryGetProperty("total_commission", out var tc))
+                totalCommission = (decimal)tc.GetDouble();
+            if (resp.TryGetProperty("trade_count", out var cnt))
+                commissionTrades = cnt.GetInt32();
+            if (resp.TryGetProperty("commission_rate_pct", out var rp))
+                commissionRatePct = rp.GetString() ?? "0.25%";
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { }
+    }
+
     private record WatchlistSignalSummary(
         string Symbol, string Direction, double Score, int Confidence,
         decimal Price, string Regime, string Date);

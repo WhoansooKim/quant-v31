@@ -71,6 +71,8 @@
 @code {
     private List<TickerBarItem> tickerData = new();
     private ErrorBoundary? errorBoundary;
+    private static List<TickerBarItem>? _cachedTickers;
+    private static DateTime _cacheExpiry = DateTime.MinValue;
 
     private void RecoverSilently()
     {
@@ -81,24 +83,42 @@
         });
     }
 
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized()
     {
-        try
+        // 캐시된 데이터가 있으면 즉시 표시 (페이지 전환 차단 없음)
+        if (_cachedTickers != null && DateTime.UtcNow < _cacheExpiry)
         {
-            var client = HttpFactory.CreateClient("Engine");
-            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/ticker");
-            if (resp.TryGetProperty("tickers", out var arr))
-            {
-                tickerData = arr.EnumerateArray().Select(t => new TickerBarItem(
-                    Symbol: t.GetProperty("symbol").GetString() ?? "",
-                    Price: t.GetProperty("price").GetDouble(),
-                    ChangePercent: t.GetProperty("change_pct").GetDouble()
-                )).ToList();
-            }
+            tickerData = _cachedTickers;
         }
-        catch
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        // 캐시 만료 시에만 백그라운드로 갱신 (60초 TTL)
+        if (_cachedTickers == null || DateTime.UtcNow >= _cacheExpiry)
         {
-            tickerData = new();
+            try
+            {
+                var client = HttpFactory.CreateClient("Engine");
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/ticker", cts.Token);
+                if (resp.TryGetProperty("tickers", out var arr))
+                {
+                    var newData = arr.EnumerateArray().Select(t => new TickerBarItem(
+                        Symbol: t.GetProperty("symbol").GetString() ?? "",
+                        Price: t.GetProperty("price").GetDouble(),
+                        ChangePercent: t.GetProperty("change_pct").GetDouble()
+                    )).ToList();
+
+                    _cachedTickers = newData;
+                    _cacheExpiry = DateTime.UtcNow.AddSeconds(60);
+                    tickerData = newData;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+            catch { /* silent — 이전 캐시 유지 */ }
         }
     }
 }

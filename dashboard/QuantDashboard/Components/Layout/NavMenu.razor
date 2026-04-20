@@ -152,15 +152,29 @@
     private int _pendingCount;
     private bool _isAdmin;
     private HashSet<string> _allowedPages = new();
+    private static int _cachedPendingCount;
+    private static DateTime _pendingCacheExpiry = DateTime.MinValue;
 
     protected override async Task OnInitializedAsync()
     {
-        try
+        // pending count: 캐시 30초
+        if (DateTime.UtcNow < _pendingCacheExpiry)
         {
-            if (SwingSvc != null)
-                _pendingCount = await SwingSvc.GetPendingSignalCountAsync();
+            _pendingCount = _cachedPendingCount;
         }
-        catch { }
+        else
+        {
+            try
+            {
+                if (SwingSvc != null)
+                {
+                    _pendingCount = await SwingSvc.GetPendingSignalCountAsync();
+                    _cachedPendingCount = _pendingCount;
+                    _pendingCacheExpiry = DateTime.UtcNow.AddSeconds(30);
+                }
+            }
+            catch { _pendingCount = _cachedPendingCount; }
+        }
 
         if (AuthState is not null)
         {

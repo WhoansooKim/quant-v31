@@ -62,6 +62,11 @@
         <span class="stat-label">Win / Loss</span>
         <span class="stat-value">@winCount / @(totalTrades - winCount)</span>
     </div>
+    <div class="stat-card">
+        <span class="stat-label">Commission</span>
+        <span class="stat-value text-red">$@totalCommission.ToString("N2")</span>
+        <span class="stat-sub text-muted">@commissionRatePct</span>
+    </div>
 </div>
 
 <!-- Equity Curve (TWR — 입출금 제외 순수 수익률) -->
@@ -160,10 +165,13 @@
     private bool _btChartRendered;
     private bool snapshotLoading;
     private string? statusMsg;
+    private decimal totalCommission;
+    private string commissionRatePct = "0.25%";
 
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
+        _ = LoadCommissionAsync();
     }
 
     private async Task LoadData()
@@ -426,5 +434,20 @@
         {
             snapshotLoading = false;
         }
+    }
+
+    private async Task LoadCommissionAsync()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/commissions");
+            if (resp.TryGetProperty("total_commission", out var tc))
+                totalCommission = (decimal)tc.GetDouble();
+            if (resp.TryGetProperty("commission_rate_pct", out var rp))
+                commissionRatePct = rp.GetString() ?? "0.25%";
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { }
     }
 }
