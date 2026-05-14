@@ -7,15 +7,28 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from engine_v4.ai.data_feeds import FinnhubClient
 from engine_v4.ai.factor_crowding import FactorCrowdingMonitor
+from engine_v4.analysis.counterfactual import (
+    aggregate_counterfactuals, backfill_counterfactuals_all,
+    get_calibration_data, simulate_counterfactuals,
+)
+from engine_v4.analysis.daily_report import generate_daily_report, run_and_notify
+from engine_v4.strategy.auto_approve import run_auto_approve
+from engine_v4.analysis.event_study import backfill_event_study_all
+from engine_v4.analysis.event_study import compute_event_study, update_postmortem_with_event_study
+from engine_v4.analysis.mfe_mae import backfill_all as mfe_backfill_all
+from engine_v4.analysis.mfe_mae import compute_mfe_mae as mfe_compute_one
+from engine_v4.analysis.mfe_mae import get_postmortems as mfe_get_postmortems
+from engine_v4.analysis.news_attribution import attribute_news_for_position, backfill_news_all
+from engine_v4.analysis.period_summary import analyze_period
 from engine_v4.ai.fundamental import FundamentalAnalyzer
 from engine_v4.ai.lstm_predictor import LSTMPredictor
 from engine_v4.ai.macro_scorer import MacroScorer
@@ -2705,6 +2718,280 @@ def get_symbol_crowding(symbol: str):
     except Exception as e:
         logger.error(f"종목 크라우딩 조회 실패: {symbol} — {e}")
         raise HTTPException(500, f"Symbol crowding check failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════
+# Analysis (period summary)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/analysis")
+async def analysis_summary(
+    from_date: str | None = Query(None, alias="from"),
+    to: str | None = None,
+    mode: str = "all",
+):
+    """기간별 거래 진단.
+
+    Query params:
+      from: YYYY-MM-DD (기본: 60일 전)
+      to:   YYYY-MM-DD (기본: 오늘)
+      mode: paper | live | all (기본 all)
+
+    응답: KPI / 청산 레이어별 / 보유일수 분포 / Composite Score 구간 / 종목 Top·Bottom
+    """
+    today = date.today()
+    try:
+        end_d = date.fromisoformat(to) if to else today
+        start_d = date.fromisoformat(from_date) if from_date else (today - timedelta(days=60))
+    except ValueError:
+        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+
+    if start_d > end_d:
+        raise HTTPException(400, "from_ must be ≤ to")
+    if mode not in ("paper", "live", "all"):
+        raise HTTPException(400, "mode must be paper | live | all")
+
+    try:
+        return analyze_period(pg, start_d, end_d, mode=mode)
+    except Exception as e:
+        logger.exception(f"Analysis failed: {e}")
+        raise HTTPException(500, f"Analysis failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════
+# Trade Post-Mortem (MFE/MAE/R-multiple)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/analysis/postmortems")
+async def list_postmortems(limit: int = 100, only_closed: bool = True):
+    """청산된 거래의 사후분석 (MFE/MAE/Capture/R-multiple) 목록."""
+    rows = mfe_get_postmortems(pg, limit=limit, only_closed=only_closed)
+    return {"count": len(rows), "postmortems": rows}
+
+
+@app.get("/analysis/postmortem/{position_id}")
+async def get_postmortem(position_id: int):
+    """단일 포지션의 사후분석 (DB 캐시 없으면 실시간 계산)."""
+    with pg.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM swing_trade_postmortem WHERE position_id = %s",
+            (position_id,),
+        ).fetchone()
+    if row:
+        return dict(row)
+    # Fallback: compute on-the-fly
+    mfe = mfe_compute_one(pg, position_id)
+    if mfe is None:
+        raise HTTPException(404, f"Position {position_id} not found or no price data")
+    return mfe
+
+
+@app.post("/analysis/postmortem/backfill")
+async def backfill_postmortems(background_tasks: BackgroundTasks, include_open: bool = True):
+    """전체 포지션 MFE/MAE 백필 (Background)."""
+
+    def _run():
+        try:
+            result = mfe_backfill_all(pg, include_open=include_open)
+            logger.info(f"Postmortem backfill: {result}")
+        except Exception as e:
+            logger.exception(f"Postmortem backfill failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "MFE/MAE backfill running in background"}
+
+
+# ═══════════════════════════════════════════════════════════
+# Event Study (β + AR/CAR)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/analysis/event-study/{position_id}")
+async def event_study(position_id: int):
+    """단일 포지션 event study (β + AR + CAR)."""
+    es = compute_event_study(pg, position_id)
+    if es is None:
+        raise HTTPException(404, f"Insufficient data for event study on position {position_id}")
+    return es
+
+
+@app.post("/analysis/event-study/backfill")
+async def backfill_event_study(background_tasks: BackgroundTasks):
+    """전체 postmortem에 대해 event study 계산 (Background)."""
+
+    def _run():
+        try:
+            result = backfill_event_study_all(pg)
+            logger.info(f"Event study backfill: {result}")
+        except Exception as e:
+            logger.exception(f"Event study backfill failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "Event study backfill running"}
+
+
+# ═══════════════════════════════════════════════════════════
+# News Attribution
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/analysis/news/{position_id}")
+async def news_for_position(position_id: int):
+    """포지션 기간 동안의 뉴스 + 관련도 점수."""
+    with pg.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT attribution_id, event_id, symbol, news_url, news_headline,
+                   news_source, news_published_at, relevance, sentiment,
+                   fundamentals_focus, sec_8k_item, ar_0, ar_1, car_2d
+            FROM swing_news_attribution
+            WHERE position_id = %s
+            ORDER BY news_published_at DESC
+            """,
+            (position_id,),
+        ).fetchall()
+    return {"position_id": position_id, "count": len(rows), "news": [dict(r) for r in rows]}
+
+
+@app.post("/analysis/news/backfill")
+async def backfill_news(background_tasks: BackgroundTasks):
+    """전체 postmortem에 뉴스 귀인 계산 (Background)."""
+
+    def _run():
+        try:
+            result = backfill_news_all(pg)
+            logger.info(f"News attribution backfill: {result}")
+        except Exception as e:
+            logger.exception(f"News attribution backfill failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "News attribution backfill running"}
+
+
+# ═══════════════════════════════════════════════════════════
+# Daily Report
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/analysis/daily/{report_date}")
+async def get_daily_report(report_date: str):
+    """특정 날짜의 일일 리포트 조회. YYYY-MM-DD."""
+    try:
+        d = date.fromisoformat(report_date)
+    except ValueError:
+        raise HTTPException(400, "Use YYYY-MM-DD")
+    with pg.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM swing_daily_report WHERE report_date = %s", (d,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, f"No report for {report_date}")
+    return dict(row)
+
+
+@app.get("/analysis/daily")
+async def list_daily_reports(limit: int = 30):
+    """최근 일일 리포트 목록."""
+    with pg.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT report_date, closed_count, closed_pnl, open_count,
+                   rolling_30_win_rate, rolling_30_expectancy_pct, rolling_30_sqn,
+                   rolling_30_information_coefficient, brinson_market,
+                   brinson_selection, brinson_residual, regime, macro_score
+            FROM swing_daily_report ORDER BY report_date DESC LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return {"count": len(rows), "reports": [dict(r) for r in rows]}
+
+
+# ═══════════════════════════════════════════════════════════
+# Strategy A — Auto-Approve
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/auto-approve/run")
+async def trigger_auto_approve(check_label: str = "manual"):
+    """Strategy A/B — 자동 승인 실행 (수동 트리거).
+
+    정기 실행: 22:00 (pre_open), 01:30 (mid_session), 04:30 (pre_close) KST
+    LLM Gate (Strategy B): config `llm_gate_enabled=true` + anthropic_key 있으면 활성
+    """
+    try:
+        summary = run_auto_approve(
+            pg, pos_mgr, notifier, kis_client=kis,
+            macro_scorer=macro_scorer_inst,
+            anthropic_key=config.anthropic_key,
+            cache=cache,
+            check_label=check_label,
+        )
+        return summary
+    except Exception as e:
+        logger.exception(f"auto-approve failed: {e}")
+        raise HTTPException(500, f"Auto-approve failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════
+# Counterfactual + Calibration
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/analysis/counterfactual/{position_id}")
+async def get_counterfactual(position_id: int):
+    """단일 포지션의 5-Layer 대안 청산 시뮬레이션."""
+    cf = simulate_counterfactuals(pg, position_id)
+    if cf is None:
+        raise HTTPException(404, "Closed position not found or no price data")
+    return cf
+
+
+@app.get("/analysis/counterfactual")
+async def aggregate_counterfactual():
+    """레이어별 대안 청산 평균 효과."""
+    return aggregate_counterfactuals(pg)
+
+
+@app.post("/analysis/counterfactual/backfill")
+async def backfill_counterfactual(background_tasks: BackgroundTasks):
+    """전체 postmortem에 counterfactual 계산 (Background)."""
+
+    def _run():
+        try:
+            result = backfill_counterfactuals_all(pg)
+            logger.info(f"Counterfactual backfill: {result}")
+        except Exception as e:
+            logger.exception(f"Counterfactual backfill failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "Counterfactual backfill running"}
+
+
+@app.get("/analysis/calibration")
+async def get_calibration():
+    """Composite score 구간별 실제 승률 (calibration plot 데이터)."""
+    return {"bins": get_calibration_data(pg)}
+
+
+@app.post("/analysis/daily/run")
+async def run_daily_report(
+    background_tasks: BackgroundTasks,
+    report_date: str | None = None,
+    notify: bool = False,
+):
+    """일일 리포트 수동 실행. report_date=YYYY-MM-DD (기본: 오늘)."""
+    try:
+        d = date.fromisoformat(report_date) if report_date else date.today()
+    except ValueError:
+        raise HTTPException(400, "Use YYYY-MM-DD")
+
+    def _run():
+        try:
+            if notify:
+                run_and_notify(pg, notifier, report_date=d,
+                               anthropic_key=config.anthropic_key)
+            else:
+                generate_daily_report(pg, report_date=d, refresh_data=True)
+        except Exception as e:
+            logger.exception(f"Daily report run failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "report_date": d.isoformat(), "notify": notify}
 
 
 # ═══════════════════════════════════════════════════════════

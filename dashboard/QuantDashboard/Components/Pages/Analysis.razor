@@ -1,0 +1,548 @@
+@page "/analysis"
+@attribute [Authorize]
+@inject IHttpClientFactory HttpFactory
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Analysis</PageTitle>
+
+<div class="page-header">
+    <h3>Trade Analysis</h3>
+    <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+        <button class="btn-action btn-outline" @onclick="RefreshAll" disabled="@busy">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">refresh</span>
+            @(busy ? "Refreshing..." : "Refresh All")
+        </button>
+    </div>
+</div>
+
+<div class="tab-bar" style="margin-top:0.5rem">
+    <button class="tab-btn @(tab=="period" ? "active" : "")" @onclick='() => SetTab("period")'>📊 Period</button>
+    <button class="tab-btn @(tab=="daily" ? "active" : "")" @onclick='() => SetTab("daily")'>📅 Daily Reports</button>
+    <button class="tab-btn @(tab=="postmortem" ? "active" : "")" @onclick='() => SetTab("postmortem")'>🔬 Post-Mortem</button>
+    <button class="tab-btn @(tab=="quality" ? "active" : "")" @onclick='() => SetTab("quality")'>🎯 Signal Quality</button>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
+}
+
+@if (tab == "period")
+{
+    <!-- ─── Tab 1: Period Analysis ─── -->
+    <div class="section-card" style="margin-top:0.5rem">
+        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+            <label style="font-size:0.8rem">From</label>
+            <input type="date" @bind="fromDate" class="form-input" style="width:140px" />
+            <label style="font-size:0.8rem">To</label>
+            <input type="date" @bind="toDate" class="form-input" style="width:140px" />
+            <select @bind="mode" class="form-input" style="width:100px">
+                <option value="all">All</option>
+                <option value="paper">Paper</option>
+                <option value="live">Live</option>
+            </select>
+            <button class="btn-action" @onclick="LoadPeriod" disabled="@busy">@(busy ? "..." : "Analyze")</button>
+            <button class="btn-action btn-outline" @onclick="SetPreset30">30d</button>
+            <button class="btn-action btn-outline" @onclick="SetPreset60">60d</button>
+            <button class="btn-action btn-outline" @onclick="SetPreset90">90d</button>
+            <button class="btn-action btn-outline" @onclick="SetPresetAll">All</button>
+        </div>
+    </div>
+
+    @if (periodData != null)
+    {
+        var d = periodData.Value;
+        var kpi = d.GetProperty("kpi");
+        int trades = kpi.GetProperty("trades").GetInt32();
+        if (trades == 0)
+        {
+            <div class="section-card" style="margin-top:1rem"><div class="text-muted" style="text-align:center; padding:2rem">해당 기간에 청산된 거래가 없습니다.</div></div>
+        }
+        else
+        {
+            <div class="section-card" style="margin-top:1rem">
+                <div style="font-weight:600; margin-bottom:0.5rem">📊 핵심 지표</div>
+                <div class="kpi-grid">
+                    @{
+                        double winRate = kpi.GetProperty("win_rate").GetDouble();
+                        double avgWin = kpi.GetProperty("avg_win_pct").GetDouble();
+                        double avgLoss = kpi.GetProperty("avg_loss_pct").GetDouble();
+                        double expectancy = kpi.GetProperty("expectancy_pct").GetDouble();
+                        double? pf = kpi.GetProperty("profit_factor").ValueKind == System.Text.Json.JsonValueKind.Null ? null : kpi.GetProperty("profit_factor").GetDouble();
+                        double totalPnl = kpi.GetProperty("total_pnl").GetDouble();
+                        double avgHold = kpi.GetProperty("avg_hold_days").GetDouble();
+                        int wins = kpi.GetProperty("wins").GetInt32();
+                        int losses = kpi.GetProperty("losses").GetInt32();
+                    }
+                    <div class="kpi-cell"><div class="kpi-lbl">Trades</div><div class="kpi-val">@trades</div><div class="kpi-sub">@wins W / @losses L</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Win Rate</div><div class="kpi-val">@((winRate * 100).ToString("F1"))%</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Profit Factor</div><div class="kpi-val">@(pf == null ? "∞" : pf.Value.ToString("F2"))</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Expectancy</div><div class="kpi-val @(expectancy >= 0 ? "pos" : "neg")">@expectancy.ToString("F2")%</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Avg Win</div><div class="kpi-val pos">+@avgWin.ToString("F2")%</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Avg Loss</div><div class="kpi-val neg">@avgLoss.ToString("F2")%</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Total P&L</div><div class="kpi-val @(totalPnl >= 0 ? "pos" : "neg")">$@totalPnl.ToString("F2")</div></div>
+                    <div class="kpi-cell"><div class="kpi-lbl">Avg Hold</div><div class="kpi-val">@avgHold.ToString("F1")d</div></div>
+                </div>
+            </div>
+
+            <div class="section-card" style="margin-top:1rem">
+                <div style="font-weight:600; margin-bottom:0.5rem">🚪 청산 레이어별 분석</div>
+                <table class="data-table">
+                    <thead><tr><th>Layer</th><th>Reason</th><th class="text-right">N</th><th class="text-right">Win</th><th class="text-right">Avg %</th><th class="text-right">$</th><th class="text-right">Hold</th></tr></thead>
+                    <tbody>
+                        @foreach (var l in d.GetProperty("exit_layers").EnumerateArray())
+                        {
+                            double avgPnl = l.GetProperty("avg_pnl_pct").GetDouble();
+                            <tr>
+                                <td><span class="layer-chip">@l.GetProperty("layer").GetString()</span></td>
+                                <td class="text-muted">@l.GetProperty("raw_reason").GetString()</td>
+                                <td class="text-right">@l.GetProperty("count").GetInt32()</td>
+                                <td class="text-right">@((l.GetProperty("win_rate").GetDouble() * 100).ToString("F0"))%</td>
+                                <td class="text-right @(avgPnl >= 0 ? "pos" : "neg")">@avgPnl.ToString("F2")%</td>
+                                <td class="text-right">$@l.GetProperty("total_pnl").GetDouble().ToString("F2")</td>
+                                <td class="text-right">@l.GetProperty("avg_hold_days").GetDouble().ToString("F1")d</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section-card" style="margin-top:1rem">
+                <div style="font-weight:600; margin-bottom:0.5rem">⏱️ 보유일수 분포</div>
+                <table class="data-table">
+                    <thead><tr><th>Bucket</th><th class="text-right">N</th><th class="text-right">Win</th><th class="text-right">Avg %</th></tr></thead>
+                    <tbody>
+                        @foreach (var h in d.GetProperty("hold_days").EnumerateArray())
+                        {
+                            double avgPnl = h.GetProperty("avg_pnl_pct").GetDouble();
+                            <tr>
+                                <td><strong>@h.GetProperty("bucket").GetString()</strong></td>
+                                <td class="text-right">@h.GetProperty("count").GetInt32()</td>
+                                <td class="text-right">@((h.GetProperty("win_rate").GetDouble() * 100).ToString("F0"))%</td>
+                                <td class="text-right @(avgPnl >= 0 ? "pos" : "neg")">@avgPnl.ToString("F2")%</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section-card" style="margin-top:1rem">
+                <div style="font-weight:600; margin-bottom:0.5rem">🎯 Composite Score 구간별 (예측력 검증)</div>
+                <table class="data-table">
+                    <thead><tr><th>Bin</th><th class="text-right">Avg</th><th class="text-right">N</th><th class="text-right">Win</th><th class="text-right">Avg %</th></tr></thead>
+                    <tbody>
+                        @foreach (var b in d.GetProperty("score_bins").EnumerateArray())
+                        {
+                            double avgPnl = b.GetProperty("avg_pnl_pct").GetDouble();
+                            string avgScoreStr = b.GetProperty("avg_score").ValueKind == System.Text.Json.JsonValueKind.Null ? "—" : b.GetProperty("avg_score").GetDouble().ToString("F1");
+                            <tr>
+                                <td><span class="score-chip">@b.GetProperty("bin").GetString()</span></td>
+                                <td class="text-right text-muted">@avgScoreStr</td>
+                                <td class="text-right">@b.GetProperty("count").GetInt32()</td>
+                                <td class="text-right">@((b.GetProperty("win_rate").GetDouble() * 100).ToString("F0"))%</td>
+                                <td class="text-right @(avgPnl >= 0 ? "pos" : "neg")">@avgPnl.ToString("F2")%</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
+}
+
+@if (tab == "daily")
+{
+    <!-- ─── Tab 2: Daily Reports ─── -->
+    <div class="section-card" style="margin-top:0.5rem">
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <button class="btn-action" @onclick="RunDailyToday" disabled="@busy">@(busy ? "..." : "Run Today's Report")</button>
+            <button class="btn-action btn-outline" @onclick="LoadDailyList">Refresh List</button>
+        </div>
+    </div>
+
+    @if (dailyList?.Count > 0)
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">최근 일일 리포트</div>
+            <table class="data-table">
+                <thead><tr><th>Date</th><th class="text-right">Closed</th><th class="text-right">P&L</th><th>Regime</th><th class="text-right">Win30</th><th class="text-right">Exp30%</th><th class="text-right">SQN</th><th class="text-right">IC</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var r in dailyList)
+                    {
+                        var rDate = r.TryGetValue("report_date", out var rd) ? rd?.ToString() ?? "" : "";
+                        <tr style="cursor:pointer" @onclick="() => LoadDailyDetail(rDate)">
+                            <td><strong>@(rDate.Length >= 10 ? rDate.Substring(0, 10) : rDate)</strong></td>
+                            <td class="text-right">@r.GetValueOrDefault("closed_count")</td>
+                            <td class="text-right">$@((r.GetValueOrDefault("closed_pnl") as double? ?? 0).ToString("F2"))</td>
+                            <td><span class="layer-chip">@r.GetValueOrDefault("regime")</span></td>
+                            <td class="text-right">@(((r.GetValueOrDefault("rolling_30_win_rate") as double? ?? 0) * 100).ToString("F0"))%</td>
+                            <td class="text-right">@((r.GetValueOrDefault("rolling_30_expectancy_pct") as double? ?? 0).ToString("F2"))%</td>
+                            <td class="text-right">@((r.GetValueOrDefault("rolling_30_sqn") as double? ?? 0).ToString("F2"))</td>
+                            <td class="text-right">@((r.GetValueOrDefault("rolling_30_information_coefficient") as double? ?? 0).ToString("F3"))</td>
+                            <td class="text-right text-muted" style="font-size:0.75rem">▶</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (selectedDaily.HasValue)
+    {
+        var rep = selectedDaily.Value;
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">📅 @rep.GetProperty("report_date").GetString() 리포트</div>
+            <pre style="white-space:pre-wrap; font-family:inherit; font-size:0.85rem; line-height:1.5">@(rep.GetProperty("llm_narrative").ValueKind == System.Text.Json.JsonValueKind.Null ? "(LLM narrative 없음)" : rep.GetProperty("llm_narrative").GetString())</pre>
+
+            <div style="margin-top:1rem; display:grid; grid-template-columns:1fr 1fr; gap:1rem">
+                <div>
+                    <strong>Rolling 30</strong>
+                    <ul style="font-size:0.85rem; list-style:none; padding:0">
+                        <li>Win rate: @(((rep.GetProperty("rolling_30_win_rate").GetDouble()) * 100).ToString("F1"))%</li>
+                        <li>Expectancy: @(rep.GetProperty("rolling_30_expectancy_pct").GetDouble().ToString("F2"))%</li>
+                        <li>SQN: @rep.GetProperty("rolling_30_sqn").GetDouble().ToString("F3")</li>
+                        <li>IC: @rep.GetProperty("rolling_30_information_coefficient").GetDouble().ToString("F4")</li>
+                        <li>AUC: @rep.GetProperty("rolling_30_auc").GetDouble().ToString("F4")</li>
+                    </ul>
+                </div>
+                <div>
+                    <strong>P&L 귀인 (avg/trade)</strong>
+                    <ul style="font-size:0.85rem; list-style:none; padding:0">
+                        <li>Market (β·Rm): @((rep.GetProperty("brinson_market").GetDouble() * 100).ToString("F2"))%</li>
+                        <li>Selection (AR): @((rep.GetProperty("brinson_selection").GetDouble() * 100).ToString("F2"))%</li>
+                        <li>Residual: @((rep.GetProperty("brinson_residual").GetDouble() * 100).ToString("F2"))%</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@if (tab == "postmortem")
+{
+    <!-- ─── Tab 3: Post-Mortem ─── -->
+    <div class="section-card" style="margin-top:0.5rem">
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <button class="btn-action" @onclick="BackfillPostmortems" disabled="@busy">@(busy ? "..." : "Recompute All")</button>
+            <button class="btn-action btn-outline" @onclick="LoadPostmortems">Refresh</button>
+        </div>
+    </div>
+
+    @if (postmortems?.Count > 0)
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">청산 거래 사후분석 (MFE/MAE/Capture/R)</div>
+            <table class="data-table">
+                <thead><tr><th>PID</th><th>Symbol</th><th>Layer</th><th class="text-right">Real%</th><th class="text-right">MFE%</th><th class="text-right">MAE%</th><th class="text-right">Capture</th><th class="text-right">R</th><th class="text-right">β</th><th class="text-right">News</th><th>Narr</th></tr></thead>
+                <tbody>
+                    @foreach (var p in postmortems)
+                    {
+                        double realPct = (p.GetValueOrDefault("realized_pct") as double? ?? 0) * 100;
+                        double mfePct = (p.GetValueOrDefault("mfe_pct") as double? ?? 0) * 100;
+                        double maePct = (p.GetValueOrDefault("mae_pct") as double? ?? 0) * 100;
+                        var capture = p.GetValueOrDefault("capture_ratio") as double?;
+                        var rMul = p.GetValueOrDefault("r_multiple") as double?;
+                        var beta = p.GetValueOrDefault("beta") as double?;
+                        int newsCount = (int)(p.GetValueOrDefault("news_count") as int? ?? 0);
+                        string oneLiner = p.GetValueOrDefault("llm_one_liner")?.ToString() ?? "";
+                        <tr>
+                            <td>@p.GetValueOrDefault("position_id")</td>
+                            <td><strong>@p.GetValueOrDefault("symbol")</strong></td>
+                            <td><span class="layer-chip">@p.GetValueOrDefault("exit_layer")</span></td>
+                            <td class="text-right @(realPct >= 0 ? "pos" : "neg")">@realPct.ToString("F2")</td>
+                            <td class="text-right pos">@mfePct.ToString("F2")</td>
+                            <td class="text-right neg">@maePct.ToString("F2")</td>
+                            <td class="text-right @(capture != null && capture < 0.4 ? "neg" : "")">@(capture?.ToString("F2") ?? "—")</td>
+                            <td class="text-right">@(rMul?.ToString("F2") ?? "—")</td>
+                            <td class="text-right text-muted">@(beta?.ToString("F2") ?? "—")</td>
+                            <td class="text-right">@newsCount</td>
+                            <td class="text-muted" style="font-size:0.78rem; max-width:300px">@oneLiner</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <div style="margin-top:0.5rem; font-size:0.75rem; color:var(--text-muted)">
+                * <strong>Capture &lt; 0.4</strong> → 조기청산 의심. R-multiple = (실현/초기위험) — Tharp 표준.
+            </div>
+        </div>
+    }
+}
+
+@if (tab == "quality")
+{
+    <!-- ─── Tab 4: Signal Quality + Counterfactual ─── -->
+    <div class="section-card" style="margin-top:0.5rem">
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <button class="btn-action" @onclick="LoadQuality" disabled="@busy">@(busy ? "..." : "Refresh")</button>
+            <button class="btn-action btn-outline" @onclick="BackfillCounterfactual">Recompute Counterfactual</button>
+        </div>
+    </div>
+
+    @if (counterfactualAgg.HasValue)
+    {
+        var cf = counterfactualAgg.Value;
+        int n = cf.GetProperty("n").GetInt32();
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">⚖️ Counterfactual Exit — "다른 레이어가 청산했더라면?"</div>
+            <div class="text-muted" style="font-size:0.78rem; margin-bottom:0.5rem">N=@n closed trades. 실제 청산 vs 각 레이어가 발동했을 가상 결과.</div>
+            <table class="data-table">
+                <thead><tr><th>Layer</th><th class="text-right">발동률</th><th class="text-right">N</th><th class="text-right">Avg P&L</th><th class="text-right">vs 실제</th><th class="text-right">Avg Days</th><th class="text-right">Win</th></tr></thead>
+                <tbody>
+                    @foreach (var l in cf.GetProperty("layers").EnumerateArray())
+                    {
+                        double avgPnl = l.GetProperty("avg_pnl_pct").GetDouble();
+                        double delta = l.GetProperty("avg_delta_pct").GetDouble();
+                        double wr = l.GetProperty("win_rate").GetDouble();
+                        double fireRate = l.GetProperty("fire_rate").GetDouble();
+                        <tr>
+                            <td><span class="layer-chip">@l.GetProperty("layer").GetString()</span></td>
+                            <td class="text-right">@((fireRate * 100).ToString("F0"))%</td>
+                            <td class="text-right">@l.GetProperty("fired_count").GetInt32()</td>
+                            <td class="text-right @(avgPnl >= 0 ? "pos" : "neg")">@avgPnl.ToString("F2")%</td>
+                            <td class="text-right @(delta >= 0 ? "pos" : "neg")">@(delta >= 0 ? "+" : "")@delta.ToString("F2")%</td>
+                            <td class="text-right">@l.GetProperty("avg_days").GetDouble().ToString("F1")</td>
+                            <td class="text-right">@((wr * 100).ToString("F0"))%</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (calibrationData != null)
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">📐 Composite Score Calibration</div>
+            <div class="text-muted" style="font-size:0.78rem; margin-bottom:0.5rem">점수 구간별 실제 승률. 잘 calibrated되면 점수가 높을수록 승률도 단조 증가해야 함.</div>
+            <table class="data-table">
+                <thead><tr><th>Score Bin</th><th class="text-right">N</th><th class="text-right">Actual Win</th><th class="text-right">Expected</th><th class="text-right">Avg P&L</th></tr></thead>
+                <tbody>
+                    @foreach (var b in calibrationData.Value.EnumerateArray())
+                    {
+                        int n2 = b.GetProperty("n").GetInt32();
+                        if (n2 == 0) continue;
+                        double wr = b.GetProperty("win_rate").GetDouble();
+                        double exp = b.GetProperty("expected_rate").GetDouble();
+                        double avgPnl = b.GetProperty("avg_pnl_pct").GetDouble();
+                        <tr>
+                            <td><span class="score-chip">@b.GetProperty("bin").GetString()</span></td>
+                            <td class="text-right">@n2</td>
+                            <td class="text-right">@((wr * 100).ToString("F0"))%</td>
+                            <td class="text-right text-muted">@((exp * 100).ToString("F0"))%</td>
+                            <td class="text-right @(avgPnl >= 0 ? "pos" : "neg")">@avgPnl.ToString("F2")%</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+<style>
+    .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.5rem; }
+    .kpi-cell { background:var(--bg-elevated, #1a2030); padding:0.6rem 0.75rem; border-radius:6px; border:1px solid var(--border-subtle, #2a3142); }
+    .kpi-lbl { font-size:0.72rem; color:var(--text-muted); margin-bottom:0.2rem; }
+    .kpi-val { font-size:1.15rem; font-weight:600; }
+    .kpi-val.pos { color:var(--accent-green, #10b981); }
+    .kpi-val.neg { color:var(--accent-red, #ef4444); }
+    .kpi-sub { font-size:0.68rem; color:var(--text-muted); margin-top:0.15rem; }
+    .layer-chip { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.72rem; font-weight:600; background:var(--accent-blue, #3b82f6); color:white; }
+    .score-chip { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.72rem; font-weight:600; background:var(--accent-purple, #a78bfa); color:white; }
+    .text-right { text-align:right; }
+    .text-center { text-align:center; }
+    .pos { color:var(--accent-green, #10b981); }
+    .neg { color:var(--accent-red, #ef4444); }
+</style>
+
+@code {
+    private string tab = "period";
+    private bool busy;
+    private string? statusMsg;
+
+    // Period tab
+    private DateTime fromDate = DateTime.Today.AddDays(-60);
+    private DateTime toDate = DateTime.Today;
+    private string mode = "all";
+    private System.Text.Json.JsonElement? periodData;
+
+    // Daily tab
+    private List<Dictionary<string, object?>>? dailyList;
+    private System.Text.Json.JsonElement? selectedDaily;
+
+    // Postmortem tab
+    private List<Dictionary<string, object?>>? postmortems;
+
+    // Quality tab
+    private System.Text.Json.JsonElement? counterfactualAgg;
+    private System.Text.Json.JsonElement? calibrationData;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPeriod();
+    }
+
+    private async Task SetTab(string t)
+    {
+        tab = t;
+        statusMsg = null;
+        if (t == "daily" && dailyList == null) await LoadDailyList();
+        if (t == "postmortem" && postmortems == null) await LoadPostmortems();
+        if (t == "quality" && (counterfactualAgg == null || calibrationData == null)) await LoadQuality();
+    }
+
+    private async Task RefreshAll()
+    {
+        if (tab == "period") await LoadPeriod();
+        else if (tab == "daily") await LoadDailyList();
+        else if (tab == "postmortem") await LoadPostmortems();
+        else if (tab == "quality") await LoadQuality();
+    }
+
+    // ─── Period ───
+    private async Task LoadPeriod()
+    {
+        busy = true; statusMsg = null; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var url = $"/analysis?from={fromDate:yyyy-MM-dd}&to={toDate:yyyy-MM-dd}&mode={mode}";
+            periodData = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(url);
+        }
+        catch (Exception ex) { statusMsg = $"Period load error: {ex.Message}"; periodData = null; }
+        finally { busy = false; }
+    }
+    private async Task SetPreset30() { fromDate = DateTime.Today.AddDays(-30); toDate = DateTime.Today; await LoadPeriod(); }
+    private async Task SetPreset60() { fromDate = DateTime.Today.AddDays(-60); toDate = DateTime.Today; await LoadPeriod(); }
+    private async Task SetPreset90() { fromDate = DateTime.Today.AddDays(-90); toDate = DateTime.Today; await LoadPeriod(); }
+    private async Task SetPresetAll() { fromDate = new DateTime(2024, 1, 1); toDate = DateTime.Today; await LoadPeriod(); }
+
+    // ─── Daily ───
+    private async Task LoadDailyList()
+    {
+        busy = true; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/analysis/daily?limit=30");
+            dailyList = new();
+            if (resp.TryGetProperty("reports", out var arr))
+            {
+                foreach (var item in arr.EnumerateArray())
+                {
+                    var dict = new Dictionary<string, object?>();
+                    foreach (var prop in item.EnumerateObject())
+                    {
+                        dict[prop.Name] = prop.Value.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
+                            System.Text.Json.JsonValueKind.Number => prop.Value.GetDouble(),
+                            System.Text.Json.JsonValueKind.Null => null,
+                            _ => prop.Value.ToString()
+                        };
+                    }
+                    dailyList.Add(dict);
+                }
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Daily list error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+    private async Task LoadDailyDetail(string dateStr)
+    {
+        if (string.IsNullOrEmpty(dateStr)) return;
+        var d = dateStr.Length >= 10 ? dateStr.Substring(0, 10) : dateStr;
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            selectedDaily = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/analysis/daily/{d}");
+        }
+        catch (Exception ex) { statusMsg = $"Daily detail error: {ex.Message}"; }
+    }
+    private async Task RunDailyToday()
+    {
+        busy = true; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            await client.PostAsync("/analysis/daily/run?notify=false", null);
+            statusMsg = "리포트 생성 중 (1-2분 소요)... 잠시 후 Refresh List 클릭";
+        }
+        catch (Exception ex) { statusMsg = $"Run error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    // ─── Postmortem ───
+    private async Task LoadPostmortems()
+    {
+        busy = true; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/analysis/postmortems?limit=100");
+            postmortems = new();
+            if (resp.TryGetProperty("postmortems", out var arr))
+            {
+                foreach (var item in arr.EnumerateArray())
+                {
+                    var dict = new Dictionary<string, object?>();
+                    foreach (var prop in item.EnumerateObject())
+                    {
+                        dict[prop.Name] = prop.Value.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
+                            System.Text.Json.JsonValueKind.Number when prop.Value.TryGetInt32(out var i) => i,
+                            System.Text.Json.JsonValueKind.Number => prop.Value.GetDouble(),
+                            System.Text.Json.JsonValueKind.Null => null,
+                            _ => prop.Value.ToString()
+                        };
+                    }
+                    postmortems.Add(dict);
+                }
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Postmortem error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+    private async Task BackfillPostmortems()
+    {
+        busy = true; statusMsg = "MFE/MAE 백필 + Event Study + News + Counterfactual 진행 중..."; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            await client.PostAsync("/analysis/postmortem/backfill?include_open=true", null);
+            await client.PostAsync("/analysis/event-study/backfill", null);
+            await client.PostAsync("/analysis/news/backfill", null);
+            await client.PostAsync("/analysis/counterfactual/backfill", null);
+            statusMsg = "백필 시작됨 (1-2분 후 Refresh 클릭)";
+        }
+        catch (Exception ex) { statusMsg = $"Backfill error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    // ─── Quality ───
+    private async Task LoadQuality()
+    {
+        busy = true; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            counterfactualAgg = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/analysis/counterfactual");
+            var cal = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/analysis/calibration");
+            calibrationData = cal.GetProperty("bins");
+        }
+        catch (Exception ex) { statusMsg = $"Quality error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+    private async Task BackfillCounterfactual()
+    {
+        busy = true; StateHasChanged();
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            await client.PostAsync("/analysis/counterfactual/backfill", null);
+            statusMsg = "Counterfactual 백필 중... 30초 후 Refresh";
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+}

@@ -108,6 +108,15 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 4b) 장 마감 후 청산 체크 — 화~토 05:30 KST (16:30 ET, 장 마감 직후 종가 반영)
+        self.scheduler.add_job(
+            self._job_exit_check,
+            CronTrigger(day_of_week="tue-sat", hour=5, minute=30, timezone=KST),
+            id="exit_check_close",
+            name="Exit Check (16:30 ET close)",
+            replace_existing=True,
+        )
+
         # 5) 토 10:00 KST — 유니버스 주간 갱신
         self.scheduler.add_job(
             self._job_refresh_universe,
@@ -168,6 +177,42 @@ class SwingScheduler:
             CronTrigger(day_of_week="sat", hour=9, minute=0, timezone=KST),
             id="lstm_retrain",
             name="Weekly LSTM Retrain",
+            replace_existing=True,
+        )
+
+        # 12) 매일 06:05 KST — 일일 사후분석 (MFE/MAE + EventStudy + News + Brinson + Telegram)
+        self.scheduler.add_job(
+            self._job_post_market_analysis,
+            CronTrigger(day_of_week="tue-sat", hour=6, minute=5, timezone=KST),
+            id="post_market_analysis",
+            name="Daily Post-Market Analysis + Telegram Digest",
+            replace_existing=True,
+        )
+
+        # 13) 월~금 22:00 KST — Strategy A 자동 승인 (US 장 시작 30분 전 summer DST)
+        self.scheduler.add_job(
+            lambda: self._job_auto_approve("pre_open"),
+            CronTrigger(day_of_week="mon-fri", hour=22, minute=0, timezone=KST),
+            id="auto_approve",
+            name="Strategy A/B — Auto-Approve Pending (pre-US-open)",
+            replace_existing=True,
+        )
+
+        # 14) 화~토 01:30 KST — Strategy B mid-session 재평가
+        self.scheduler.add_job(
+            lambda: self._job_auto_approve("mid_session"),
+            CronTrigger(day_of_week="tue-sat", hour=1, minute=30, timezone=KST),
+            id="auto_approve_mid",
+            name="Strategy B — Mid-Session Re-evaluation",
+            replace_existing=True,
+        )
+
+        # 15) 화~토 04:30 KST — Strategy B pre-close 최종 픽업
+        self.scheduler.add_job(
+            lambda: self._job_auto_approve("pre_close"),
+            CronTrigger(day_of_week="tue-sat", hour=4, minute=30, timezone=KST),
+            id="auto_approve_close",
+            name="Strategy B — Pre-Close Final Pickup",
             replace_existing=True,
         )
 
@@ -271,12 +316,12 @@ class SwingScheduler:
             symbols = list(set(p["symbol"] for p in positions))
             auto_sell = self.pg.get_config_value("auto_sell_enabled", "true") == "true"
 
-            # 현재가 조회 (yfinance)
+            # 현재가 조회 (yfinance, period=2d로 장 시작 전/주말에도 이전 종가 확보)
             current_prices: dict[str, float] = {}
             try:
-                data = yf.download(symbols, period="1d", progress=False)
+                data = yf.download(symbols, period="2d", progress=False)
                 if len(symbols) == 1:
-                    current_prices[symbols[0]] = float(data["Close"].iloc[-1])
+                    current_prices[symbols[0]] = float(data["Close"].dropna().iloc[-1])
                 else:
                     for sym in symbols:
                         try:
@@ -286,6 +331,11 @@ class SwingScheduler:
                             pass
             except Exception as e:
                 logger.warning(f"yfinance fetch for exit check: {e}")
+
+            # 시세 누락 종목 경고
+            missing = [s for s in symbols if s not in current_prices]
+            if missing:
+                logger.warning(f"Exit check: no price data for {missing} — skip exit evaluation")
 
             # 포지션별 현재가 업데이트
             for p in positions:
@@ -747,14 +797,14 @@ class SwingScheduler:
             positions = self.pg.get_open_positions()
             open_count = len(positions)
 
-            # 현재가 조회
+            # 현재가 조회 (period=2d로 장외 시간에도 이전 종가 확보)
             current_prices: dict[str, float] = {}
             if positions:
                 symbols = list(set(p["symbol"] for p in positions))
                 try:
-                    data = yf.download(symbols, period="1d", progress=False)
+                    data = yf.download(symbols, period="2d", progress=False)
                     if len(symbols) == 1:
-                        current_prices[symbols[0]] = float(data["Close"].iloc[-1])
+                        current_prices[symbols[0]] = float(data["Close"].dropna().iloc[-1])
                     else:
                         for sym in symbols:
                             try:
@@ -898,6 +948,58 @@ class SwingScheduler:
                 logger.warning(f"Social collect trigger failed: HTTP {resp.status_code}")
         except Exception as e:
             logger.error(f"Social collect job failed: {e}", exc_info=True)
+
+    def _job_auto_approve(self, check_label: str = "scheduled"):
+        """Strategy A/B — Auto-approve pending ENTRY signals.
+
+        check_label: 'pre_open' (22:00) | 'mid_session' (01:30) | 'pre_close' (04:30)
+        """
+        from engine_v4.strategy.auto_approve import run_auto_approve
+        try:
+            from engine_v4.risk.position_manager import PositionManager
+            from engine_v4.broker.kis_client import KisClient
+            pos_mgr = PositionManager(self.pg, self.cfg)
+            kis = KisClient(self.cfg)
+            summary = run_auto_approve(
+                self.pg, pos_mgr, self.notifier, kis_client=kis, macro_scorer=None,
+                anthropic_key=getattr(self.cfg, "anthropic_key", None),
+                cache=self.cache,
+                check_label=check_label,
+            )
+            self.pg.insert_pipeline_log(
+                f"auto_approve_{check_label}", "completed", 0,
+                {"approved": summary.get("auto_approved"), "executed": summary.get("executed"),
+                 "skipped": summary.get("skipped"), "errors": summary.get("errors_count"),
+                 "llm_gate": summary.get("llm_gate_enabled")},
+            )
+            logger.info(f"Auto-approve [{check_label}]: {summary.get('auto_approved')}/"
+                        f"{summary.get('evaluated')} approved, {summary.get('executed')} executed, "
+                        f"LLM_gate={summary.get('llm_gate_enabled')}")
+        except Exception as e:
+            logger.exception(f"auto_approve [{check_label}] failed: {e}")
+            self.pg.insert_pipeline_log(f"auto_approve_{check_label}", "failed", 0, {"error": str(e)})
+
+    def _job_post_market_analysis(self):
+        """일일 사후분석 — MFE/MAE + Event Study + News + Metrics + Telegram."""
+        from datetime import date
+        from engine_v4.analysis.daily_report import run_and_notify
+
+        try:
+            today = date.today()
+            rep = run_and_notify(
+                self.pg, self.notifier, report_date=today,
+                anthropic_key=getattr(self.cfg, "anthropic_key", None),
+            )
+            self.pg.insert_pipeline_log(
+                "post_market_analysis", "completed", 0,
+                {"closed": rep.get("closed_count"), "open": rep.get("open_count")},
+            )
+            logger.info(f"Post-market analysis done: {rep['closed_count']} closed, {rep['open_count']} open")
+        except Exception as e:
+            logger.exception(f"post_market_analysis failed: {e}")
+            self.pg.insert_pipeline_log(
+                "post_market_analysis", "failed", 0, {"error": str(e)},
+            )
 
     def _job_watchlist_analysis(self):
         """매일 워치리스트 자동 분석 → 시그널 로그 기록."""

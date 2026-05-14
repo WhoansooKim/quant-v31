@@ -533,6 +533,7 @@ class KisClient:
             message="Simulated order (KIS not configured)",
         )
 
+
     @property
     def is_connected(self) -> bool:
         """KIS 연결 여부."""
