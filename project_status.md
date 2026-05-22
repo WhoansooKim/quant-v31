@@ -1,6 +1,6 @@
 # Quant V4 Swing Trading System — Project Status
 
-> Last updated: 2026-05-14
+> Last updated: 2026-05-22
 > Author: Claude Code (Opus 4.7)
 > Purpose: Session continuity — 새 세션에서 이 파일 참조하여 프롬프트 없이 작업 이어서 진행
 
@@ -1205,11 +1205,154 @@ docker exec quant-postgres psql -U quant -d quantdb \
 - Live 모드는 자동 전환 금지 (안전장치)
 - API: `/indicators/{sym}`, `/indicators/{sym}/score`, `/harness/regime{,/check,/history}`
 
+### Week 3 결과
+- **Variant Generator**: TUNABLE_PARAMS 19개 안전 범위 + Claude/Ollama 3-5개 변이 자동 제안
+- **자동 백테스트 검증**: 90/180/365일 다중 기간 + 일관성 체크 + SQN/Sharpe delta 통과 조건
+- 첫 변이 #1 (position_pct=0.02) → 거래 0건 → **자동 reject** (안전장치 작동 확인)
+- 매월 1일 11:00 KST `monthly_variant_gen` 잡 (생성 + 백테스트 일괄)
+
+### Week 4 결과
+- **Safe Auto-Deployment**: 최고 점수 validated 변이 자동 배포 + baseline snapshot 보존
+- **Auto-Rollback**: 5연속 손실 OR SQN drop 0.5 → 자동 baseline 복원
+- 매시 15분 `rollback_check` 잡 + Live 자동 변경 금지
+- **통합 대시보드 `/harness`** (4탭):
+  - 🌐 Regime — 현재 매크로 + preset + force check
+  - 🧬 Variants — 변이 목록 + 생성/백테스트/배포/롤백 버튼
+  - 📚 Knowledge — 검색 가능 지식 베이스 (39+ 항목 누적)
+  - 📜 Audit Log — 자율 동작 전체 감사
+
+---
+
+## 22.X Phase 3 완성 종합 요약 (4주 계획 → 1세션 완성)
+
+### 자율 진화 사이클 (사용자 개입 0)
+```
+일요일 10:00 KST    → 외부 리서치 (arxiv/SSRN/Reddit/Quantocracy) → Ollama 요약 → 지식 누적
+매시 정각         → regime 변화 감지 → preset 자동 적용 (paper)
+매시 15분         → 활성 변이 모니터링 → 자동 롤백 조건 체크
+매월 1일 11:00 KST  → 변이 5개 생성 → 90/180/365d 백테스트 → 통과만 validated
+일일 06:05 KST     → 사후분석 → IC/SQN/Counterfactual → 다음 변이 생성에 반영
+```
+
+### 21개 스케줄러 잡 (Phase 3 추가분)
+| Job | 시간 | Phase |
+|-----|------|-------|
+| weekly_research | 일 10:00 | 3B |
+| regime_switch_check | 매시 정각 | 3F |
+| monthly_variant_gen | 매월 1일 11:00 | 3C/3D |
+| rollback_check | 매시 15분 | 3E |
+
+### 신규 파일 (Phase 3 전체)
+```
+engine_v4/harness/
+├── __init__.py
+├── knowledge.py              # CRUD for swing_knowledge + log_action
+├── seed_data.py              # 18개 학술/실무 시드 (Faber, Jegadeesh, Fama, Dalio, ...)
+├── researcher.py             # 주간 자율 리서치 (arxiv/Reddit/Quantocracy)
+├── regime_switcher.py        # 매크로 regime → preset 적용
+├── variant_generator.py      # LLM 전략 변이 제안
+├── auto_backtest.py          # 다중 기간 자동 백테스트 + 통과 조건
+└── auto_deploy.py            # 안전한 배포 + 자동 롤백
+
+engine_v4/indicators/
+├── __init__.py
+├── macd.py                   # MACD + 크로스오버 감지
+├── bollinger.py              # BB + %B + Squeeze
+├── adx.py                    # ADX + DI+/DI- + trend strength
+├── ichimoku.py               # Ichimoku Cloud (5 lines)
+├── vwap.py                   # Rolling VWAP
+├── wyckoff.py                # VSA (Spring/Upthrust/Absorption)
+└── compute.py                # 통합 스코어 0-100
+
+dashboard/QuantDashboard/Components/Pages/
+└── Harness.razor             # /harness 4탭 대시보드
+
+scripts/
+└── migrate_harness.sql       # 3 신규 테이블 + 9 config 키
+```
+
+### 신규 DB (3개 테이블)
+- `swing_knowledge` — 외부 정보 + LLM 추출 전략 가설 (현재 39개 항목)
+- `swing_strategy_variants` — LLM 생성 변이 lifecycle (pending → testing → validated → rejected → deployed → rolled_back)
+- `swing_harness_log` — 모든 자율 동작 audit trail
+
+### 신규 API (12개)
+```
+GET  /harness/knowledge?source_type=&regime=&min_applicability=&limit=
+GET  /harness/knowledge/search?q=
+GET  /harness/knowledge/{knowledge_id}
+POST /harness/seed?force=
+
+GET  /harness/regime
+POST /harness/regime/check?force=
+GET  /harness/regime/history
+
+GET  /harness/variants?status=&limit=
+GET  /harness/variants/{variant_id}
+POST /harness/variants/generate?max_variants=
+POST /harness/variants/{variant_id}/backtest
+POST /harness/variants/backtest-all?max_per_run=
+POST /harness/variants/{variant_id}/deploy
+POST /harness/variants/deploy-best
+
+POST /harness/rollback?reason=
+POST /harness/rollback-check
+
+GET  /harness/log?limit=&action=
+
+GET  /indicators/{symbol}
+GET  /indicators/{symbol}/score
+```
+
+### 사용자 절대 명령 (메모리에 영구 저장)
+> "사용자가 명시적으로 '그만'이라 말하기 전까지 절대 포기/멈춤 권유 금지"
+- 메모리 위치: `~/.claude/projects/-home-quant-quant-v31/memory/phase3_harness_plan.md`
+- 세션 종료 후에도 자동 로드됨
+
+### 안전장치 (위반 시 시스템 정지)
+| 위험 | 방어 |
+|------|------|
+| 자기 코드 수정 | ❌ 금지 (config + DB만) |
+| Live 자동 변경 | ❌ 금지 (수동 승인만) |
+| Untested 전략 배포 | 다중 기간 백테스트 통과 필수 |
+| Overfitting | N≥30 + 다중 기간 + 일관성 검증 |
+| 자본 집중 | position_pct ≤25%, max_positions ≤10 |
+| LLM 환각 | TUNABLE_PARAMS 범위 자동 clipping |
+| 데이터 출처 신뢰성 | source_tier 가중 (Reuters=1.0, blog=0.3) |
+| 손실 누적 | 5연속 손실 자동 롤백 |
+
+### Strategy B 활성화 (1줄 변경, 코드 재시작 불필요)
+```bash
+docker exec quant-postgres psql -U quant -d quantdb \
+  -c "UPDATE swing_config SET value='true' WHERE key='llm_gate_enabled';"
+```
+
+### Harness 컴포넌트 활성화 (현재 false)
+```bash
+# Phase 3C/3D 월간 변이 생성 활성화
+docker exec quant-postgres psql -U quant -d quantdb \
+  -c "UPDATE swing_config SET value='true' WHERE key='harness_variant_gen_enabled';"
+
+# Phase 3E 자동 배포 활성화 (paper만)
+docker exec quant-postgres psql -U quant -d quantdb \
+  -c "UPDATE swing_config SET value='true' WHERE key='harness_auto_deploy_enabled';"
+
+# Phase 3F regime 자동 전환 활성화
+docker exec quant-postgres psql -U quant -d quantdb \
+  -c "UPDATE swing_config SET value='true' WHERE key='harness_regime_switch_enabled';"
+```
+
+(현재 false로 시작 — 사용자가 시스템 가동 상태 확인 후 1개씩 활성화 권장)
+
 ---
 
 ## 23. Git History
 
 ```
+29a866f feat: Phase 3 Week 3+4 완성 — 변이 생성기 + 자동 백테스트 + 자동 배포 + 통합 대시보드
+70845df feat: Phase 3 Week 2 — 매크로 적응 스위치 (3F) + 확장 기술 지표 (3G)
+6ec5787 feat: Phase 3 자율 진화 하네스 Week 1 — 지식 베이스 + 시드 + 리서치 에이전트
+2706340 feat: Analysis 시스템 (Phase 2A-E) + Strategy A/B 자동승인 + LLM Gate
 PENDING  feat: 수수료 계산 시스템 (0.25% 자동 계산 + 수익률 차감 + 대시보드 표시)
 7a3396b perf: ticker/market 캐시 최적화 + V3.1 비활성화
 a70a075 docs: V3.1 비활성화 안내 + 현황 업데이트 (2026-04-15)
