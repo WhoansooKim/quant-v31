@@ -1185,8 +1185,8 @@ docker exec quant-postgres psql -U quant -d quantdb \
 - [x] **3A 지식 베이스** (Week 1) — `swing_knowledge`/`swing_strategy_variants`/`swing_harness_log` 3 테이블 + CRUD API
 - [x] **3H 시드 데이터** (Week 1) — 18개 고전/현대 전략 (Faber, Jegadeesh-Titman, Antonacci, Tetlock, Da, Fama-French, Tharp, Dalio, Wyckoff, Carter, O'Neil, Weinstein, Lopez-Lira, MarketSenseAI, Barber-Odean)
 - [x] **3B 리서치 에이전트** (Week 1) — `weekly_research` 잡 일요일 10:00 KST + arxiv/Reddit/Quantocracy 크롤 + Ollama 추출 + Telegram 다이제스트
-- [ ] 3G 기술 지표 확장 (Week 2)
-- [ ] 3F 매크로 적응 스위치 (Week 2)
+- [x] **3G 기술 지표 확장** (Week 2) — `engine_v4/indicators/` 6모듈 (MACD/BB/ADX/Ichimoku/VWAP/Wyckoff VSA) + 종합 스코어 + API
+- [x] **3F 매크로 적응 스위치** (Week 2) — `regime_switcher.py` + 매시 정각 체크 잡 + 3개 regime preset (RISK_ON/NEUTRAL/RISK_OFF) + Telegram 전환 알림
 - [ ] 3C 변이 생성기 (Week 3)
 - [ ] 3D 백테스트 검증기 (Week 3)
 - [ ] 3E 자동 배포 (Week 4)
@@ -1196,6 +1196,14 @@ docker exec quant-postgres psql -U quant -d quantdb \
 - 시드 18개 + 첫 리서치 21개 신규 발견 = 39개 지식 항목 누적
 - 평균 applicability 점수: 73-80
 - 리서치 1회 실행: 17분 (Ollama qwen2.5:3b 추출)
+
+### Week 2 결과
+- **확장 지표 6개**: MACD(12,26,9), BB(20,2), ADX(14), Ichimoku Cloud, VWAP(20), Wyckoff VSA
+- **종합 스코어**: 0-100 점수 + breakdown (MACD/ADX/Ichimoku/BB/VWAP/Wyckoff 가중)
+- **Regime 자동 전환**: RISK_ON(>70)/NEUTRAL(30-70)/RISK_OFF(<30) preset 자동 적용
+- 스케줄러 잡 19개 (regime_switch_check 매시 + weekly_research 일요일)
+- Live 모드는 자동 전환 금지 (안전장치)
+- API: `/indicators/{sym}`, `/indicators/{sym}/score`, `/harness/regime{,/check,/history}`
 
 ---
 

@@ -225,6 +225,15 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 17) 매시 정각 — Phase 3F 매크로 적응 체크 (저비용, 변화 시에만 동작)
+        self.scheduler.add_job(
+            self._job_regime_switch,
+            CronTrigger(minute=0, timezone=KST),
+            id="regime_switch_check",
+            name="Phase 3F — Hourly Macro Regime Switch Check",
+            replace_existing=True,
+        )
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()
@@ -987,6 +996,16 @@ class SwingScheduler:
         except Exception as e:
             logger.exception(f"auto_approve [{check_label}] failed: {e}")
             self.pg.insert_pipeline_log(f"auto_approve_{check_label}", "failed", 0, {"error": str(e)})
+
+    def _job_regime_switch(self):
+        """Phase 3F — Hourly regime switch check (low cost)."""
+        try:
+            from engine_v4.harness.regime_switcher import check_and_switch
+            result = check_and_switch(self.pg, self.notifier)
+            if result.get("switched"):
+                logger.info(f"Regime auto-switch: {result}")
+        except Exception as e:
+            logger.exception(f"regime_switch_check failed: {e}")
 
     def _job_weekly_research(self):
         """Phase 3B — Weekly autonomous research agent."""

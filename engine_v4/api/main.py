@@ -25,7 +25,12 @@ from engine_v4.strategy.auto_approve import run_auto_approve
 from engine_v4.harness.knowledge import (
     add_knowledge, get_knowledge, list_knowledge, log_action, search_knowledge,
 )
+from engine_v4.harness.regime_switcher import (
+    REGIME_PRESETS, check_and_switch, regime_history,
+)
 from engine_v4.harness.seed_data import seed_knowledge_base
+from engine_v4.indicators.compute import compute_all as compute_indicators_all
+from engine_v4.indicators.compute import detect_strong_signals
 from engine_v4.analysis.event_study import backfill_event_study_all
 from engine_v4.analysis.event_study import compute_event_study, update_postmortem_with_event_study
 from engine_v4.analysis.mfe_mae import backfill_all as mfe_backfill_all
@@ -2944,6 +2949,47 @@ async def harness_seed_run(force: bool = False):
     result = seed_knowledge_base(pg, force=force)
     log_action(pg, "seed_run", "completed", details=result)
     return result
+
+
+@app.get("/harness/regime")
+async def harness_regime_status():
+    """현재 매크로 + 적용 중인 regime + preset 조회."""
+    current = pg.get_config_value("current_regime", "NEUTRAL")
+    with pg.get_conn() as conn:
+        macro = conn.execute(
+            "SELECT macro_score, regime, vix, time FROM swing_macro_snapshots ORDER BY time DESC LIMIT 1"
+        ).fetchone()
+    return {
+        "current_regime": current,
+        "preset_applied": REGIME_PRESETS.get(current, {}),
+        "latest_macro": dict(macro) if macro else None,
+        "switch_enabled": pg.get_config_value("harness_regime_switch_enabled", "false"),
+    }
+
+
+@app.post("/harness/regime/check")
+async def harness_regime_check(force: bool = False):
+    """수동 regime 체크 + 적용. force=true로 동일 regime일 때도 preset 재적용."""
+    result = check_and_switch(pg, notifier, force=force)
+    return result
+
+
+@app.get("/harness/regime/history")
+async def harness_regime_history(limit: int = 30):
+    """regime 전환 이력."""
+    return {"history": regime_history(pg, limit=limit)}
+
+
+@app.get("/indicators/{symbol}")
+async def get_extended_indicators(symbol: str):
+    """Phase 3G — 확장 기술 지표 (MACD/BB/ADX/Ichimoku/VWAP/Wyckoff)."""
+    return compute_indicators_all(pg, symbol.upper())
+
+
+@app.get("/indicators/{symbol}/score")
+async def get_extended_score(symbol: str):
+    """Phase 3G — 확장 지표 기반 종합 스코어 (0-100)."""
+    return detect_strong_signals(pg, symbol.upper())
 
 
 @app.get("/harness/log")
