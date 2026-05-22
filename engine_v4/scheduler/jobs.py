@@ -234,6 +234,24 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 18) 매월 1일 11:00 KST — Phase 3C/3D 변이 생성 + 자동 백테스트 검증
+        self.scheduler.add_job(
+            self._job_monthly_variant_gen,
+            CronTrigger(day=1, hour=11, minute=0, timezone=KST),
+            id="monthly_variant_gen",
+            name="Phase 3C/3D — Monthly Variant Generate + Auto-Backtest",
+            replace_existing=True,
+        )
+
+        # 19) 매시 정각 15분 — Phase 3E 변이 롤백 조건 체크 (저비용)
+        self.scheduler.add_job(
+            self._job_rollback_check,
+            CronTrigger(minute=15, timezone=KST),
+            id="rollback_check",
+            name="Phase 3E — Hourly Rollback Condition Check",
+            replace_existing=True,
+        )
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()
@@ -1006,6 +1024,37 @@ class SwingScheduler:
                 logger.info(f"Regime auto-switch: {result}")
         except Exception as e:
             logger.exception(f"regime_switch_check failed: {e}")
+
+    def _job_rollback_check(self):
+        """Phase 3E — Hourly rollback condition check."""
+        try:
+            from engine_v4.harness.auto_deploy import check_rollback_conditions
+            result = check_rollback_conditions(self.pg, self.notifier)
+            if result.get("rolled_back"):
+                logger.info(f"Auto-rollback fired: {result}")
+        except Exception as e:
+            logger.exception(f"rollback_check failed: {e}")
+
+    def _job_monthly_variant_gen(self):
+        """Phase 3C/3D — Monthly variant generation + auto-backtest."""
+        enabled = self.pg.get_config_value("harness_variant_gen_enabled", "false")
+        if enabled.lower() not in ("true", "1", "yes"):
+            logger.info("harness_variant_gen_enabled=false — skipping monthly_variant_gen")
+            return
+        try:
+            from engine_v4.harness.variant_generator import generate_variants
+            from engine_v4.harness.auto_backtest import validate_all_pending
+            gen_summary = generate_variants(
+                self.pg,
+                anthropic_key=getattr(self.cfg, "anthropic_key", None),
+                prefer_ollama=True, max_variants=5,
+            )
+            logger.info(f"Monthly variant gen: {gen_summary}")
+            # Validate immediately
+            bt_summary = validate_all_pending(self.pg, max_per_run=5)
+            logger.info(f"Monthly variant backtest: {bt_summary}")
+        except Exception as e:
+            logger.exception(f"monthly_variant_gen failed: {e}")
 
     def _job_weekly_research(self):
         """Phase 3B — Weekly autonomous research agent."""

@@ -1,0 +1,375 @@
+@page "/harness"
+@attribute [Authorize]
+@inject IHttpClientFactory HttpFactory
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Harness</PageTitle>
+
+<div class="page-header">
+    <h3>🤖 Autonomous Evolution Harness</h3>
+    <div style="display:flex; gap:0.5rem">
+        <button class="btn-action btn-outline" @onclick="LoadAll" disabled="@busy">
+            <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle">refresh</span>
+            @(busy ? "Loading..." : "Refresh All")
+        </button>
+    </div>
+</div>
+
+<div class="tab-bar" style="margin-top:0.5rem">
+    <button class="tab-btn @(tab=="regime" ? "active" : "")" @onclick='() => SetTab("regime")'>🌐 Regime</button>
+    <button class="tab-btn @(tab=="variants" ? "active" : "")" @onclick='() => SetTab("variants")'>🧬 Variants</button>
+    <button class="tab-btn @(tab=="knowledge" ? "active" : "")" @onclick='() => SetTab("knowledge")'>📚 Knowledge</button>
+    <button class="tab-btn @(tab=="log" ? "active" : "")" @onclick='() => SetTab("log")'>📜 Audit Log</button>
+</div>
+
+@if (!string.IsNullOrEmpty(statusMsg))
+{
+    <div class="alert-info" style="margin:0.5rem 0">@statusMsg</div>
+}
+
+@* ─── Tab: Regime ─── *@
+@if (tab == "regime")
+{
+    @if (regimeData.HasValue)
+    {
+        var r = regimeData.Value;
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">현재 매크로 Regime</div>
+            <div class="kpi-grid">
+                <div class="kpi-cell">
+                    <div class="kpi-lbl">Regime</div>
+                    <div class="kpi-val">@r.GetProperty("current_regime").GetString()</div>
+                </div>
+                @if (r.TryGetProperty("latest_macro", out var m) && m.ValueKind != System.Text.Json.JsonValueKind.Null)
+                {
+                    <div class="kpi-cell">
+                        <div class="kpi-lbl">Macro Score</div>
+                        <div class="kpi-val">@(m.GetProperty("macro_score").GetDouble().ToString("F1"))</div>
+                    </div>
+                    <div class="kpi-cell">
+                        <div class="kpi-lbl">VIX</div>
+                        <div class="kpi-val">@(m.GetProperty("vix").GetDouble().ToString("F2"))</div>
+                    </div>
+                }
+                <div class="kpi-cell">
+                    <div class="kpi-lbl">Switch Enabled</div>
+                    <div class="kpi-val">@r.GetProperty("switch_enabled").GetString()</div>
+                </div>
+            </div>
+
+            @if (r.TryGetProperty("preset_applied", out var preset))
+            {
+                <div style="margin-top:0.75rem; font-weight:600">적용 중인 Preset</div>
+                <table class="data-table">
+                    <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+                    <tbody>
+                        @foreach (var prop in preset.EnumerateObject())
+                        {
+                            <tr><td>@prop.Name</td><td><strong>@prop.Value.GetString()</strong></td></tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            <div style="margin-top:1rem; display:flex; gap:0.5rem">
+                <button class="btn-action" @onclick="ForceRegimeCheck">Force Check</button>
+            </div>
+        </div>
+    }
+}
+
+@* ─── Tab: Variants ─── *@
+@if (tab == "variants")
+{
+    <div class="section-card" style="margin-top:0.5rem">
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
+            <button class="btn-action" @onclick="GenerateVariants" disabled="@busy">⚡ Generate Variants</button>
+            <button class="btn-action btn-outline" @onclick="BacktestAll" disabled="@busy">🔬 Backtest Pending</button>
+            <button class="btn-action btn-outline" @onclick="DeployBest" disabled="@busy">🚀 Deploy Best</button>
+            <button class="btn-action btn-outline" style="background:var(--accent-red, #ef4444); color:white" @onclick="ManualRollback" disabled="@busy">⏪ Rollback</button>
+        </div>
+    </div>
+
+    @if (variants?.Count > 0)
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">전략 변이 (@variants.Count 개)</div>
+            <table class="data-table">
+                <thead><tr><th>ID</th><th>Name</th><th>Status</th><th class="text-right">SQN Δ</th><th class="text-right">Sharpe Δ</th><th>Diff</th><th>Trades</th></tr></thead>
+                <tbody>
+                    @foreach (var v in variants)
+                    {
+                        string status = v.GetValueOrDefault("status")?.ToString() ?? "";
+                        var sqnDelta = v.GetValueOrDefault("sqn_delta") as double?;
+                        var sharpeDelta = v.GetValueOrDefault("sharpe_delta") as double?;
+                        var diff = v.GetValueOrDefault("config_diff");
+                        var trades = v.GetValueOrDefault("trades_under_variant") as int?;
+                        <tr>
+                            <td>@v.GetValueOrDefault("variant_id")</td>
+                            <td><strong>@v.GetValueOrDefault("name")</strong></td>
+                            <td><span class="status-chip status-@status">@status</span></td>
+                            <td class="text-right @(sqnDelta >= 0 ? "pos" : "neg")">@(sqnDelta?.ToString("F3") ?? "—")</td>
+                            <td class="text-right @(sharpeDelta >= 0 ? "pos" : "neg")">@(sharpeDelta?.ToString("F3") ?? "—")</td>
+                            <td class="text-muted" style="font-size:0.78rem; max-width:300px">@diff</td>
+                            <td>@(trades ?? 0)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <div style="margin-top:0.5rem; font-size:0.75rem; color:var(--text-muted)">
+                * <strong>pending</strong>: 생성됨 / <strong>testing</strong>: 백테스트 중 / <strong>validated</strong>: 통과 / <strong>rejected</strong>: 미달 / <strong>deployed</strong>: 활성 / <strong>rolled_back</strong>: 롤백됨
+            </div>
+        </div>
+    }
+}
+
+@* ─── Tab: Knowledge ─── *@
+@if (tab == "knowledge")
+{
+    <div class="section-card" style="margin-top:0.5rem">
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <input type="text" @bind="searchQuery" placeholder="검색어 (전략 / 저자 / 키워드)" class="form-input" style="flex:1" />
+            <button class="btn-action" @onclick="SearchKnowledge">Search</button>
+            <button class="btn-action btn-outline" @onclick="LoadKnowledge">Reset</button>
+        </div>
+    </div>
+
+    @if (knowledge?.Count > 0)
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">지식 베이스 (@knowledge.Count 개 표시)</div>
+            @foreach (var k in knowledge)
+            {
+                int score = (int)(k.GetValueOrDefault("applicability_score") as double? ?? 50);
+                string regime = k.GetValueOrDefault("regime_relevance")?.ToString() ?? "ALL";
+                string sourceType = k.GetValueOrDefault("source_type")?.ToString() ?? "";
+                <div style="border-left:3px solid var(--accent-blue, #3b82f6); padding:0.6rem 0.8rem; margin-bottom:0.5rem; background:var(--bg-elevated, #1a2030); border-radius:4px">
+                    <div style="display:flex; justify-content:space-between; align-items:center">
+                        <div>
+                            <span style="background:var(--accent-purple, #a78bfa); color:white; padding:0.1rem 0.4rem; border-radius:3px; font-size:0.7rem">@sourceType</span>
+                            <span style="background:#475569; color:white; padding:0.1rem 0.4rem; border-radius:3px; font-size:0.7rem; margin-left:0.3rem">@regime</span>
+                            <strong style="margin-left:0.5rem">@k.GetValueOrDefault("title")</strong>
+                        </div>
+                        <div style="font-size:0.8rem; color:var(--accent-green, #10b981); font-weight:600">@score/100</div>
+                    </div>
+                    <div style="font-size:0.78rem; color:var(--text-muted); margin-top:0.25rem">@k.GetValueOrDefault("source_name")</div>
+                    <div style="font-size:0.85rem; margin-top:0.4rem">@k.GetValueOrDefault("summary")</div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@* ─── Tab: Audit Log ─── *@
+@if (tab == "log")
+{
+    @if (auditLog?.Count > 0)
+    {
+        <div class="section-card" style="margin-top:1rem">
+            <div style="font-weight:600; margin-bottom:0.5rem">자율 동작 감사 로그</div>
+            <table class="data-table">
+                <thead><tr><th>Time</th><th>Action</th><th>Status</th><th>Details</th></tr></thead>
+                <tbody>
+                    @foreach (var entry in auditLog)
+                    {
+                        var ts = entry.GetValueOrDefault("created_at")?.ToString() ?? "";
+                        string action = entry.GetValueOrDefault("action")?.ToString() ?? "";
+                        string status = entry.GetValueOrDefault("status")?.ToString() ?? "";
+                        <tr>
+                            <td class="text-muted">@(ts.Length >= 19 ? ts.Substring(0, 19) : ts)</td>
+                            <td><strong>@action</strong></td>
+                            <td><span class="status-chip status-@status">@status</span></td>
+                            <td class="text-muted" style="font-size:0.78rem; max-width:400px">@entry.GetValueOrDefault("details")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+<style>
+    .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.5rem; }
+    .kpi-cell { background:var(--bg-elevated, #1a2030); padding:0.6rem 0.75rem; border-radius:6px; border:1px solid var(--border-subtle, #2a3142); }
+    .kpi-lbl { font-size:0.72rem; color:var(--text-muted); margin-bottom:0.2rem; }
+    .kpi-val { font-size:1.1rem; font-weight:600; }
+    .status-chip { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.72rem; font-weight:600; color:white; }
+    .status-pending { background:#64748b; }
+    .status-testing { background:#3b82f6; }
+    .status-validated { background:#10b981; }
+    .status-rejected { background:#ef4444; }
+    .status-deployed { background:#a78bfa; }
+    .status-rolled_back { background:#f59e0b; }
+    .status-completed { background:#10b981; }
+    .status-failed { background:#ef4444; }
+    .status-started { background:#3b82f6; }
+    .text-right { text-align:right; }
+    .pos { color:var(--accent-green, #10b981); }
+    .neg { color:var(--accent-red, #ef4444); }
+</style>
+
+@code {
+    private string tab = "regime";
+    private bool busy;
+    private string? statusMsg;
+    private string searchQuery = "";
+
+    private System.Text.Json.JsonElement? regimeData;
+    private List<Dictionary<string, object?>>? variants;
+    private List<Dictionary<string, object?>>? knowledge;
+    private List<Dictionary<string, object?>>? auditLog;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadRegime();
+    }
+
+    private async Task SetTab(string t)
+    {
+        tab = t;
+        statusMsg = null;
+        if (t == "regime" && regimeData == null) await LoadRegime();
+        if (t == "variants" && variants == null) await LoadVariants();
+        if (t == "knowledge" && knowledge == null) await LoadKnowledge();
+        if (t == "log" && auditLog == null) await LoadAuditLog();
+    }
+
+    private async Task LoadAll()
+    {
+        if (tab == "regime") await LoadRegime();
+        else if (tab == "variants") await LoadVariants();
+        else if (tab == "knowledge") await LoadKnowledge();
+        else if (tab == "log") await LoadAuditLog();
+    }
+
+    private async Task LoadRegime()
+    {
+        busy = true; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            regimeData = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/harness/regime");
+        }
+        catch (Exception ex) { statusMsg = $"Load error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private async Task ForceRegimeCheck()
+    {
+        busy = true; statusMsg = "Regime 체크 중..."; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync("/harness/regime/check?force=true", null);
+            var json = await resp.Content.ReadAsStringAsync();
+            statusMsg = $"Result: {json.Substring(0, Math.Min(200, json.Length))}";
+            await LoadRegime();
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private async Task LoadVariants()
+    {
+        busy = true; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/harness/variants?limit=50");
+            variants = new();
+            if (resp.TryGetProperty("variants", out var arr)) {
+                foreach (var item in arr.EnumerateArray()) {
+                    var dict = JsonToDict(item);
+                    variants.Add(dict);
+                }
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Variants error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private async Task GenerateVariants() => await PostAndReload("/harness/variants/generate?max_variants=5", "변이 생성 중...", LoadVariants);
+    private async Task BacktestAll() => await PostAndReload("/harness/variants/backtest-all?max_per_run=5", "백테스트 진행 중 (수 분 소요)...", LoadVariants);
+    private async Task DeployBest() => await PostAndReload("/harness/variants/deploy-best", "최고 변이 배포 중...", LoadVariants);
+    private async Task ManualRollback() => await PostAndReload("/harness/rollback?reason=manual", "롤백 중...", LoadVariants);
+
+    private async Task PostAndReload(string url, string msg, Func<Task> reloadFunc)
+    {
+        busy = true; statusMsg = msg; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.PostAsync(url, null);
+            var body = await resp.Content.ReadAsStringAsync();
+            statusMsg = $"OK: {body.Substring(0, Math.Min(200, body.Length))}";
+            await reloadFunc();
+        }
+        catch (Exception ex) { statusMsg = $"Error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private async Task LoadKnowledge()
+    {
+        busy = true; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/harness/knowledge?limit=30");
+            knowledge = new();
+            if (resp.TryGetProperty("knowledge", out var arr)) {
+                foreach (var item in arr.EnumerateArray()) {
+                    knowledge.Add(JsonToDict(item));
+                }
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Knowledge error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private async Task SearchKnowledge()
+    {
+        if (string.IsNullOrWhiteSpace(searchQuery)) { await LoadKnowledge(); return; }
+        busy = true; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/harness/knowledge/search?q={Uri.EscapeDataString(searchQuery)}");
+            knowledge = new();
+            if (resp.TryGetProperty("results", out var arr)) {
+                foreach (var item in arr.EnumerateArray()) {
+                    knowledge.Add(JsonToDict(item));
+                }
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Search error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private async Task LoadAuditLog()
+    {
+        busy = true; StateHasChanged();
+        try {
+            var client = HttpFactory.CreateClient("Engine");
+            var resp = await client.GetFromJsonAsync<System.Text.Json.JsonElement>("/harness/log?limit=50");
+            auditLog = new();
+            if (resp.TryGetProperty("log", out var arr)) {
+                foreach (var item in arr.EnumerateArray()) {
+                    auditLog.Add(JsonToDict(item));
+                }
+            }
+        }
+        catch (Exception ex) { statusMsg = $"Log error: {ex.Message}"; }
+        finally { busy = false; }
+    }
+
+    private static Dictionary<string, object?> JsonToDict(System.Text.Json.JsonElement item)
+    {
+        var dict = new Dictionary<string, object?>();
+        foreach (var prop in item.EnumerateObject()) {
+            dict[prop.Name] = prop.Value.ValueKind switch {
+                System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
+                System.Text.Json.JsonValueKind.Number when prop.Value.TryGetInt32(out var i) => i,
+                System.Text.Json.JsonValueKind.Number => prop.Value.GetDouble(),
+                System.Text.Json.JsonValueKind.True => true,
+                System.Text.Json.JsonValueKind.False => false,
+                System.Text.Json.JsonValueKind.Null => null,
+                _ => prop.Value.ToString()
+            };
+        }
+        return dict;
+    }
+}

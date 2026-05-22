@@ -1187,10 +1187,10 @@ docker exec quant-postgres psql -U quant -d quantdb \
 - [x] **3B 리서치 에이전트** (Week 1) — `weekly_research` 잡 일요일 10:00 KST + arxiv/Reddit/Quantocracy 크롤 + Ollama 추출 + Telegram 다이제스트
 - [x] **3G 기술 지표 확장** (Week 2) — `engine_v4/indicators/` 6모듈 (MACD/BB/ADX/Ichimoku/VWAP/Wyckoff VSA) + 종합 스코어 + API
 - [x] **3F 매크로 적응 스위치** (Week 2) — `regime_switcher.py` + 매시 정각 체크 잡 + 3개 regime preset (RISK_ON/NEUTRAL/RISK_OFF) + Telegram 전환 알림
-- [ ] 3C 변이 생성기 (Week 3)
-- [ ] 3D 백테스트 검증기 (Week 3)
-- [ ] 3E 자동 배포 (Week 4)
-- [ ] 통합 대시보드 (Week 4)
+- [x] **3C 변이 생성기** (Week 3) — `variant_generator.py` + Claude/Ollama 3-5개 변이 자동 제안 + 매월 1일 실행
+- [x] **3D 백테스트 검증기** (Week 3) — `auto_backtest.py` + 90/180/365일 다중 기간 + SQN/Sharpe 통과 조건 + 일관성 체크
+- [x] **3E 자동 배포** (Week 4) — `auto_deploy.py` + paper 자동 / live 수동 + 5연속손실/SQN 0.5 drop 자동 롤백 + 매시 15분 체크
+- [x] **통합 대시보드** (Week 4) — `/harness` 4탭 (Regime/Variants/Knowledge/Audit Log) + 수동 트리거 버튼
 
 ### Week 1 결과 (실측)
 - 시드 18개 + 첫 리서치 21개 신규 발견 = 39개 지식 항목 누적

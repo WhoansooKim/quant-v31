@@ -25,10 +25,17 @@ from engine_v4.strategy.auto_approve import run_auto_approve
 from engine_v4.harness.knowledge import (
     add_knowledge, get_knowledge, list_knowledge, log_action, search_knowledge,
 )
+from engine_v4.harness.auto_backtest import validate_all_pending, validate_variant
+from engine_v4.harness.auto_deploy import (
+    check_rollback_conditions, deploy_validated_variant, rollback_variant,
+)
 from engine_v4.harness.regime_switcher import (
     REGIME_PRESETS, check_and_switch, regime_history,
 )
 from engine_v4.harness.seed_data import seed_knowledge_base
+from engine_v4.harness.variant_generator import (
+    generate_variants, get_variant, list_variants,
+)
 from engine_v4.indicators.compute import compute_all as compute_indicators_all
 from engine_v4.indicators.compute import detect_strong_signals
 from engine_v4.analysis.event_study import backfill_event_study_all
@@ -2978,6 +2985,93 @@ async def harness_regime_check(force: bool = False):
 async def harness_regime_history(limit: int = 30):
     """regime 전환 이력."""
     return {"history": regime_history(pg, limit=limit)}
+
+
+@app.get("/harness/variants")
+async def harness_list_variants(status: str | None = None, limit: int = 50):
+    """Phase 3C — 변이 목록 (status filter: pending/testing/validated/rejected/deployed/rolled_back)."""
+    return {"variants": list_variants(pg, status=status, limit=limit)}
+
+
+@app.get("/harness/variants/{variant_id}")
+async def harness_get_variant(variant_id: int):
+    v = get_variant(pg, variant_id)
+    if not v:
+        raise HTTPException(404, "Variant not found")
+    return v
+
+
+@app.post("/harness/variants/generate")
+async def harness_generate_variants(background_tasks: BackgroundTasks,
+                                      max_variants: int = 5):
+    """Phase 3C — LLM 변이 생성 트리거 (Background)."""
+
+    def _run():
+        try:
+            summary = generate_variants(
+                pg, anthropic_key=config.anthropic_key,
+                prefer_ollama=True, max_variants=max_variants,
+            )
+            logger.info(f"Variant generation: {summary}")
+        except Exception as e:
+            logger.exception(f"Variant generation failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started"}
+
+
+@app.post("/harness/variants/{variant_id}/backtest")
+async def harness_backtest_variant(variant_id: int, background_tasks: BackgroundTasks):
+    """Phase 3D — 단일 변이 백테스트 검증 (Background)."""
+
+    def _run():
+        try:
+            result = validate_variant(pg, variant_id)
+            logger.info(f"Variant {variant_id} backtest: {result}")
+        except Exception as e:
+            logger.exception(f"Backtest variant {variant_id} failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "variant_id": variant_id}
+
+
+@app.post("/harness/variants/{variant_id}/deploy")
+async def harness_deploy_variant(variant_id: int):
+    """Phase 3E — 검증된 변이 수동 배포 (paper 모드만)."""
+    return deploy_validated_variant(pg, notifier, force_variant_id=variant_id)
+
+
+@app.post("/harness/variants/deploy-best")
+async def harness_deploy_best():
+    """Phase 3E — 가장 좋은 validated 변이 자동 선택 + 배포."""
+    return deploy_validated_variant(pg, notifier)
+
+
+@app.post("/harness/rollback")
+async def harness_rollback(reason: str = "manual"):
+    """Phase 3E — 현재 배포된 변이 수동 롤백."""
+    return rollback_variant(pg, notifier, reason=reason)
+
+
+@app.post("/harness/rollback-check")
+async def harness_rollback_check():
+    """Phase 3E — 롤백 조건 체크 (5연속손실 OR SQN drop)."""
+    return check_rollback_conditions(pg, notifier)
+
+
+@app.post("/harness/variants/backtest-all")
+async def harness_backtest_all(background_tasks: BackgroundTasks, max_per_run: int = 5):
+    """Phase 3D — 모든 pending 변이 일괄 백테스트 (Background)."""
+
+    def _run():
+        try:
+            summary = validate_all_pending(pg, max_per_run=max_per_run)
+            logger.info(f"Backtest all: {summary}")
+        except Exception as e:
+            logger.exception(f"Backtest-all failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started"}
 
 
 @app.get("/indicators/{symbol}")
