@@ -216,6 +216,15 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 16) 일 10:00 KST — Phase 3B 주간 자율 리서치 (arxiv/SSRN/Reddit/Quantocracy)
+        self.scheduler.add_job(
+            self._job_weekly_research,
+            CronTrigger(day_of_week="sun", hour=10, minute=0, timezone=KST),
+            id="weekly_research",
+            name="Phase 3B — Weekly Autonomous Research",
+            replace_existing=True,
+        )
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()
@@ -978,6 +987,20 @@ class SwingScheduler:
         except Exception as e:
             logger.exception(f"auto_approve [{check_label}] failed: {e}")
             self.pg.insert_pipeline_log(f"auto_approve_{check_label}", "failed", 0, {"error": str(e)})
+
+    def _job_weekly_research(self):
+        """Phase 3B — Weekly autonomous research agent."""
+        enabled = self.pg.get_config_value("harness_research_enabled", "true")
+        if enabled.lower() not in ("true", "1", "yes"):
+            logger.info("harness_research_enabled=false — skipping weekly_research")
+            return
+        try:
+            from engine_v4.harness.researcher import run_research
+            summary = run_research(self.pg, self.notifier)
+            logger.info(f"Weekly research done: {summary}")
+        except Exception as e:
+            logger.exception(f"weekly_research failed: {e}")
+            self.pg.insert_pipeline_log("weekly_research", "failed", 0, {"error": str(e)})
 
     def _job_post_market_analysis(self):
         """일일 사후분석 — MFE/MAE + Event Study + News + Metrics + Telegram."""

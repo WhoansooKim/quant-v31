@@ -1143,7 +1143,63 @@ docker exec quant-postgres psql -U quant -d quantdb \
 
 ---
 
-## 22. Git History
+## 22. Phase 3 — 자율 진화 하네스 (Autonomous Evolution Harness, 2026-05-22)
+
+### 절대 원칙
+- **사용자가 "그만"이라고 명시하기 전까지 절대 포기/멈춤을 권유하지 않는다**
+- 정적 시스템은 죽는다 — 자율 진화 필수
+- 18% 도달까지 함께 구축
+
+### 8개 구성요소 (4주 빌드)
+
+| Phase | 컴포넌트 | 주차 | 파일 |
+|-------|---------|------|------|
+| 3A | 지식 베이스 (`swing_knowledge`) | 1 | DB + API |
+| 3H | 시드 데이터 (Dalio/Faber/O'Neil/Wyckoff 등) | 1 | seed |
+| 3B | 주간 자율 리서치 에이전트 | 1 | `harness/researcher.py` |
+| 3G | 기술 지표 확장 (MACD/BB/ADX/Ichimoku) | 2 | `engine_v4/indicators/` |
+| 3F | 매크로 적응 스위치 | 2 | `harness/regime_switcher.py` |
+| 3C | 전략 변이 생성기 | 3 | `harness/variant_generator.py` |
+| 3D | 백테스트 자동 검증기 | 3 | `harness/auto_backtest.py` |
+| 3E | 안전한 자동 배포 + 롤백 | 4 | `harness/auto_deploy.py` |
+| — | 통합 대시보드 `/harness` 탭 | 4 | Razor |
+
+### 신규 DB 테이블
+- `swing_knowledge` — 외부 정보 영구 저장 + LLM 추출 전략 가설
+- `swing_strategy_variants` — LLM 생성 변이 (pending/validated/rejected/deployed/rolled_back)
+- `swing_harness_log` — 자율 동작 audit trail
+
+### 신규 스케줄러 잡 (3개)
+- `weekly_research` 일요일 10:00 KST — 외부 리서치 → 지식 베이스
+- `monthly_variant_gen` 매월 1일 11:00 KST — 변이 생성 → 백테스트
+- `regime_switch_check` 매시 정각 — 매크로 변화 감지 → 자동 전환
+
+### 안전장치
+- 자기 코드 수정 ❌ 금지 (config + DB만)
+- Live 자동 변경 ❌ 금지 (사용자 명시 승인만)
+- 모든 변이는 90/180/365일 다중 백테스트 통과 필수
+- 30거래 모니터링 + 자동 롤백 (5연속 손실 OR SQN -0.5)
+- LLM 환각 방지: 통과 = 백테스트 SQN +0.3 OR Sharpe +0.2 (N≥30)
+
+### 진행 추적
+- [x] **3A 지식 베이스** (Week 1) — `swing_knowledge`/`swing_strategy_variants`/`swing_harness_log` 3 테이블 + CRUD API
+- [x] **3H 시드 데이터** (Week 1) — 18개 고전/현대 전략 (Faber, Jegadeesh-Titman, Antonacci, Tetlock, Da, Fama-French, Tharp, Dalio, Wyckoff, Carter, O'Neil, Weinstein, Lopez-Lira, MarketSenseAI, Barber-Odean)
+- [x] **3B 리서치 에이전트** (Week 1) — `weekly_research` 잡 일요일 10:00 KST + arxiv/Reddit/Quantocracy 크롤 + Ollama 추출 + Telegram 다이제스트
+- [ ] 3G 기술 지표 확장 (Week 2)
+- [ ] 3F 매크로 적응 스위치 (Week 2)
+- [ ] 3C 변이 생성기 (Week 3)
+- [ ] 3D 백테스트 검증기 (Week 3)
+- [ ] 3E 자동 배포 (Week 4)
+- [ ] 통합 대시보드 (Week 4)
+
+### Week 1 결과 (실측)
+- 시드 18개 + 첫 리서치 21개 신규 발견 = 39개 지식 항목 누적
+- 평균 applicability 점수: 73-80
+- 리서치 1회 실행: 17분 (Ollama qwen2.5:3b 추출)
+
+---
+
+## 23. Git History
 
 ```
 PENDING  feat: 수수료 계산 시스템 (0.25% 자동 계산 + 수익률 차감 + 대시보드 표시)
@@ -1176,7 +1232,7 @@ ebff79e docs: update git history hash in project_status.md
 
 ---
 
-## 23. For Claude Code — Session Continuity
+## 24. For Claude Code — Session Continuity
 
 새 세션 시작 시:
 

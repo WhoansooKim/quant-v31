@@ -22,6 +22,10 @@ from engine_v4.analysis.counterfactual import (
 )
 from engine_v4.analysis.daily_report import generate_daily_report, run_and_notify
 from engine_v4.strategy.auto_approve import run_auto_approve
+from engine_v4.harness.knowledge import (
+    add_knowledge, get_knowledge, list_knowledge, log_action, search_knowledge,
+)
+from engine_v4.harness.seed_data import seed_knowledge_base
 from engine_v4.analysis.event_study import backfill_event_study_all
 from engine_v4.analysis.event_study import compute_event_study, update_postmortem_with_event_study
 from engine_v4.analysis.mfe_mae import backfill_all as mfe_backfill_all
@@ -2901,6 +2905,65 @@ async def list_daily_reports(limit: int = 30):
             (limit,),
         ).fetchall()
     return {"count": len(rows), "reports": [dict(r) for r in rows]}
+
+
+# ═══════════════════════════════════════════════════════════
+# Phase 3 — Autonomous Evolution Harness
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/harness/knowledge")
+async def harness_list_knowledge(
+    source_type: str | None = None,
+    regime: str | None = None,
+    min_applicability: int = 0,
+    limit: int = 50,
+):
+    """지식 베이스 조회."""
+    return {"knowledge": list_knowledge(pg, source_type=source_type, regime=regime,
+                                          min_applicability=min_applicability, limit=limit)}
+
+
+@app.get("/harness/knowledge/search")
+async def harness_search_knowledge(q: str, limit: int = 20):
+    """지식 베이스 텍스트 검색."""
+    return {"query": q, "results": search_knowledge(pg, q, limit=limit)}
+
+
+@app.get("/harness/knowledge/{knowledge_id}")
+async def harness_get_knowledge(knowledge_id: int):
+    """단일 지식 항목 조회."""
+    k = get_knowledge(pg, knowledge_id)
+    if not k:
+        raise HTTPException(404, "Knowledge entry not found")
+    return k
+
+
+@app.post("/harness/seed")
+async def harness_seed_run(force: bool = False):
+    """시드 데이터 삽입 (idempotent — force=true로 중복 허용)."""
+    result = seed_knowledge_base(pg, force=force)
+    log_action(pg, "seed_run", "completed", details=result)
+    return result
+
+
+@app.get("/harness/log")
+async def harness_log_list(limit: int = 50, action: str | None = None):
+    """하네스 동작 로그 조회."""
+    where = "action = %s AND" if action else ""
+    params: list = [action] if action else []
+    params.append(limit)
+    with pg.get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT log_id, action, status, details, related_knowledge_id,
+                   related_variant_id, error_msg, elapsed_sec, created_at
+            FROM swing_harness_log
+            WHERE {where} 1=1
+            ORDER BY created_at DESC LIMIT %s
+            """,
+            params,
+        ).fetchall()
+    return {"count": len(rows), "log": [dict(r) for r in rows]}
 
 
 # ═══════════════════════════════════════════════════════════
