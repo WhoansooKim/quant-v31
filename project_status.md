@@ -1439,13 +1439,14 @@ auto_approve_macro_min = 30
 composite_score_min = 63                 # 2026-06-03 60 → 63
 dashboard_snapshot_stale_min = 5         # 2026-06-03 신설 (Dashboard 자동 갱신 임계)
 rsi2_exit_threshold = 999 (비활성)
-llm_gate_enabled = false (필요 시 1줄 변경으로 활성화)
+llm_gate_enabled = true                  # 2026-06-03 false → true (Strategy B 활성)
 llm_gate_prefer_ollama = true (Max 구독자라 무료)
 llm_gate_ollama_model = qwen2.5:1.5b
+llm_gate_min_confidence = 0.55
 harness_research_enabled = true (작동 중)
 harness_regime_switch_enabled = true     # 2026-06-03 false → true (재활성)
-harness_variant_gen_enabled = false (활성화 가능)
-harness_auto_deploy_enabled = false (활성화 가능, paper만)
+harness_variant_gen_enabled = true       # 2026-06-03 false → true (자동 변이 생성 활성)
+harness_auto_deploy_enabled = true       # 2026-06-03 false → true (paper 자동 배포 활성)
 current_regime = NEUTRAL
 ```
 
@@ -1537,12 +1538,44 @@ Regime: NEUTRAL
 - **사용자 UX**: Dashboard 진입만으로 최신 상태 확인 가능 + Telegram 요약 자동 도착
 - **자율성**: regime 변화 시 자동 preset 전환 재개
 
+### 변경 6 — 자율 진화 옵션 3가지 전부 활성화 (2026-06-03 후속)
+사용자 결정으로 Strategy B + Harness 자동 변이 + 자동 배포를 일괄 활성:
+
+| Config | 변경 | 첫 작동 시점 |
+|--------|------|-------------|
+| `llm_gate_enabled` | false → **true** | 오늘 22:00 auto_approve (Ollama 게이트 평가 시작) |
+| `harness_variant_gen_enabled` | false → **true** | **2026-07-01 11:00 KST** (매월 1일) |
+| `harness_auto_deploy_enabled` | false → **true** | variant_gen 결과 통과 시 즉시 (paper 만, live 금지) |
+
+**안전장치 4중 방어 (코드 hardcoded)**
+1. Live 자동 배포 금지 — `trading_mode=live` 면 모든 자동 배포 차단
+2. SQN +0.3 / Sharpe +0.2 임계치 미통과 변이는 거부
+3. 백테스트 trade 수 < 30 변이는 통계 신뢰성 부족으로 거부
+4. 매시 15분 `rollback_check` — 5연패 또는 SQN 0.5 하락 시 즉시 직전 안정 버전 복귀
+
+**예상 효과**
+- Strategy B: 시그널당 30~60s Ollama 평가, false positive 추가 차단
+- Variant Gen: 7/1 부터 월 1회 5~10개 변이 자동 백테스트, pending 으로 적재
+- Auto Deploy: 통과 변이만 paper 적용, 사용자 개입 0 으로 자가 개선 루프 완성
+
+### 변경 7 — Help 페이지 13번 섹션 추가
+`dashboard/QuantDashboard/Components/Pages/Help.razor` 에 약 130줄 신설:
+- 자율 진화 4단계 사이클 표 (리서치/변이/백테스트/배포 + 매크로/롤백)
+- 활성/비활성 설정 현재 값
+- Strategy B LLM Gate 비용/지연 설명
+- Pipeline 3회/일 표 + Telegram 요약 안내
+- Dashboard 자동 갱신 안내
+- IC 보정 진단 결과 + 변경 내역
+- 4중 안전장치
+- 사용자 결정이 필요한 시점 (Live 전환 / 완전 종료 / 임계치 조정)
+
 ---
 
 ## 23. Git History
 
 ```
-PENDING  docs: 2026-06-03 IC 보정 + Pipeline 3회/일 + Dashboard 자동갱신 + Telegram 요약
+PENDING  docs: Help 13번 섹션 — 자율 진화 시스템 + 옵션 3종 활성화 반영
+22bd455  feat: IC 보정 + Pipeline 3회/일 + Dashboard 자동갱신 + Telegram 요약
 b396727  docs: 2026-06-03 운영 상태 갱신 + 새 세션 시작 가이드
 503ad18 docs: project_status.md Phase 3 완성 종합 요약 추가
 29a866f feat: Phase 3 Week 3+4 완성 — 변이 생성기 + 자동 백테스트 + 자동 배포 + 통합 대시보드

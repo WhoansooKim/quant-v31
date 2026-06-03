@@ -1503,6 +1503,145 @@
         </div>
     </div>
 
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- 13. 자율 진화 시스템 (Phase 3 Harness) -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div class="section-card help-section">
+        <h4 class="help-title help-toggle" onclick="toggleHelpSection('13')">
+            <span class="help-section-arrow" id="help-icon-13">&#x25bc;</span>
+            <span class="material-symbols-outlined">auto_awesome</span>
+            13. 자율 진화 시스템 (Phase 3 Harness)
+        </h4>
+        <div id="help-body-13">
+
+        <h5 class="help-subtitle">개요 — 사용자 개입 0의 자가 진화 루프</h5>
+        <div class="help-card">
+            <p>
+                시스템이 스스로 학술 논문/포럼/블로그를 읽어 새 아이디어를 찾고,
+                전략 파라미터를 변형(variant)하여 백테스트로 검증한 뒤,
+                통과한 변이를 paper 모드에 자동 배포하는 4단계 진화 루프입니다.
+                Live 모드는 사용자 명시 승인이 필요하며 자동 배포 대상이 아닙니다.
+            </p>
+        </div>
+
+        <h5 class="help-subtitle">4단계 진화 사이클</h5>
+        <table class="data-table help-table">
+            <thead><tr><th>단계</th><th>주기 (KST)</th><th>동작</th></tr></thead>
+            <tbody>
+                <tr><td><strong>① 리서치</strong></td><td>일 10:00</td><td>arxiv, SSRN, Reddit r/algotrading, Quantocracy 자동 수집 → 지식 베이스</td></tr>
+                <tr><td><strong>② 변이 생성</strong></td><td>매월 1일 11:00</td><td>현재 전략 파라미터 ±perturbation → 5~10개 변이 후보 생성</td></tr>
+                <tr><td><strong>③ 자동 백테스트</strong></td><td>변이 생성 직후</td><td>각 변이를 6개월 백테스트 → SQN, Sharpe, Win Rate 측정</td></tr>
+                <tr><td><strong>④ 자동 배포</strong></td><td>백테스트 완료 직후</td><td>SQN +0.3, Sharpe +0.2 이상 통과 시 <strong>paper 모드만</strong> 자동 적용</td></tr>
+                <tr><td>+ 매크로 적응</td><td>매시 정각</td><td>매크로 점수 변화 시 regime preset 자동 전환 (BULLISH/NEUTRAL/RISK_OFF)</td></tr>
+                <tr><td>+ 자동 롤백</td><td>매시 15분</td><td>5연패 또는 SQN 0.5 하락 시 직전 안정 버전으로 자동 복귀</td></tr>
+            </tbody>
+        </table>
+
+        <h5 class="help-subtitle">활성/비활성 설정 (swing_config)</h5>
+        <table class="data-table help-table">
+            <thead><tr><th>키</th><th>현재 값</th><th>의미</th></tr></thead>
+            <tbody>
+                <tr><td>harness_research_enabled</td><td>true</td><td>주간 자율 리서치 활성</td></tr>
+                <tr><td>harness_regime_switch_enabled</td><td><strong>true</strong></td><td>매크로 적응 자동 preset 전환 활성 (2026-06-03 재활성)</td></tr>
+                <tr><td>harness_variant_gen_enabled</td><td><strong>true</strong></td><td>매월 1일 자동 변이 생성+백테스트 활성 (2026-06-03 활성)</td></tr>
+                <tr><td>harness_auto_deploy_enabled</td><td><strong>true</strong></td><td>백테스트 통과 변이 paper 자동 배포 활성 (2026-06-03 활성)</td></tr>
+                <tr><td>harness_sqn_delta_min</td><td>0.3</td><td>변이 채택 SQN 개선 최소치</td></tr>
+                <tr><td>harness_sharpe_delta_min</td><td>0.2</td><td>변이 채택 Sharpe 개선 최소치</td></tr>
+                <tr><td>harness_min_backtest_trades</td><td>30</td><td>백테스트 최소 거래 수 (통계 유의성)</td></tr>
+                <tr><td>harness_rollback_consecutive_losses</td><td>5</td><td>이 횟수 연패 시 자동 롤백</td></tr>
+                <tr><td>harness_rollback_sqn_drop</td><td>0.5</td><td>SQN 이만큼 하락 시 자동 롤백</td></tr>
+            </tbody>
+        </table>
+
+        <h5 class="help-subtitle">Strategy B — LLM Gate (추가 게이팅)</h5>
+        <div class="help-card">
+            <p>
+                composite_score 와 macro 조건을 통과한 시그널이 추가로
+                <strong>로컬 Ollama LLM</strong>의 판정(APPROVE / REJECT / DEFER)을
+                거쳐야 auto-approve 됩니다. 보수적 안전망 역할.
+            </p>
+            <table class="data-table help-table">
+                <thead><tr><th>키</th><th>현재 값</th><th>의미</th></tr></thead>
+                <tbody>
+                    <tr><td>llm_gate_enabled</td><td><strong>true</strong></td><td>LLM 게이트 활성 (2026-06-03 활성)</td></tr>
+                    <tr><td>llm_gate_prefer_ollama</td><td>true</td><td>Ollama 우선 사용 (Claude API 키 미사용)</td></tr>
+                    <tr><td>llm_gate_ollama_model</td><td>qwen2.5:1.5b</td><td>로컬 모델 (CPU, 시그널당 30~60초)</td></tr>
+                    <tr><td>llm_gate_min_confidence</td><td>0.55</td><td>LLM confidence 이 미만이면 skip</td></tr>
+                </tbody>
+            </table>
+            <p style="margin-top:0.5rem">
+                <strong>비용:</strong> 0 (로컬 Ollama, Max 구독으로 충분).
+                <strong>지연:</strong> auto_approve 시점에 시그널 수 × 30~60초 추가.
+            </p>
+        </div>
+
+        <h5 class="help-subtitle">Pipeline 3회/일 자동 실행 (2026-06-03 신설)</h5>
+        <table class="data-table help-table">
+            <thead><tr><th>시각 (KST)</th><th>잡 ID</th><th>의미</th></tr></thead>
+            <tbody>
+                <tr><td>매일 07:00</td><td>daily_pipeline</td><td>한국 아침, US 장 마감 후 — 다음 거래일 시그널</td></tr>
+                <tr><td>월~금 21:30</td><td><strong>daily_pipeline_preopen</strong></td><td>US 장 시작 1시간 전 — 22:00 auto_approve 직전 신규 시그널</td></tr>
+                <tr><td>화~토 02:00</td><td><strong>daily_pipeline_midsession</strong></td><td>US 12:00 ET 미드세션 — 장중 신규 시그널 캐치</td></tr>
+            </tbody>
+        </table>
+        <div class="help-card">
+            <p>
+                각 파이프라인 종료 직후 Telegram 으로 <strong>5줄 요약</strong>이 자동 발송됩니다.
+                시그널이 0개여도 발송되어, 사용자가 "파이프라인이 돌긴 했는지" 확인 가능합니다.
+            </p>
+        </div>
+
+        <h5 class="help-subtitle">Dashboard 자동 갱신 (2026-06-03 신설)</h5>
+        <div class="help-card">
+            <p>
+                Dashboard 페이지 진입 시 마지막 snapshot 이 5분 이상 오래되었으면
+                자동으로 재생성됩니다. Performance 탭의 "Update Snapshot" 버튼을
+                수동으로 누르지 않아도 항상 최신 Total Value 가 표시됩니다.
+            </p>
+            <ul class="help-list" style="margin-top:0.5rem">
+                <li>임계 시간: <code>dashboard_snapshot_stale_min</code> (기본 5분)</li>
+                <li>API: <code>POST /snapshot/refresh-if-stale</code></li>
+            </ul>
+        </div>
+
+        <h5 class="help-subtitle">IC 보정 (2026-06-03 적용)</h5>
+        <div class="help-card">
+            <p>
+                60일 누적 IC(Information Coefficient) = <strong>-0.21</strong> 진단 결과,
+                composite_score 70+ bucket 이 -2.7% 평균 / 40% 승률 (crowded top) 인 반면,
+                65-70 sweet spot 이 +3.33% 평균 / 83% 승률로 가장 우수했습니다.
+                팩터별 IC: sentiment +0.20 (최상), quality -0.28 (최악), tech -0.12.
+            </p>
+            <ul class="help-list" style="margin-top:0.5rem">
+                <li>REGIME_WEIGHTS: sentiment 비중 ↑, quality 비중 ↓ (모든 regime)</li>
+                <li>composite_score_min: 60 → <strong>63</strong></li>
+                <li>auto_approve_score_max: <strong>75</strong> 신설 (crowded top 자동 차단)</li>
+                <li>REGIME_PRESETS: RISK_ON 55→58, NEUTRAL 60→63</li>
+            </ul>
+        </div>
+
+        <h5 class="help-subtitle">안전장치 (4중 방어)</h5>
+        <div class="help-card" style="border-left: 3px solid #22c55e">
+            <ol class="help-list">
+                <li><strong>Live 자동 배포 금지</strong> — 코드에 hardcoded check, paper 만 자동 적용</li>
+                <li><strong>SQN/Sharpe 임계치</strong> — 백테스트 개선 부족하면 채택 거부</li>
+                <li><strong>최소 거래 수</strong> — n &lt; 30 인 백테스트는 통계적 신뢰 부족으로 거부</li>
+                <li><strong>실시간 롤백</strong> — 매시 15분 5연패/SQN 하락 감시 후 자동 복귀</li>
+            </ol>
+        </div>
+
+        <h5 class="help-subtitle">사용자 결정이 필요한 시점</h5>
+        <div class="help-card">
+            <ul class="help-list">
+                <li><strong>Live 모드 전환</strong> — paper → live 는 항상 사용자 명시 승인 (<code>POST /config/trading-mode {"mode":"live"}</code>)</li>
+                <li><strong>완전 종료</strong> — 사용자가 "그만" 명시하기 전까지 시스템은 자율 작동을 멈추지 않습니다</li>
+                <li><strong>임계치 조정</strong> — 변이가 너무 자주 채택/롤백되면 SQN/Sharpe 임계치를 보수적으로 조정 가능</li>
+            </ul>
+        </div>
+
+        </div>
+    </div>
+
 </div>
 
 @code {
