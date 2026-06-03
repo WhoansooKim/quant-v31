@@ -1194,6 +1194,44 @@ async def generate_snapshot():
         raise HTTPException(500, str(e))
 
 
+@app.post("/snapshot/refresh-if-stale")
+async def refresh_snapshot_if_stale():
+    """Dashboard 로드 시 호출 — 최신 snapshot 이 stale 하면 재생성.
+
+    Stale 기준: 마지막 snapshot 의 time 이 `dashboard_snapshot_stale_min` 분 이전 (기본 5분).
+    yfinance 호출이 있어서 1~3 초 걸릴 수 있으나, 페이지 로드 UX 를 위해 비동기적으로 처리해도 됨.
+    """
+    from datetime import datetime, timezone, timedelta
+    stale_min = float(pg.get_config_value("dashboard_snapshot_stale_min", "5"))
+    latest = pg.get_latest_snapshot()
+    now = datetime.now(timezone.utc)
+    regenerated = False
+    age_sec = None
+    if latest and latest.get("time"):
+        latest_time = latest["time"]
+        if latest_time.tzinfo is None:
+            latest_time = latest_time.replace(tzinfo=timezone.utc)
+        age_sec = (now - latest_time).total_seconds()
+        if age_sec > stale_min * 60:
+            try:
+                _generate_snapshot()
+                regenerated = True
+            except Exception as e:
+                logger.warning(f"snapshot refresh-if-stale failed: {e}")
+    else:
+        # No snapshot exists — generate one
+        try:
+            _generate_snapshot()
+            regenerated = True
+        except Exception as e:
+            logger.warning(f"snapshot initial generation failed: {e}")
+    return {
+        "regenerated": regenerated,
+        "age_sec": round(age_sec, 1) if age_sec is not None else None,
+        "stale_threshold_sec": stale_min * 60,
+    }
+
+
 def _generate_snapshot() -> dict:
     """현재 포트폴리오 상태로 스냅샷 생성.
 

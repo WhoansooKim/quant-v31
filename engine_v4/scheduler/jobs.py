@@ -68,7 +68,25 @@ class SwingScheduler:
             self._job_daily_pipeline,
             CronTrigger(day_of_week="mon-sat", hour=7, minute=0, timezone=KST),
             id="daily_pipeline",
-            name="Daily Pipeline (Collect + Scan + Notify)",
+            name="Daily Pipeline (07:00 KST · post-US-close)",
+            replace_existing=True,
+        )
+
+        # 1b) 월~금 21:30 KST — 프리오픈 파이프라인 (US 장 시작 1시간 전, 22:00 auto_approve 직전)
+        self.scheduler.add_job(
+            self._job_daily_pipeline,
+            CronTrigger(day_of_week="mon-fri", hour=21, minute=30, timezone=KST),
+            id="daily_pipeline_preopen",
+            name="Daily Pipeline (21:30 KST · pre-US-open)",
+            replace_existing=True,
+        )
+
+        # 1c) 화~토 02:00 KST — 미드세션 파이프라인 (US 12:00 ET, 장중 신규 시그널 캐치)
+        self.scheduler.add_job(
+            self._job_daily_pipeline,
+            CronTrigger(day_of_week="tue-sat", hour=2, minute=0, timezone=KST),
+            id="daily_pipeline_midsession",
+            name="Daily Pipeline (02:00 KST · US mid-session)",
             replace_existing=True,
         )
 
@@ -323,12 +341,47 @@ class SwingScheduler:
             logger.info(f"Daily pipeline done: {len(entries)} entries, "
                         f"{len(exits)} exits in {elapsed:.1f}s")
 
+            # Step 5: Telegram 요약 보고 (시그널 0 일 때도 발송 — 사용자 확인용)
+            self._send_pipeline_summary(elapsed, len(symbols),
+                                        len(entries), len(exits))
+
         except Exception as e:
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("scheduled_pipeline", "failed",
                                         elapsed, error_msg=str(e))
             logger.error(f"Daily pipeline failed: {e}", exc_info=True)
             asyncio.run(self.notifier.notify_error("daily_pipeline", str(e)))
+
+    def _send_pipeline_summary(self, elapsed: float, n_symbols: int,
+                                n_entries: int, n_exits: int) -> None:
+        """파이프라인 직후 Telegram 요약 1줄 발송 (시그널 0 일 때도)."""
+        try:
+            now_kst = datetime.now(KST)
+            hour = now_kst.hour
+            if hour == 7:
+                window = "07:00 KST · post-US-close"
+            elif hour in (21, 22):
+                window = "21:30 KST · pre-US-open"
+            elif hour in (2, 3):
+                window = "02:00 KST · US mid-session"
+            else:
+                window = f"{now_kst:%H:%M} KST"
+
+            pending = len([s for s in self.pg.get_signals(status="pending", limit=100)
+                          if s.get("signal_type") == "ENTRY"])
+            open_pos = len(self.pg.get_open_positions())
+            regime = self.pg.get_config_value("current_regime", "NEUTRAL")
+
+            lines = [
+                f"<b>📡 Pipeline · {window}</b>",
+                f"실행: {elapsed:.1f}s · 유니버스 {n_symbols}",
+                f"신규 ENTRY {n_entries} · EXIT {n_exits}",
+                f"Pending ENTRY {pending} · Open positions {open_pos}",
+                f"Regime: {regime}",
+            ]
+            self.notifier.send_sync("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"Pipeline summary telegram failed: {e}")
 
     def _job_exit_check(self):
         """5-Layer Auto-Exit: ATR Trailing + Hard SL + Time Stop + RSI(2) + Regime.

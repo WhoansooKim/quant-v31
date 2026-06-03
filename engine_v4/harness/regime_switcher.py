@@ -45,14 +45,16 @@ REGIME_PRESETS: dict[str, dict[str, str]] = {
     "RISK_ON": {
         "position_pct": "0.20",
         "max_positions": "5",
-        "composite_score_min": "55",
+        # 2026-06-03 IC 보정: 55 → 58 (60일 분석 결과 sweet spot 65-70)
+        "composite_score_min": "58",
         "take_profit_pct": "0.25",
         "atr_trailing_multiplier": "3.0",
     },
     "NEUTRAL": {
         "position_pct": "0.14",
         "max_positions": "7",
-        "composite_score_min": "60",
+        # 2026-06-03 IC 보정: 60 → 63
+        "composite_score_min": "63",
         "take_profit_pct": "0.20",
         "atr_trailing_multiplier": "2.5",
     },

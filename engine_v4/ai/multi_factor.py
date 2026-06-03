@@ -51,11 +51,13 @@ class MultiFactorScorer:
     """
 
     # Regime-adaptive weight profiles (6 factors, sum = 1.0)
+    # 2026-06-03 IC 보정: 60일 trade 분석 결과 sentiment IC +0.20 / quality IC -0.28
+    # → sentiment 비중 ↑, quality 비중 ↓
     REGIME_WEIGHTS = {
-        "TRENDING":  {"technical": 0.30, "sentiment": 0.15, "flow": 0.10, "quality": 0.15, "value": 0.20, "macro": 0.10},
-        "SIDEWAYS":  {"technical": 0.18, "sentiment": 0.12, "flow": 0.10, "quality": 0.25, "value": 0.20, "macro": 0.15},
-        "HIGH_VOL":  {"technical": 0.20, "sentiment": 0.15, "flow": 0.10, "quality": 0.20, "value": 0.15, "macro": 0.20},
-        "MIXED":     {"technical": 0.25, "sentiment": 0.18, "flow": 0.10, "quality": 0.17, "value": 0.18, "macro": 0.12},
+        "TRENDING":  {"technical": 0.27, "sentiment": 0.20, "flow": 0.10, "quality": 0.10, "value": 0.23, "macro": 0.10},
+        "SIDEWAYS":  {"technical": 0.15, "sentiment": 0.20, "flow": 0.10, "quality": 0.18, "value": 0.22, "macro": 0.15},
+        "HIGH_VOL":  {"technical": 0.18, "sentiment": 0.22, "flow": 0.10, "quality": 0.15, "value": 0.15, "macro": 0.20},
+        "MIXED":     {"technical": 0.20, "sentiment": 0.25, "flow": 0.10, "quality": 0.12, "value": 0.21, "macro": 0.12},
     }
 
     def __init__(self, pg: PostgresStore, finnhub: FinnhubClient,

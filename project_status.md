@@ -38,12 +38,14 @@ docker exec quant-postgres psql -U quant -d quantdb -c "SELECT action, status, c
 | 시간 (KST) | 잡 | 동작 |
 |-----------|-----|------|
 | 매일 06:05 | post_market_analysis | 일일 사후분석 + Telegram |
-| 매일 07:00 | daily_pipeline | 데이터 수집 + 시그널 스캔 |
-| 매일 22:00 | auto_approve | Strategy A 자동 승인 |
+| 매일 07:00 | **daily_pipeline** ⓵ | 데이터 수집 + 시그널 스캔 + 요약 Telegram |
+| 월-금 21:30 | **daily_pipeline_preopen** ⓶ (2026-06-03 신설) | US 장 시작 1시간 전 시그널 스캔 + 요약 Telegram |
+| 매일 22:00 | auto_approve | Strategy A 자동 승인 (21:30 시그널 픽업) |
 | 화-토 01:30 | auto_approve_mid | Strategy B 중간 재평가 |
+| 화-토 02:00 | **daily_pipeline_midsession** ⓷ (2026-06-03 신설) | US 12:00 ET 미드세션 스캔 + 요약 Telegram |
 | 화-토 04:30 | auto_approve_close | Strategy B 마감 픽업 |
 | 일 10:00 | weekly_research | 자율 리서치 (arxiv/Reddit) |
-| 매시 정각 | regime_switch_check | 매크로 변화 감지 |
+| 매시 정각 | regime_switch_check | 매크로 변화 감지 (2026-06-03 재활성) |
 | 매시 15분 | rollback_check | 변이 롤백 조건 체크 |
 | 매월 1일 11:00 | monthly_variant_gen | 전략 변이 생성 + 백테스트 |
 
@@ -1397,7 +1399,7 @@ docker exec quant-postgres psql -U quant -d quantdb \
 - ✅ quant-engine-v4 systemd active
 - ✅ quant-dashboard systemd active
 - ✅ PostgreSQL + TimescaleDB + Redis 정상
-- ✅ 21개 스케줄러 잡 가동
+- ✅ **23개 스케줄러 잡 가동** (pipeline 3회/일로 확대)
 - ✅ Ollama qwen2.5:1.5b/3b 가동 (LLM gate 폴백)
 
 ### 거래 통계 (3개월 누적)
@@ -1431,14 +1433,17 @@ docker exec quant-postgres psql -U quant -d quantdb \
 ```
 trading_mode = paper
 auto_approve_enabled = true
-auto_approve_score_min = 60
+auto_approve_score_min = 63              # 2026-06-03 60 → 63 (IC 보정)
+auto_approve_score_max = 75              # 2026-06-03 신설 (crowded top 차단)
 auto_approve_macro_min = 30
+composite_score_min = 63                 # 2026-06-03 60 → 63
+dashboard_snapshot_stale_min = 5         # 2026-06-03 신설 (Dashboard 자동 갱신 임계)
 rsi2_exit_threshold = 999 (비활성)
 llm_gate_enabled = false (필요 시 1줄 변경으로 활성화)
 llm_gate_prefer_ollama = true (Max 구독자라 무료)
 llm_gate_ollama_model = qwen2.5:1.5b
 harness_research_enabled = true (작동 중)
-harness_regime_switch_enabled = false (활성화 가능)
+harness_regime_switch_enabled = true     # 2026-06-03 false → true (재활성)
 harness_variant_gen_enabled = false (활성화 가능)
 harness_auto_deploy_enabled = false (활성화 가능, paper만)
 current_regime = NEUTRAL
@@ -1446,10 +1451,99 @@ current_regime = NEUTRAL
 
 ---
 
+## 22.Z 2026-06-03 운영 개선 (IC 보정 + Pipeline 3회/일 + Dashboard 자동갱신)
+
+### 배경
+재부팅 후 자동 점검 결과:
+- 60일 누적 IC = **-0.21** (음수, 시그널 랭킹 anti-predictive)
+- composite_score 70+ bucket: -2.7% 평균 / 40% 승률 (n=5) — crowded top
+- composite_score 65-70 sweet spot: +3.33% 평균 / 83% 승률 (n=6)
+- 팩터별 IC: sentiment +0.20 (최상), quality **-0.28** (최악), tech -0.12, macro -0.15
+- Dashboard Total Value 가 stale — Performance > Update Snapshot 수동 클릭 필요
+- Pipeline 이 하루 1회 (07:00) 만 → swing 매매에 시그널 캐치 부족
+
+### 변경 1 — Regime Switch 재활성화
+```
+UPDATE swing_config SET value='true' WHERE key='harness_regime_switch_enabled';
+```
+매시 정각 매크로 점수 기반 regime 변화 감지 + 자동 preset 적용 재개.
+
+### 변경 2 — IC 보정 (시그널 품질 개선)
+**A) REGIME_WEIGHTS 리밸런싱** (`engine_v4/ai/multi_factor.py:54`)
+- sentiment +0.20 IC → 비중 ↑ (모든 regime 에서 +5~7pp)
+- quality -0.28 IC → 비중 ↓ (모든 regime 에서 -5~7pp)
+
+| Regime | 변경 전 (tech/sent/flow/qual/val/macro) | 변경 후 |
+|--------|-------------------------------------|---------|
+| TRENDING | 0.30/0.15/0.10/0.15/0.20/0.10 | 0.27/0.20/0.10/0.10/0.23/0.10 |
+| SIDEWAYS | 0.18/0.12/0.10/0.25/0.20/0.15 | 0.15/0.20/0.10/0.18/0.22/0.15 |
+| HIGH_VOL | 0.20/0.15/0.10/0.20/0.15/0.20 | 0.18/0.22/0.10/0.15/0.15/0.20 |
+| MIXED | 0.25/0.18/0.10/0.17/0.18/0.12 | 0.20/0.25/0.10/0.12/0.21/0.12 |
+
+**B) Composite Score 상한 신설** (`engine_v4/strategy/auto_approve.py:64`)
+- `auto_approve_score_max = 75` — 75 초과 시 auto-approve 차단 (crowded top 방지)
+- 수동 승인은 여전히 가능
+
+**C) Composite Score 하한 상향**
+- `composite_score_min`: 60 → **63**
+- `auto_approve_score_min`: 60 → **63**
+
+**D) REGIME_PRESETS 일관성** (`engine_v4/harness/regime_switcher.py:44`)
+- RISK_ON: composite_score_min 55 → **58**
+- NEUTRAL: composite_score_min 60 → **63**
+- RISK_OFF: 70 유지
+
+### 변경 3 — Pipeline 하루 3회 자동 실행
+신규 스케줄러 잡 2개 추가 (`engine_v4/scheduler/jobs.py:_setup_jobs`):
+- `daily_pipeline_preopen` — 월~금 21:30 KST (US 장 시작 1시간 전, 22:00 auto_approve 직전)
+- `daily_pipeline_midsession` — 화~토 02:00 KST (US 12:00 ET 미드세션)
+
+기존 `daily_pipeline` 07:00 KST mon-sat 유지.
+
+### 변경 4 — Pipeline 직후 Telegram 요약 발송
+`engine_v4/scheduler/jobs.py` 에 `_send_pipeline_summary()` 추가.
+
+매 파이프라인 종료 직후 (시그널 0 개여도) 5줄 요약 발송:
+```
+📡 Pipeline · 21:30 KST · pre-US-open
+실행: 89.4s · 유니버스 87
+신규 ENTRY 2 · EXIT 0
+Pending ENTRY 3 · Open positions 3
+Regime: NEUTRAL
+```
+
+### 변경 5 — Dashboard Total Value 자동 갱신
+**A) 신규 엔드포인트** (`engine_v4/api/main.py:1196`)
+- `POST /snapshot/refresh-if-stale` — 마지막 snapshot 이 stale (>5분) 하면 자동 재생성
+- 새로운 config: `dashboard_snapshot_stale_min = 5`
+
+**B) Home.razor 자동 호출** (`dashboard/QuantDashboard/Components/Pages/Home.razor:OnInitializedAsync`)
+- 페이지 진입 시 `/snapshot/refresh-if-stale` 자동 호출 (10s 타임아웃)
+- 실패 시 기존 stale 값으로 폴백 (UX 보장)
+
+→ 이제 Performance 탭 가지 않아도 Dashboard 진입만으로 최신 Total Value 자동 갱신.
+
+### 검증 결과
+- 스케줄러 jobs 21 → **23** 개 확인
+- `regime_switch_check` next run: 매시 정각
+- `daily_pipeline_preopen` next run: 21:30 KST mon-fri
+- `daily_pipeline_midsession` next run: 02:00 KST tue-sat
+- `/snapshot/refresh-if-stale` 호출: 첫 회 regenerated=true (10239s → 재생성, $1007.41), 재호출 regenerated=false (221s < 300s 임계)
+- 신규 config 5개 등록 + REGIME_PRESETS 코드 변경 + REGIME_WEIGHTS 코드 변경 적용
+
+### 예상 효과
+- **IC 측정**: 1~2주 누적 후 재측정 권장 (현재 n=25 작은 표본)
+- **시그널 캐치**: 하루 3회 스캔으로 swing 기회 누락 감소
+- **사용자 UX**: Dashboard 진입만으로 최신 상태 확인 가능 + Telegram 요약 자동 도착
+- **자율성**: regime 변화 시 자동 preset 전환 재개
+
+---
+
 ## 23. Git History
 
 ```
-PENDING  docs: 2026-06-03 운영 상태 갱신 + 새 세션 시작 가이드
+PENDING  docs: 2026-06-03 IC 보정 + Pipeline 3회/일 + Dashboard 자동갱신 + Telegram 요약
+b396727  docs: 2026-06-03 운영 상태 갱신 + 새 세션 시작 가이드
 503ad18 docs: project_status.md Phase 3 완성 종합 요약 추가
 29a866f feat: Phase 3 Week 3+4 완성 — 변이 생성기 + 자동 백테스트 + 자동 배포 + 통합 대시보드
 70845df feat: Phase 3 Week 2 — 매크로 적응 스위치 (3F) + 확장 기술 지표 (3G)

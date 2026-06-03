@@ -393,6 +393,15 @@
     {
         try
         {
+            // Dashboard 진입 시 snapshot 이 stale 하면 자동 재생성 (5분 임계)
+            try
+            {
+                var refreshClient = HttpFactory.CreateClient("Engine");
+                refreshClient.Timeout = TimeSpan.FromSeconds(10);
+                await refreshClient.PostAsync("/snapshot/refresh-if-stale", null);
+            }
+            catch { /* 실패해도 stale 값으로 폴백 */ }
+
             var snapTask = Db.GetLatestSnapshotAsync();
             var posTask = Db.GetOpenPositionsAsync();
             var tradeTask = Db.GetRecentTradesAsync(50);

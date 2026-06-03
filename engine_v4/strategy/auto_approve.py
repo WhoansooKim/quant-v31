@@ -62,6 +62,7 @@ def run_auto_approve(
         return {"enabled": False, "evaluated": 0, "auto_approved": 0}
 
     score_min = float(pg.get_config_value("auto_approve_score_min", "60"))
+    score_max = float(pg.get_config_value("auto_approve_score_max", "75"))  # IC 보정: crowded ultra-high score 차단
     macro_min = float(pg.get_config_value("auto_approve_macro_min", "30"))
     llm_gate_enabled = pg.get_config_value("llm_gate_enabled", "false").lower() in ("true", "1", "yes")
     llm_min_confidence = float(pg.get_config_value("llm_gate_min_confidence", "0.5"))
@@ -105,6 +106,9 @@ def run_auto_approve(
             continue
         if float(comp) < score_min:
             skipped.append({"signal_id": sid, "symbol": sym, "reason": f"composite_score={comp:.1f} < {score_min}"})
+            continue
+        if float(comp) > score_max:
+            skipped.append({"signal_id": sid, "symbol": sym, "reason": f"composite_score={comp:.1f} > {score_max} (crowded top)"})
             continue
         if not macro_ok:
             skipped.append({"signal_id": sid, "symbol": sym, "reason": f"macro_score={macro_score:.1f} < {macro_min}"})
