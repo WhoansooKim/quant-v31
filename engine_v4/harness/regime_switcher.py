@@ -54,7 +54,8 @@ REGIME_PRESETS: dict[str, dict[str, str]] = {
         "position_pct": "0.14",
         "max_positions": "7",
         # 2026-06-03 IC 보정: 60 → 63
-        "composite_score_min": "63",
+        # 2026-06-04 절충 완화: 63 → 61 (시그널 0건 회복, 1주 관찰)
+        "composite_score_min": "61",
         "take_profit_pct": "0.20",
         "atr_trailing_multiplier": "2.5",
     },
