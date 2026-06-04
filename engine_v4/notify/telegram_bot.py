@@ -202,16 +202,16 @@ class TelegramBot:
         return (
             f"<b>📊 시스템 상태</b> (mode={mode})\n"
             f"\n<b>포트폴리오</b>\n"
-            f"Total: ${float(snap_dict.get('total_value_usd', 0)):.2f}\n"
-            f"Cum: {float(snap_dict.get('cumulative_return', 0))*100:+.2f}%\n"
-            f"Daily P&L: ${float(snap_dict.get('daily_pnl_usd', 0)):+.2f}\n"
+            f"Total: ${float(snap_dict.get('total_value_usd') or 0):.2f}\n"
+            f"Cum: {float(snap_dict.get('cumulative_return') or 0)*100:+.2f}%\n"
+            f"Daily P&L: ${float(snap_dict.get('daily_pnl_usd') or 0):+.2f}\n"
             f"\n<b>거래</b>\n"
             f"Open: {open_count} · Pending ENTRY: {pending_count}\n"
             f"\n<b>Rolling 30 메트릭</b>\n"
-            f"Win Rate: {float(ic_dict.get('wr', 0))*100:.1f}%\n"
-            f"SQN: {float(ic_dict.get('sqn', 0) or 0):.2f}\n"
-            f"IC: {float(ic_dict.get('ic', 0) or 0):+.3f}\n"
-            f"\n<b>Regime</b>: {regime} (macro {float(macro_dict.get('macro_score', 0)):.1f})"
+            f"Win Rate: {float(ic_dict.get('wr') or 0)*100:.1f}%\n"
+            f"SQN: {float(ic_dict.get('sqn') or 0):.2f}\n"
+            f"IC: {float(ic_dict.get('ic') or 0):+.3f}\n"
+            f"\n<b>Regime</b>: {regime} (macro {float(macro_dict.get('macro_score') or 0):.1f})"
         )
 
     async def _cmd_positions(self, args) -> str:
@@ -334,16 +334,25 @@ class TelegramBot:
         current = self.pg.get_config_value("current_regime", "NEUTRAL")
         switch_on = self.pg.get_config_value("harness_regime_switch_enabled", "false")
         t = m["time"].astimezone(KST).strftime("%m/%d %H:%M")
+        def fmt(key, fmt_str="{:.2f}", default="—"):
+            v = m.get(key)
+            if v is None:
+                return default
+            try:
+                return fmt_str.format(float(v))
+            except (ValueError, TypeError):
+                return default
+
         return (
             f"<b>🌐 Macro Regime</b>\n\n"
             f"Current: <b>{current}</b> (auto-switch: {switch_on})\n"
-            f"Macro score: {float(m.get('macro_score', 0)):.1f} → {m.get('regime', 'N/A')}\n"
+            f"Macro score: {fmt('macro_score', '{:.1f}')} → {m.get('regime') or 'N/A'}\n"
             f"\n<b>구성 지표</b>\n"
-            f"VIX: {float(m.get('vix', 0)):.2f}\n"
-            f"DXY: {float(m.get('dxy', 0)):.2f}\n"
-            f"Risk-off score: {float(m.get('risk_off_score', 0)):.1f}\n"
-            f"Yield curve: {float(m.get('yield_curve_score', 0)):.1f}\n"
-            f"BTC 20d momentum: {float(m.get('btc_momentum_20d', 0)):.2%}\n"
+            f"VIX: {fmt('vix')}\n"
+            f"DXY: {fmt('dxy')}\n"
+            f"Risk-off score: {fmt('risk_off_score', '{:.1f}')}\n"
+            f"Yield curve: {fmt('yield_curve_score', '{:.1f}')}\n"
+            f"BTC 20d momentum: {fmt('btc_momentum_20d', '{:.2f}%')}\n"
             f"\n측정: {t} KST"
         )
 
@@ -354,13 +363,11 @@ class TelegramBot:
         with self.pg.get_conn() as conn:
             ind = conn.execute(
                 """
-                SELECT rsi_14, atr_14, adx_14, ema_20, ema_50, ema_200, time
+                SELECT close, sma_50, sma_200, return_20d, return_20d_rank,
+                       high_5d, volume, volume_avg_20d, volume_ratio,
+                       trend_aligned, breakout_5d, volume_surge, time
                 FROM swing_indicators WHERE symbol=%s ORDER BY time DESC LIMIT 1
                 """,
-                (symbol,),
-            ).fetchone()
-            price_row = conn.execute(
-                "SELECT close FROM swing_prices WHERE symbol=%s ORDER BY time DESC LIMIT 1",
                 (symbol,),
             ).fetchone()
             recent_sig = conn.execute(
@@ -371,22 +378,54 @@ class TelegramBot:
                 """,
                 (symbol,),
             ).fetchone()
+            position = conn.execute(
+                """
+                SELECT qty, entry_price, current_price, entry_time
+                FROM swing_positions WHERE symbol=%s AND status='open' LIMIT 1
+                """,
+                (symbol,),
+            ).fetchone()
         if not ind:
             return f"<b>{symbol}</b>: 지표 데이터 없음 (유니버스 외 종목일 수 있음)."
         i = dict(ind)
-        price = float(price_row["close"]) if price_row else 0
+        close = float(i.get("close") or 0)
+        sma50 = float(i.get("sma_50") or 0)
+        sma200 = float(i.get("sma_200") or 0)
+        ret20 = float(i.get("return_20d") or 0)
+        rank20 = float(i.get("return_20d_rank") or 0)
+        high5 = float(i.get("high_5d") or 0)
+        vol_ratio = float(i.get("volume_ratio") or 0)
         t = i["time"].astimezone(KST).strftime("%m/%d %H:%M")
+
+        # 트렌드 판정
+        if close > sma50 > sma200:
+            trend = "🟢 상승추세 (Close > SMA50 > SMA200)"
+        elif close < sma50 < sma200:
+            trend = "🔴 하락추세 (Close < SMA50 < SMA200)"
+        else:
+            trend = "🟡 횡보/혼조"
+
         lines = [f"<b>📊 {symbol} 분석</b>", ""]
-        lines.append(f"<b>가격/지표</b> ({t} KST)")
-        lines.append(f"Close: ${price:.2f}")
-        lines.append(f"RSI(14): {float(i.get('rsi_14') or 0):.1f}")
-        lines.append(f"ATR(14): {float(i.get('atr_14') or 0):.2f}")
-        lines.append(f"ADX(14): {float(i.get('adx_14') or 0):.1f}")
-        lines.append(f"EMA 20/50/200: {float(i.get('ema_20') or 0):.2f} / "
-                     f"{float(i.get('ema_50') or 0):.2f} / {float(i.get('ema_200') or 0):.2f}")
+        lines.append(f"<b>가격/추세</b> ({t} KST)")
+        lines.append(f"Close: ${close:.2f}")
+        lines.append(f"SMA 50/200: ${sma50:.2f} / ${sma200:.2f}")
+        lines.append(f"5d 고가: ${high5:.2f} ({(close/high5-1)*100:+.1f}% from high)" if high5 > 0 else "")
+        lines.append(trend)
+        lines.append("")
+        lines.append(f"<b>모멘텀/거래량</b>")
+        lines.append(f"20일 수익률: {ret20*100:+.2f}% (rank {rank20*100:.0f} percentile)")
+        lines.append(f"Volume ratio: {vol_ratio:.2f}× (vs 20d avg)")
+        flags = []
+        if i.get("trend_aligned"): flags.append("trend_aligned")
+        if i.get("breakout_5d"): flags.append("breakout_5d")
+        if i.get("volume_surge"): flags.append("volume_surge")
+        if flags:
+            lines.append(f"Flags: {', '.join(flags)}")
+
         if recent_sig:
             s = dict(recent_sig)
-            lines.append("\n<b>최근 시그널 팩터</b>")
+            sig_t = s["time"].astimezone(KST).strftime("%m/%d %H:%M")
+            lines.append(f"\n<b>최근 시그널 팩터</b> ({sig_t})")
             lines.append(f"Composite: {float(s.get('composite_score') or 0):.1f}")
             lines.append(f"Tech {float(s.get('tech_score') or 0):.0f} · "
                          f"Sent {float(s.get('sentiment_score') or 0):.0f} · "
@@ -394,7 +433,16 @@ class TelegramBot:
                          f"Val {float(s.get('value_score') or 0):.0f} · "
                          f"Macro {float(s.get('macro_score') or 0):.0f}")
             lines.append(f"Status: {s.get('status')}")
-        return "\n".join(lines)
+
+        if position:
+            p = dict(position)
+            ep = float(p["entry_price"] or 0)
+            cp = float(p["current_price"] or 0)
+            pct = ((cp - ep) / ep * 100) if ep > 0 else 0
+            lines.append(f"\n<b>📌 오픈 포지션</b>")
+            lines.append(f"Qty {float(p['qty']):.0f} · Entry ${ep:.2f} → ${cp:.2f} ({pct:+.2f}%)")
+
+        return "\n".join(l for l in lines if l)
 
     async def _cmd_queue(self, args) -> str:
         with self.pg.get_conn() as conn:
