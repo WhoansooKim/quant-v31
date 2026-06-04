@@ -59,6 +59,7 @@ from engine_v4.config.settings import get_config
 from engine_v4.data.collector import DataCollector, UniverseManager
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
+from engine_v4.notify.telegram_bot import TelegramBot
 from engine_v4.events.collector import EventCollector
 from engine_v4.events.edgar import EdgarRssMonitor
 from engine_v4.events.processor import EventProcessor
@@ -90,6 +91,7 @@ exit_mgr = ExitManager(pg, macro_scorer=macro_scorer_inst)
 backtester = BacktestRunner(pg)
 kis = KisClient(config)
 notifier = TelegramNotifier(config)
+telegram_bot = TelegramBot(pg, config)
 sentiment = SentimentAnalyzer(pg, config.anthropic_key,
                               ollama_url=config.ollama_url,
                               ollama_model=config.ollama_model)
@@ -148,7 +150,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"  KIS: {'connected' if kis.is_connected else 'simulation'}")
     logger.info(f"  Telegram: {'enabled' if notifier.is_enabled else 'disabled'}")
     swing_scheduler.start()
+    await telegram_bot.start()
     yield
+    await telegram_bot.stop()
     swing_scheduler.stop()
     logger.info("Swing Engine V4 stopped")
 

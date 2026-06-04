@@ -1558,6 +1558,43 @@ Regime: NEUTRAL
 - Variant Gen: 7/1 부터 월 1회 5~10개 변이 자동 백테스트, pending 으로 적재
 - Auto Deploy: 통과 변이만 paper 적용, 사용자 개입 0 으로 자가 개선 루프 완성
 
+### 변경 8 — Telegram 양방향 봇 (옵션 A + 옵션 B, 2026-06-04 신설)
+사용자가 Telegram 채팅으로 시스템 조회 + Claude 분석 요청을 보낼 수 있도록 양방향 봇 구현.
+
+**신규 파일**: `engine_v4/notify/telegram_bot.py` (~400줄)
+- `TelegramBot` 클래스 — long-polling 기반 (getUpdates timeout=30)
+- chat_id 검증 — 본인만 명령 가능
+- 자동 재시도 + 백오프 (최대 60s)
+
+**신규 DB 테이블**: `swing_analysis_queue`
+- request_id, from_chat_id, from_username, request_text
+- status (pending/processing/done/error), processed_at, response_text, processed_by
+
+**main.py 통합**: lifespan 에서 `telegram_bot.start()` / `stop()` 호출.
+
+**옵션 A — 정형 명령 9개 (즉시 응답)**
+| 명령 | 내용 |
+|------|------|
+| `/help` | 명령 목록 |
+| `/status` | 시스템 + 포트폴리오 + Rolling 30 + Regime |
+| `/positions` | 오픈 포지션 + P&L |
+| `/signals` | 최근 시그널 10건 |
+| `/last` | 최근 파이프라인 3회 |
+| `/perf [7d\|30d]` | 기간별 메트릭 |
+| `/regime` | 매크로 regime 상세 |
+| `/analyze SYM` | 종목 분석 |
+| `/queue` | 분석 큐 상태 |
+
+**옵션 B — 자유 텍스트 큐 적재**
+- 정형 명령(/로 시작)이 아닌 모든 메시지 → `swing_analysis_queue` 적재 + 즉시 확인 메시지
+- 사용자가 다음에 Claude Code 세션 열면:
+  - `session_continuity.md` Step 5 가이드 따라 pending 큐 자동 확인
+  - 각 항목 분석 → Telegram 회신 → status='done'
+
+**신규 config**: `telegram_bot_enabled=true`
+
+**보안**: 사용자 본인 chat_id 만 명령 받음, 외부인 봇 ID 알아도 무시.
+
 ### 변경 7 — Help 페이지 13번 섹션 추가
 `dashboard/QuantDashboard/Components/Pages/Help.razor` 에 약 130줄 신설:
 - 자율 진화 4단계 사이클 표 (리서치/변이/백테스트/배포 + 매크로/롤백)
@@ -1574,7 +1611,9 @@ Regime: NEUTRAL
 ## 23. Git History
 
 ```
-PENDING  docs: Help 13번 섹션 — 자율 진화 시스템 + 옵션 3종 활성화 반영
+PENDING  feat: Telegram 양방향 봇 (옵션 A 9개 명령 + 옵션 B Claude 큐) + Help 14번 섹션
+2dffd2d  tune: IC 보정 절충 완화 — NEUTRAL composite_score_min 63 → 61
+c3b35a7  docs: Help 13번 섹션 — 자율 진화 시스템 + 옵션 3종 활성화 반영
 22bd455  feat: IC 보정 + Pipeline 3회/일 + Dashboard 자동갱신 + Telegram 요약
 b396727  docs: 2026-06-03 운영 상태 갱신 + 새 세션 시작 가이드
 503ad18 docs: project_status.md Phase 3 완성 종합 요약 추가
