@@ -637,18 +637,27 @@
                                         · DXY=@(raw.TryGetProperty("dxy", out var d) && d.ValueKind != System.Text.Json.JsonValueKind.Null ? d.GetDouble().ToString("F1") : "-")
                                     </div>
                                 }
-                                @if (macroRiskAdj.HasValue)
+                                @if (macroRiskAdj.HasValue && macroRiskAdj.Value.TryGetProperty("position_sizing", out var ps))
                                 {
                                     var ra = macroRiskAdj.Value;
-                                    var ps = ra.GetProperty("position_sizing");
-                                    var ts = ra.GetProperty("trailing_stop");
-                                    var mult2 = ps.GetProperty("multiplier").GetDouble();
-                                    var adjPct = ps.GetProperty("adjusted_position_pct").GetDouble();
-                                    var blocked = ps.GetProperty("entry_blocked").GetBoolean();
+                                    var mult2 = ps.TryGetProperty("multiplier", out var m2) ? m2.GetDouble() : 1.0;
+                                    var adjPct = ps.TryGetProperty("adjusted_position_pct", out var ap) ? ap.GetDouble() : 0.0;
+                                    var blocked = ps.TryGetProperty("entry_blocked", out var eb) && eb.GetBoolean();
                                     <div class="fd-risk-adj">
                                         <span style="font-weight:600; color:#06b6d4">Risk Adj:</span>
                                         Pos <b>@(adjPct.ToString("P0"))</b><span class="text-muted">(×@(mult2.ToString("P0")))</span>
-                                        · Trail <b>@(ts.GetProperty("adjusted_activation").GetDouble().ToString("P1"))</b>/<b>@(ts.GetProperty("adjusted_distance").GetDouble().ToString("P1"))</b>
+                                        @if (ra.TryGetProperty("trailing_stop", out var ts)
+                                             && ts.TryGetProperty("adjusted_activation", out var aa)
+                                             && ts.TryGetProperty("adjusted_distance", out var ad))
+                                        {
+                                            <text> · Trail <b>@(aa.GetDouble().ToString("P1"))</b>/<b>@(ad.GetDouble().ToString("P1"))</b></text>
+                                        }
+                                        else if (ra.TryGetProperty("exit_strategy", out var es))
+                                        {
+                                            var atrMult = es.TryGetProperty("atr_regime_adjusted", out var am) ? am.GetDouble() : 0;
+                                            var actR = es.TryGetProperty("atr_trailing_activation_r", out var ar) ? ar.GetDouble() : 0;
+                                            <text> · ATR Trail <b>@atrMult.ToString("F2")×</b> (act @actR.ToString("F1")R)</text>
+                                        }
                                         @if (blocked)
                                         {
                                             <span style="color:#ef4444; font-weight:700"> BLOCKED</span>
@@ -1304,9 +1313,13 @@
             if (riskAdjTask.Result.IsSuccessStatusCode)
                 macroRiskAdj = await riskAdjTask.Result.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
 
-            StateHasChanged();
+            // Blazor Server: background task 에서는 InvokeAsync 로 UI 스레드 마샬링 필수
+            await InvokeAsync(StateHasChanged);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"LoadSymbolExtras({symbol}) failed: {ex.Message}");
+        }
     }
 
     private void CloseFactorDetail()
