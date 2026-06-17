@@ -51,13 +51,14 @@ class MultiFactorScorer:
     """
 
     # Regime-adaptive weight profiles (6 factors, sum = 1.0)
-    # 2026-06-03 IC 보정: 60일 trade 분석 결과 sentiment IC +0.20 / quality IC -0.28
-    # → sentiment 비중 ↑, quality 비중 ↓
+    # 2026-06-17 IC 재보정: forward-5d return IC 실측 (N=47, daily_prices, 청산정책 비오염)
+    #   quality +0.216 / sentiment +0.058 / technical -0.054 / macro -0.042 / flow -0.356 / value -0.363
+    #   → quality 대폭 ↑, flow·value 최소화(단기 역예측). 6/3 추정튜닝은 거래IC(청산오염)라 부호 오류 → 폐기.
     REGIME_WEIGHTS = {
-        "TRENDING":  {"technical": 0.27, "sentiment": 0.20, "flow": 0.10, "quality": 0.10, "value": 0.23, "macro": 0.10},
-        "SIDEWAYS":  {"technical": 0.15, "sentiment": 0.20, "flow": 0.10, "quality": 0.18, "value": 0.22, "macro": 0.15},
-        "HIGH_VOL":  {"technical": 0.18, "sentiment": 0.22, "flow": 0.10, "quality": 0.15, "value": 0.15, "macro": 0.20},
-        "MIXED":     {"technical": 0.20, "sentiment": 0.25, "flow": 0.10, "quality": 0.12, "value": 0.21, "macro": 0.12},
+        "TRENDING":  {"technical": 0.20, "sentiment": 0.18, "flow": 0.05, "quality": 0.28, "value": 0.12, "macro": 0.17},
+        "SIDEWAYS":  {"technical": 0.15, "sentiment": 0.18, "flow": 0.05, "quality": 0.30, "value": 0.12, "macro": 0.20},
+        "HIGH_VOL":  {"technical": 0.15, "sentiment": 0.20, "flow": 0.05, "quality": 0.25, "value": 0.10, "macro": 0.25},
+        "MIXED":     {"technical": 0.18, "sentiment": 0.20, "flow": 0.05, "quality": 0.28, "value": 0.12, "macro": 0.17},
     }
 
     def __init__(self, pg: PostgresStore, finnhub: FinnhubClient,
@@ -248,7 +249,16 @@ class MultiFactorScorer:
         breakout = bool(sig.get("breakout_5d"))
         volume = bool(sig.get("volume_surge"))
 
-        momentum_pts = min(40, rank * 40)  # rank 1.0 = 40pts
+        # IC 개선(C): 모멘텀 과열 페널티 — 실측상 rank 상단(과열/쏠림) 종목이 역U자로 언더퍼폼.
+        # threshold 초과분은 penalty 비율만큼만 가산(penalty<1 → 감쇠, 0 → 상한 고정).
+        overext_enabled = self.pg.get_config_value("momentum_overext_enabled", "true") == "true"
+        if overext_enabled and rank > 0:
+            thr = float(self.pg.get_config_value("momentum_overext_threshold", "0.80"))
+            pen = float(self.pg.get_config_value("momentum_overext_penalty", "0.6"))
+            eff_rank = thr + (rank - thr) * pen if rank > thr else rank
+        else:
+            eff_rank = rank
+        momentum_pts = min(40, eff_rank * 40)  # rank 1.0 = 40pts (과열 구간은 감쇠)
         trend_pts = 25 if trend else 0
         breakout_pts = 20 if breakout else 0
         volume_pts = 15 if volume else 0

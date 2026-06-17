@@ -157,6 +157,10 @@ class ExitManager:
         time_stop_days = int(self._get_config_float("time_stop_days", 15))
         rsi2_threshold = self._get_config_float("rsi2_exit_threshold", 90)
         activation_r = self._get_config_float("atr_trailing_activation_r", 1.0)
+        # IC 개선(B): RSI(2) 조기청산이 승자를 +1.7%에서 잘라내 점수↔수익 IC를 음수로 만듦.
+        # 최소 R(또는 entry_atr 없을 때 최소 수익률) 도달 후에만 rsi2 청산 허용 → 승자가 트레일링으로 달리게.
+        rsi2_min_r = self._get_config_float("rsi2_exit_min_r", 1.0)
+        rsi2_min_gain = self._get_config_float("rsi2_exit_min_gain", 0.03)
 
         # Regime adaptation
         regime = self._get_macro_regime()
@@ -196,8 +200,13 @@ class ExitManager:
                             f"{hard_stop_mult}×ATR)")
                 continue  # 하위 레이어 skip
 
-            # === Layer 4: RSI(2) Override (RSI > 90 즉시 매도) ===
-            if gain_pct > 0:  # 수익 중일 때만
+            # === Layer 4: RSI(2) Override (RSI > 90 + 최소 수익 도달 시 매도) ===
+            # IC 개선(B): 승자 조기청산 방지 — entry_atr 있으면 최소 R, 없으면 최소 수익률 게이팅
+            if entry_atr > 0:
+                rsi2_gain_ok = (current_price - entry_price) / entry_atr >= rsi2_min_r
+            else:
+                rsi2_gain_ok = gain_pct >= rsi2_min_gain
+            if rsi2_gain_ok:
                 rsi2 = self.calc_rsi(symbol, period=2)
                 if rsi2 is not None and rsi2 > rsi2_threshold:
                     actions.append(ExitAction(

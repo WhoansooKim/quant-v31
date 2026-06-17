@@ -172,6 +172,66 @@ def _spearman_rho(xs: list[float], ys: list[float]) -> float:
     return cov / den if den > 1e-12 else 0.0
 
 
+def _signal_forward_ic(pg: PostgresStore, horizon_days: int = 5, n: int = 80) -> dict[str, Any]:
+    """IC 개선(A): 정책 중립 신호 IC — 진입 점수 ↔ forward N거래일 수익.
+
+    trade-IC(realized_pct)는 청산정책(rsi2 조기청산 등)에 오염돼 음수가 나옴.
+    여기서는 진입가 대비 forward 고정기간 수익으로 '진입 신호 품질'만 분리 측정한다.
+    composite + 6개 요인 각각의 Spearman IC를 반환 (요인 가중치 재보정 D의 근거).
+    """
+    with pg.get_conn() as conn:
+        rows = conn.execute(
+            """
+            WITH sig AS (
+                SELECT symbol, time::date AS d, entry_price,
+                       technical_score, sentiment_score, flow_score,
+                       quality_score, value_score, macro_score, composite_score
+                FROM swing_signals
+                WHERE signal_type = 'ENTRY' AND composite_score IS NOT NULL
+                      AND entry_price IS NOT NULL
+                ORDER BY time DESC LIMIT %s
+            )
+            SELECT s.technical_score, s.sentiment_score, s.flow_score,
+                   s.quality_score, s.value_score, s.macro_score, s.composite_score,
+                   s.entry_price,
+                   (SELECT dp.close FROM daily_prices dp
+                      WHERE dp.symbol = s.symbol
+                        AND dp.time::date >= s.d + make_interval(days => %s)
+                      ORDER BY dp.time ASC LIMIT 1) AS fwd_close
+            FROM sig s
+            """,
+            (n, horizon_days),
+        ).fetchall()
+
+    data = []
+    for r in (dict(x) for x in rows):
+        ep, fc = r.get("entry_price"), r.get("fwd_close")
+        if ep and fc:
+            r["_ret"] = (float(fc) - float(ep)) / float(ep)
+            data.append(r)
+
+    if len(data) < 5:
+        return {"signal_ic": None, "n": len(data), "horizon_days": horizon_days, "factor_ic": {}}
+
+    factor_ic = {}
+    for col, name in (("technical_score", "technical"), ("sentiment_score", "sentiment"),
+                      ("flow_score", "flow"), ("quality_score", "quality"),
+                      ("value_score", "value"), ("macro_score", "macro")):
+        pairs = [(float(d[col]), d["_ret"]) for d in data if d.get(col) is not None]
+        if len(pairs) >= 5:
+            factor_ic[name] = round(_spearman_rho([x for x, _ in pairs], [y for _, y in pairs]), 4)
+
+    comp = [(float(d["composite_score"]), d["_ret"]) for d in data if d.get("composite_score") is not None]
+    sic = _spearman_rho([x for x, _ in comp], [y for _, y in comp]) if len(comp) >= 5 else None
+
+    return {
+        "signal_ic": round(sic, 4) if sic is not None else None,
+        "n": len(data),
+        "horizon_days": horizon_days,
+        "factor_ic": factor_ic,
+    }
+
+
 def _brinson_decomposition(pg: PostgresStore, report_date: date) -> dict[str, float]:
     """Lightweight Brinson — split realized P&L of trades closed on report_date
     into market(β·R_m) + idiosyncratic AR + residual.
@@ -286,6 +346,13 @@ def generate_daily_report(
 
     # 4. Metrics
     metrics = _rolling_decision_metrics(pg, n=30)
+
+    # IC 개선(A): 정책 중립 신호 IC (진입 점수 ↔ forward N거래일 수익)
+    try:
+        ic_horizon = int(float(pg.get_config_value("signal_ic_horizon_days", "5")))
+    except (TypeError, ValueError):
+        ic_horizon = 5
+    signal_ic = _signal_forward_ic(pg, horizon_days=ic_horizon, n=80)
     brinson = _brinson_decomposition(pg, report_date)
     snap = _get_snapshot_summary(pg, report_date)
     macro = _get_macro_summary(pg, report_date)
@@ -320,6 +387,7 @@ def generate_daily_report(
                 open_count, open_position_ids,
                 rolling_30_trades, rolling_30_win_rate, rolling_30_expectancy_pct,
                 rolling_30_sqn, rolling_30_information_coefficient, rolling_30_auc,
+                rolling_signal_ic, rolling_signal_ic_n, factor_ic_detail,
                 brinson_market, brinson_sector, brinson_selection, brinson_residual,
                 top_news_today, generated_at
             ) VALUES (
@@ -329,6 +397,7 @@ def generate_daily_report(
                 %s, %s,
                 %s, %s, %s,
                 %s, %s, %s,
+                %s, %s, %s::jsonb,
                 %s, %s, %s, %s,
                 %s::jsonb, NOW()
             )
@@ -350,6 +419,9 @@ def generate_daily_report(
                 rolling_30_sqn = EXCLUDED.rolling_30_sqn,
                 rolling_30_information_coefficient = EXCLUDED.rolling_30_information_coefficient,
                 rolling_30_auc = EXCLUDED.rolling_30_auc,
+                rolling_signal_ic = EXCLUDED.rolling_signal_ic,
+                rolling_signal_ic_n = EXCLUDED.rolling_signal_ic_n,
+                factor_ic_detail = EXCLUDED.factor_ic_detail,
                 brinson_market = EXCLUDED.brinson_market,
                 brinson_selection = EXCLUDED.brinson_selection,
                 brinson_residual = EXCLUDED.brinson_residual,
@@ -375,6 +447,9 @@ def generate_daily_report(
                 metrics.get("sqn"),
                 metrics.get("information_coefficient"),
                 metrics.get("auc"),
+                signal_ic.get("signal_ic"),
+                signal_ic.get("n"),
+                _json.dumps(signal_ic.get("factor_ic", {})),
                 brinson["market"],
                 0.0,  # sector (placeholder)
                 brinson["selection"],
@@ -390,6 +465,7 @@ def generate_daily_report(
         "closed_pnl": closed_pnl,
         "open_count": len(open_pos),
         "metrics": metrics,
+        "signal_ic": signal_ic,
         "brinson": brinson,
         "macro": macro,
         "snap": snap,
@@ -414,6 +490,9 @@ def format_telegram_digest(report: dict) -> str:
         f"  Expectancy: {m.get('expectancy_pct', 0):+.2f}%",
         f"  SQN: {m.get('sqn') if m.get('sqn') is not None else '—'}",
         f"  IC (score→PnL): {m.get('information_coefficient') if m.get('information_coefficient') is not None else '—'}",
+        f"  IC (signal→fwd{report.get('signal_ic', {}).get('horizon_days', 5)}d): "
+        f"{report.get('signal_ic', {}).get('signal_ic') if report.get('signal_ic', {}).get('signal_ic') is not None else '—'} "
+        f"(N={report.get('signal_ic', {}).get('n', 0)})",
         f"  AUC: {m.get('auc') if m.get('auc') is not None else '—'}",
         "",
         "*P&L Attribution (avg per closed trade)*",

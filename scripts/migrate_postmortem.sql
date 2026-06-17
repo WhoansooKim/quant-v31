@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS swing_daily_report (
     rolling_30_information_coefficient DOUBLE PRECISION,
     rolling_30_auc DOUBLE PRECISION,
 
+    -- IC 개선(A): 정책 중립 신호 IC (진입 점수 ↔ forward N거래일 수익)
+    rolling_signal_ic DOUBLE PRECISION,
+    rolling_signal_ic_n INT,
+    factor_ic_detail JSONB,                 -- {technical, sentiment, flow, quality, value, macro} Spearman IC
+
     -- Brinson decomposition (rough, daily)
     brinson_market DOUBLE PRECISION,
     brinson_sector DOUBLE PRECISION,
@@ -143,6 +148,21 @@ CREATE TABLE IF NOT EXISTS swing_daily_report (
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_report_date ON swing_daily_report(report_date DESC);
+
+-- ─── IC 개선(A): 기존 DB용 멱등 ALTER (신호 forward IC 컬럼) ──
+ALTER TABLE swing_daily_report ADD COLUMN IF NOT EXISTS rolling_signal_ic   DOUBLE PRECISION;
+ALTER TABLE swing_daily_report ADD COLUMN IF NOT EXISTS rolling_signal_ic_n INT;
+ALTER TABLE swing_daily_report ADD COLUMN IF NOT EXISTS factor_ic_detail    JSONB;
+
+-- ─── IC 개선(A/B/C): 신규 config 기본값 (멱등) ──
+INSERT INTO swing_config (key, value, category, description) VALUES
+    ('signal_ic_horizon_days',     '5',    'scoring', '신호 IC forward 수익 산출 기간(거래일)'),
+    ('rsi2_exit_min_r',            '1.0',  'exit',    'RSI(2) 조기청산 최소 R배수 (이 이상 수익 시에만 rsi2 청산 허용)'),
+    ('rsi2_exit_min_gain',         '0.03', 'exit',    'RSI(2) 조기청산 최소 수익률 (entry_atr 없을 때 게이팅)'),
+    ('momentum_overext_enabled',   'true', 'scoring', '모멘텀 과열 페널티 활성화 (rank 상단 역U자 교정)'),
+    ('momentum_overext_threshold', '0.80', 'scoring', '모멘텀 과열 페널티 시작 rank 임계값'),
+    ('momentum_overext_penalty',   '0.6',  'scoring', '임계 초과분 가산 비율 (1=무감쇠, 0=상한고정)')
+    ON CONFLICT (key) DO NOTHING;
 
 
 -- ─── Add admin permission for new pages ──
