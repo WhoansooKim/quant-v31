@@ -1608,10 +1608,78 @@ Regime: NEUTRAL
 
 ---
 
+## 22.AA 2026-06-17/18 IC 음수 교정 4종 (신호↔청산 분리)
+
+### 배경
+6/3 IC 보정(22.Z 변경 2) 이후에도 rolling 30 거래 IC가 **-0.14**로 음수 지속.
+원인 진단: 기존 IC는 `realized_pct`(실현손익) 기반 = **청산정책에 오염**된 지표.
+RSI(2)>90 조기청산이 승자를 +1.7% 지점에서 잘라내면, "점수 높은 종목이 손익은 낮다"는
+가짜 음의 상관이 만들어진다. 6/3의 추정 튜닝(sentiment +0.20 / quality -0.28)도
+이 **거래 IC(청산 오염)** 기반이라 부호가 뒤집힌 잘못된 근거였음 → 폐기.
+
+→ **진입 신호 품질**과 **청산 정책**을 분리 측정·교정하는 4종 패치.
+
+### A) 정책중립 신호 IC 측정 (`engine_v4/analysis/daily_report.py`)
+- 신규 `_signal_forward_ic()`: 진입점수 ↔ **forward N거래일(기본 5d) 고정기간 수익** Spearman IC.
+  진입가 대비 `daily_prices` 종가로 산출 → 청산정책 비오염.
+- composite + 6개 요인 각각의 IC를 `factor_ic_detail`(JSONB)에 저장.
+- `swing_daily_report` 신규 컬럼 3종: `rolling_signal_ic`, `rolling_signal_ic_n`, `factor_ic_detail`.
+- Telegram digest에 `IC (signal→fwd5d)` 줄 추가.
+- **6/17 실측 (N=47)**: trade IC **-0.1395** → signal IC **+0.0892** (진입 신호 자체는 유효 입증).
+
+### B) RSI(2) 승자 조기청산 방지 (`engine_v4/risk/exit_manager.py`)
+- Layer 4 RSI(2) 청산을 **최소 R / 최소 수익 게이팅** 후에만 허용:
+  - `entry_atr` 있으면 `(현재가-진입가)/entry_atr ≥ rsi2_exit_min_r`(기본 1.0R)
+  - 없으면 `gain_pct ≥ rsi2_exit_min_gain`(기본 3%)
+- → 승자가 ATR 트레일링으로 더 달리게, 손익↔점수 음의 상관 완화.
+
+### C) 모멘텀 과열 페널티 (`engine_v4/ai/multi_factor.py`)
+- 실측상 rank 상단(과열/쏠림) 종목이 **역U자**로 언더퍼폼.
+- `rank > threshold(0.80)` 초과분을 `penalty(0.6)`배만 가산 → 과열 구간 감쇠.
+- config gate: `momentum_overext_enabled`.
+
+### D) 요인 가중치 재보정 (`engine_v4/ai/multi_factor.py` REGIME_WEIGHTS)
+실측 factor IC 근거(quality +0.216 / sentiment +0.058 / technical -0.054 /
+macro -0.042 / flow **-0.356** / value **-0.363**)로 전 regime 리밸런싱:
+
+| Regime | 변경 전 (tech/sent/flow/qual/val/macro) | 변경 후 |
+|--------|-------------------------------------|---------|
+| TRENDING | 0.27/0.20/0.10/0.10/0.23/0.10 | 0.20/0.18/0.05/**0.28**/0.12/0.17 |
+| SIDEWAYS | 0.15/0.20/0.10/0.18/0.22/0.15 | 0.15/0.18/0.05/**0.30**/0.12/0.20 |
+| HIGH_VOL | 0.18/0.22/0.10/0.15/0.15/0.20 | 0.15/0.20/0.05/**0.25**/0.10/0.25 |
+| MIXED | 0.20/0.25/0.10/0.12/0.21/0.12 | 0.18/0.20/0.05/**0.28**/0.12/0.17 |
+
+→ quality 대폭↑, flow·value 최소화(단기 역예측), 각 regime 합 = 1.0 검증.
+
+### 신규 config (6종, `swing_config`)
+| key | 값 | category | 용도 |
+|-----|----|----|------|
+| `signal_ic_horizon_days` | 5 | scoring | 신호 IC forward 수익 기간(거래일) |
+| `rsi2_exit_min_r` | 1.0 | exit | RSI(2) 청산 최소 R배수 |
+| `rsi2_exit_min_gain` | 0.03 | exit | entry_atr 없을 때 최소 수익률 |
+| `momentum_overext_enabled` | true | scoring | 모멘텀 과열 페널티 on/off |
+| `momentum_overext_threshold` | 0.80 | scoring | 페널티 시작 rank |
+| `momentum_overext_penalty` | 0.6 | scoring | 초과분 가산 비율(1=무감쇠) |
+
+### 마이그레이션 / 검증
+- `scripts/migrate_postmortem.sql`에 신규 컬럼 3 + config 6을 **멱등 ALTER/INSERT**로 반영
+  (지금까진 DB에만 직접 추가돼 새 DB 재구성 시 누락될 상태였음). 재실행 검증 통과(exit=0).
+- `py_compile` + 모듈 임포트 통과, REGIME_WEIGHTS 4개 합 모두 1.0.
+- 엔진은 6/18 05:33 재시작분이 이미 새 코드로 구동 중.
+
+### 예상 효과
+- **신호 IC가 양수**임을 분리 측정으로 확인 → 진입 로직은 유지하고 청산정책만 교정.
+- 1~2주 누적 후 `rolling_signal_ic` 추세 + 거래 IC 회복 여부 재측정 권장.
+
+---
+
 ## 23. Git History
 
 ```
-PENDING  feat: Telegram 양방향 봇 (옵션 A 9개 명령 + 옵션 B Claude 큐) + Help 14번 섹션
+fea7a34  fix: IC 음수 교정 4종 — 정책중립 신호IC + RSI(2) 승자보호 + 모멘텀 과열 페널티 + 요인 가중치 재보정
+d1eac6b  fix: Signals factor detail — risk-adjustment 스키마 변경 대응 + Crowding/Short 렌더링 복구
+efacdf9  fix: Telegram 봇 /analyze /regime /status — 실제 스키마 + NULL 안전
+1cd730a  feat: Telegram 양방향 봇 (옵션 A 9개 명령 + 옵션 B Claude 큐)
 2dffd2d  tune: IC 보정 절충 완화 — NEUTRAL composite_score_min 63 → 61
 c3b35a7  docs: Help 13번 섹션 — 자율 진화 시스템 + 옵션 3종 활성화 반영
 22bd455  feat: IC 보정 + Pipeline 3회/일 + Dashboard 자동갱신 + Telegram 요약
