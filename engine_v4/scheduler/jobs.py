@@ -876,7 +876,17 @@ class SwingScheduler:
 
     def generate_snapshot(self) -> dict | None:
         """포트폴리오 스냅샷 생성 — 현재가 조회 + DB 저장."""
+        import math
         import yfinance as yf
+
+        def _finite_price(v) -> float | None:
+            """가격이 유한한 양수일 때만 반환 (NaN/inf/0 이하 → None).
+            bool(float('nan'))==True 라서 `if cp:` 만으로는 NaN을 거른다는 보장이 없음."""
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) and f > 0 else None
 
         try:
             INITIAL_CAPITAL = float(
@@ -893,12 +903,15 @@ class SwingScheduler:
                 try:
                     data = yf.download(symbols, period="2d", progress=False)
                     if len(symbols) == 1:
-                        current_prices[symbols[0]] = float(data["Close"].dropna().iloc[-1])
+                        px = _finite_price(data["Close"].dropna().iloc[-1])
+                        if px is not None:
+                            current_prices[symbols[0]] = px
                     else:
                         for sym in symbols:
                             try:
-                                current_prices[sym] = float(
-                                    data["Close"][sym].dropna().iloc[-1])
+                                px = _finite_price(data["Close"][sym].dropna().iloc[-1])
+                                if px is not None:
+                                    current_prices[sym] = px
                             except (KeyError, IndexError):
                                 pass
                 except Exception as e:
@@ -911,8 +924,8 @@ class SwingScheduler:
                 qty = float(p.get("qty") or 1)
                 ep = float(p["entry_price"])
                 entry_cost += qty * ep
-                cp = current_prices.get(p["symbol"])
-                if cp:
+                cp = _finite_price(current_prices.get(p["symbol"]))
+                if cp is not None:
                     self.pg.update_position_price(p["position_id"], cp)
                     invested_usd += qty * cp
                 else:
@@ -963,6 +976,15 @@ class SwingScheduler:
             curr_dd = cumulative_return - peak_return
             if curr_dd < worst_dd:
                 worst_dd = curr_dd
+
+            # 최종 방어선: 비유한(NaN/inf) 값이 하나라도 있으면 오염 스냅샷 저장 거부
+            if not all(math.isfinite(x) for x in
+                       (total_value, cash_usd, invested_usd, daily_pnl,
+                        daily_return, cumulative_return, worst_dd, trading_pnl)):
+                logger.error(
+                    "Snapshot 비유한 값 감지 — 저장 건너뜀 "
+                    f"(total={total_value}, invested={invested_usd}, trading_pnl={trading_pnl})")
+                return None
 
             snap = {
                 "total_value_usd": round(total_value, 2),

@@ -402,19 +402,18 @@
             }
             catch { /* 실패해도 stale 값으로 폴백 */ }
 
-            var snapTask = Db.GetLatestSnapshotAsync();
-            var posTask = Db.GetOpenPositionsAsync();
-            var tradeTask = Db.GetRecentTradesAsync(50);
-            var histTask = Db.GetSnapshotHistoryAsync(selectedDays);
-            var sigTask = Db.GetPendingSignalCountAsync();
+            // 각 쿼리를 개별 격리 — 하나가 실패해도 나머지는 표시 (전체 공백 방지)
+            async Task Run(string name, Func<Task> f)
+            {
+                try { await f(); }
+                catch (Exception ex) { Console.WriteLine($"[Home] {name} load failed: {ex.GetType().Name}: {ex.Message}"); }
+            }
+            await Run("snapshot", async () => snapshot = await Db.GetLatestSnapshotAsync());
+            await Run("positions", async () => openPositions = await Db.GetOpenPositionsAsync());
+            await Run("trades", async () => recentTrades = await Db.GetRecentTradesAsync(50));
+            await Run("history", async () => snapHistory = await Db.GetSnapshotHistoryAsync(selectedDays));
+            await Run("pending", async () => pendingSignals = await Db.GetPendingSignalCountAsync());
 
-            await Task.WhenAll(snapTask, posTask, tradeTask, histTask, sigTask);
-
-            snapshot = snapTask.Result;
-            openPositions = posTask.Result;
-            recentTrades = tradeTask.Result;
-            snapHistory = histTask.Result;
-            pendingSignals = sigTask.Result;
             dailyPnl = snapshot?.DailyPnlUsd ?? 0;
             cumReturn = snapshot?.CumulativeReturn ?? 0;
             _chartPending = snapHistory.Any();
@@ -424,7 +423,7 @@
             _ = LoadWatchlistSignalsAsync();
             _ = LoadCommissionAsync();
         }
-        catch { }
+        catch (Exception ex) { Console.WriteLine($"[Home] OnInit failed: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     private async Task LoadMacroAsync()
