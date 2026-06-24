@@ -59,10 +59,18 @@ class PositionManager:
         return True, "OK"
 
     def calculate_position_size(self, account_value_usd: float,
-                                entry_price: float) -> dict:
+                                entry_price: float,
+                                stop_loss: float | None = None) -> dict:
         """
-        포지션 사이즈 계산 (매크로 레짐 반영).
-        반환: {qty, amount, pct_of_account, macro_regime, macro_multiplier}
+        포지션 사이즈 계산 (매크로 레짐 + 집중 캡 반영).
+
+        집중 캡(concentration_cap_enabled=true)은 base 수량에 3중 상한을 적용:
+          1) 리스크 캡   : 스톱거리×수량 ≤ 계좌×max_risk_per_trade_pct (변동성 큰 종목 자동 축소)
+          2) 명목 캡     : 수량×진입가 ≤ 계좌×max_position_pct_cap (단일종목 과집중 차단)
+          3) 총노출 캡   : 기존 오픈 명목 + 신규 명목 ≤ 계좌×max_total_exposure_pct (현금버퍼 유지)
+        1주조차 캡을 넘으면 qty=0 으로 반환 → 호출부가 진입 거부 (강제 1주 진입 금지).
+
+        반환: {qty, amount, pct_of_account, macro_regime, macro_multiplier, cap_reason}
         """
         pct = float(self.pg.get_config_value("position_pct", str(self.cfg.position_pct)))
 
@@ -83,10 +91,49 @@ class PositionManager:
 
         adjusted_pct = pct * multiplier
         target_amount = account_value_usd * adjusted_pct
-        qty = int(target_amount / entry_price)  # 정수 주만 (소수점 미지원)
+        base_qty = int(target_amount / entry_price) if entry_price > 0 else 0  # 목표 수량(내림)
 
-        if qty <= 0:
-            qty = 1  # 최소 1주
+        # ── 집중 캡: 각 캡을 '허용 상한(ceiling)'으로 계산 ──
+        # 목표가 0주로 내림돼도 1주가 모든 캡 이내면 허용, 1주조차 초과면 거부.
+        cap_reason = ""
+        cap_enabled = self.pg.get_config_value("concentration_cap_enabled", "true") == "true"
+        if cap_enabled and account_value_usd > 0 and entry_price > 0:
+            ceilings = []  # (max_qty, reason)
+
+            # 1) 리스크 캡 (스톱거리 기반) — 변동성 큰(스톱 먼) 종목 자동 축소
+            if stop_loss and stop_loss > 0 and stop_loss < entry_price:
+                max_risk_pct = float(self.pg.get_config_value("max_risk_per_trade_pct", "0.015"))
+                risk_per_share = entry_price - stop_loss
+                ceilings.append((int((account_value_usd * max_risk_pct) / risk_per_share), "risk_cap"))
+
+            # 2) 명목 캡 (단일 종목 상한)
+            max_pos_cap = float(self.pg.get_config_value("max_position_pct_cap", "0.20"))
+            ceilings.append((int((account_value_usd * max_pos_cap) / entry_price), "notional_cap"))
+
+            # 3) 총노출 캡 (기존 오픈 명목 합 + 신규)
+            max_total = float(self.pg.get_config_value("max_total_exposure_pct", "0.90"))
+            room = account_value_usd * max_total - self._get_open_exposure_usd()
+            ceilings.append((int(room / entry_price) if room > 0 else 0, "total_exposure_cap"))
+
+            max_allowed, bind_reason = min(ceilings, key=lambda c: c[0])
+            # 목표가 0이면 1주 시도 (소액계좌 고가주 대응), 단 캡 상한 내에서만
+            desired = base_qty if base_qty >= 1 else 1
+            qty = min(desired, max_allowed)
+            if qty < desired:
+                cap_reason = bind_reason
+        else:
+            qty = base_qty if base_qty >= 1 else 1
+
+        if qty < 1:
+            # 1주조차 캡 초과 → 진입 거부 (강제 1주 진입 금지)
+            return {
+                "qty": 0,
+                "amount": 0.0,
+                "pct_of_account": 0.0,
+                "macro_regime": regime,
+                "macro_multiplier": multiplier,
+                "cap_reason": cap_reason or "below_min",
+            }
 
         actual_amount = qty * entry_price
         actual_pct = actual_amount / account_value_usd if account_value_usd > 0 else 0
@@ -97,7 +144,18 @@ class PositionManager:
             "pct_of_account": round(actual_pct, 4),
             "macro_regime": regime,
             "macro_multiplier": multiplier,
+            "cap_reason": cap_reason,
         }
+
+    def _get_open_exposure_usd(self) -> float:
+        """현재 오픈 포지션 명목가치 합 (entry_price × qty)."""
+        try:
+            positions = self.pg.get_open_positions()
+            return sum(float(p.get("entry_price") or 0) * float(p.get("qty") or 0)
+                       for p in positions)
+        except Exception as e:
+            logger.warning(f"open exposure calc failed: {e}")
+            return 0.0
 
     def validate_entry(self, symbol: str, entry_price: float) -> tuple[bool, str]:
         """진입 시그널 종합 검증."""
@@ -132,7 +190,17 @@ class PositionManager:
             logger.warning(f"Entry rejected for {symbol}: {reason}")
             return None
 
-        sizing = self.calculate_position_size(account_value_usd, entry_price)
+        stop_loss = float(signal["stop_loss"]) if signal.get("stop_loss") else None
+        sizing = self.calculate_position_size(account_value_usd, entry_price, stop_loss)
+
+        # 집중 캡으로 1주조차 불가 → 진입 거부 (강제 1주 진입 금지)
+        if sizing["qty"] < 1:
+            logger.warning(
+                f"Entry rejected for {symbol}: concentration cap "
+                f"({sizing.get('cap_reason')}) — ${entry_price:.2f} too large "
+                f"for account ${account_value_usd:.2f}")
+            return None
+
         is_paper = self.pg.get_config_value("trading_mode", "paper") == "paper"
 
         # 포지션 오픈
@@ -265,6 +333,12 @@ class PositionManager:
         base_pct = float(self.pg.get_config_value("position_pct", str(self.cfg.position_pct)))
         adjusted_pct = base_pct * multiplier
 
+        cap_enabled = self.pg.get_config_value("concentration_cap_enabled", "true") == "true"
+        account_value = 0.0
+        snap = self.pg.get_latest_snapshot()
+        if snap and snap.get("total_value_usd"):
+            account_value = float(snap["total_value_usd"])
+
         return {
             "enabled": True,
             "regime": regime,
@@ -272,4 +346,12 @@ class PositionManager:
             "base_position_pct": base_pct,
             "adjusted_position_pct": round(adjusted_pct, 4),
             "entry_blocked": regime == "CRISIS",
+            "concentration_cap": {
+                "enabled": cap_enabled,
+                "max_position_pct_cap": float(self.pg.get_config_value("max_position_pct_cap", "0.20")),
+                "max_risk_per_trade_pct": float(self.pg.get_config_value("max_risk_per_trade_pct", "0.015")),
+                "max_total_exposure_pct": float(self.pg.get_config_value("max_total_exposure_pct", "0.90")),
+                "current_exposure_usd": round(self._get_open_exposure_usd(), 2),
+                "current_exposure_pct": round(self._get_open_exposure_usd() / account_value, 4) if account_value > 0 else None,
+            },
         }
