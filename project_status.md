@@ -1673,9 +1673,74 @@ macro -0.042 / flow **-0.356** / value **-0.363**)로 전 regime 리밸런싱:
 
 ---
 
+## 22.AB 2026-06-24 수익률 진단 + 집중캡/손익비 교정 (Paper 검증 대응)
+
+### 배경 — 수익률 진단
+사용자가 "수익률이 엉망"이라 지적 → 데이터 진단. 핵심 발견:
+- **승률 64%인데 순손익 −$25** = 손익비 역전. 승자 평균 +4.07%(보유 2.1일) vs 패자 −5.93%(보유 5.6일).
+- **단일 거래 집중 리스크**: QCOM −$20.54 1건이 전체 순손실의 81%. $1000 계좌에서 고가주($226)를
+  `if qty<=0: qty=1` 강제로 1주 진입 → 단일 종목 24% 과집중 → −9% 갭이 포트 −2%.
+- **익절 캡처 부재**: partial_exit(+12%) 과거 0건 발동, take_profit(+20%) 2건만, 승자 86%가 +1.7%에서 잘림.
+
+### 수정 1 — Dashboard 전체 공백 버그 (`aefe334`)
+`swing_snapshots` numeric NaN → 대시보드 `GetSnapshotHistoryAsync` GetDecimal 예외 →
+`Task.WhenAll` 전체 throw → 모든 KPI 공백. 원인: snapshot 생성 시 `if cp:` 가 가격 NaN을 통과
+(`bool(float('nan'))==True`). `_finite_price()` 가드 + Home.razor 쿼리별 격리 + NaN 행 정리.
+
+### 수정 2 — 포지션 집중 리스크 캡 (`49b6e92`)
+`position_manager.concentration_capped_qty` 순수 함수(라이브/백테스트 공용) — 3중 캡:
+- 리스크 캡: 스톱거리×수량 ≤ 계좌×`max_risk_per_trade_pct`(1.5%)
+- 명목 캡: 수량×진입가 ≤ 계좌×`max_position_pct_cap`(20%)
+- 총노출 캡: 오픈 명목 합 ≤ 계좌×`max_total_exposure_pct`(90%)
+1주조차 캡 초과면 진입 거부(강제 1주 폐기). 소급검증: entry>$200 3건(QCOM/MRVL/DELL) 전부 거부됐을
+거래 = −$37.45 → 제거 시 −$25 → +$12 흑자 전환.
+
+### 수정 3 — 조기청산 재활성화 + 백테스트 캡 + 스냅샷 진동 (`a7ef1ba`)
+- **RSI(2) 재활성화**: `rsi2_exit_threshold` 999→90 (6/18 승자보호 게이팅 min_r=1.0/min_gain=3% 유지).
+- **백테스트 리플레이에 집중 캡 반영**: 라이브와 동일 순수 함수 호출.
+- **스냅샷 진동(976↔954) 글리치 수정**: 스냅샷 생성기가 둘(scheduler/jobs.py vs api/main.py)인데
+  jobs.py 가 누적 수수료(~$22) 미차감 → 두 경로 번갈아 실행되며 진동. jobs.py 에 수수료 차감 추가로
+  통일(api 버전이 정확했음). **정확한 누적수익률 = −4.25%(수수료 포함)**, 이전 −2.34%는 과소표시였음.
+
+### 수정 4 — 벤치마크 복구 + 15일 검증 잡 + 손익비 교정 (`b35d462`, `4686f00`)
+- **SPY/QQQ 수집 복구**: 유니버스 밖이라 2026-02-24 이후 갱신 안 됨 → 백필(2/25~6/24) +
+  `BENCHMARK_SYMBOLS` 를 일일 파이프라인에 추가. 검증창 SPY −1.46%/QQQ −0.72% vs 전략 −4.4%.
+- **15일 검증 재평가 잡**(`validation_recheck`, 매월 1·16일 09:00 KST, 잡 23→24개): 수정본 기준일
+  (`validation_postfix_start`=2026-06-24) 이후 거래만 집계 → 거래수/승률/SQN/SPY대비 → 30거래 시
+  stop 조건(SQN≥1.6 또는 SPY+3%p) 자동 판정 → Telegram.
+- **브레이크이븐 스톱**(`breakeven_*`): +1R 도달 시 손절을 본전+0.2% 버퍼로 상향 → '이겼다 진 거래' 방지.
+- **R배수 부분익절**(`partial_exit_r`=2.0): 고정 +12%(0건 발동) → +2R(=+2×ATR) 도달 시 절반 확정.
+
+→ **스케일아웃 체계 완성**: +1R 본전 → +2R 절반확정 → 잔여 트레일링.
+
+### 신규 config (요약)
+| 그룹 | 키 |
+|------|-----|
+| 집중 캡 | `concentration_cap_enabled`, `max_position_pct_cap`(0.20), `max_risk_per_trade_pct`(0.015), `max_total_exposure_pct`(0.90) |
+| 손익비 | `breakeven_enabled`, `breakeven_trigger_r`(1.0), `breakeven_buffer_pct`(0.002), `partial_exit_r`(2.0) |
+| 검증 추적 | `validation_postfix_start`(2026-06-24), `validation_sqn_target`(1.6), `validation_spy_outperform_pp`(3.0) |
+
+### Paper 검증 현황 (2026-06-24 기준)
+- 검증 시작 5/14 → 41일차(~6주). "1개월" 경과, 검증창 청산거래 12건(공식 30거래 미달).
+- 검증창 성과: 승률 17%, −$49.72, SQN −0.12, 전략 −4.4% vs SPY −1.46% (두 stop 조건 모두 미달).
+- 단, 손실 대부분이 이번에 수정한 결함(집중/RSI2 999/스냅샷). **수정본 기준 30거래 재누적 후 재평가** 합의.
+
+### 운영 노트
+- V4 엔진 재시작은 **SIGKILL 필요** — Telegram long-poll(`getUpdates?timeout=30`)이 SIGTERM
+  graceful shutdown 무한대기. `kill -9 $(pgrep -f "uvicorn engine_v4.api.main")` 후 systemd 자동 재기동.
+
+---
+
 ## 23. Git History
 
 ```
+4686f00  feat: take_profit 활용 확대 — R배수 기반 부분익절 (손익비 교정)
+b35d462  feat: SPY/QQQ 벤치마크 수집 복구 + 15일 검증 재평가 잡 + 브레이크이븐 스톱
+a7ef1ba  fix: 조기청산 재활성화 + 백테스트 집중캡 반영 + 스냅샷 진동 글리치 수정
+49b6e92  feat: 포지션 집중 리스크 캡 — 소액계좌 고가주 과집중 차단
+1022caf  chore: IC 추세 재측정 스크립트 (2026-07-02 예약) — fea7a34 후속 검증
+aefe334  fix: Dashboard 전체 공백 — 스냅샷 numeric NaN 으로 history 쿼리 예외
+4fc3620  docs: project_status.md — 22.AA IC 음수 교정 4종 기록 + Git History 갱신
 fea7a34  fix: IC 음수 교정 4종 — 정책중립 신호IC + RSI(2) 승자보호 + 모멘텀 과열 페널티 + 요인 가중치 재보정
 d1eac6b  fix: Signals factor detail — risk-adjustment 스키마 변경 대응 + Crowding/Short 렌더링 복구
 efacdf9  fix: Telegram 봇 /analyze /regime /status — 실제 스키마 + NULL 안전
