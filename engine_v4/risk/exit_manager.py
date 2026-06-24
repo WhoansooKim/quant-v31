@@ -325,18 +325,28 @@ class ExitManager:
 
     def check_partial_exits(self, positions: list[dict],
                             current_prices: dict[str, float]) -> list[PartialExitAction]:
-        """분할 청산 조건 체크 (매크로 레짐 반영)."""
+        """분할 청산 조건 체크 (매크로 레짐 반영).
+
+        손익비 교정(take_profit 활용 확대): 고정 % 대신 R배수(+N×ATR) 우선 사용.
+        고정 +12%는 실제 수익분포(승자 평균 +4%)에 비해 너무 높아 거의 발동 안 됨 →
+        entry_atr 있으면 +partial_exit_r(2.0R) 도달 시 절반 확정(승자 수익 잠금),
+        나머지는 브레이크이븐+트레일링으로 꼬리 수익 포착. entry_atr 없으면 고정 % 폴백.
+        """
         threshold = self._get_config_float("partial_exit_threshold", 0.07)
         exit_pct = self._get_config_float("partial_exit_pct", 0.5)
+        partial_r = self._get_config_float("partial_exit_r", 2.0)
 
         macro_enabled = self._get_config_bool("macro_enabled", True)
+        regime_tighten = 1.0  # RISK_OFF/CRISIS 시 R 트리거도 앞당김
         if macro_enabled:
             regime = self._get_macro_regime()
             if regime == "RISK_OFF":
                 threshold *= 0.7
+                regime_tighten = 0.7
                 exit_pct = min(exit_pct + 0.1, 0.7)
             elif regime == "CRISIS":
                 threshold *= 0.5
+                regime_tighten = 0.5
                 exit_pct = min(exit_pct + 0.2, 0.8)
 
         actions = []
@@ -352,7 +362,16 @@ class ExitManager:
                 continue
 
             gain_pct = (current_price - entry_price) / entry_price
-            if gain_pct >= threshold:
+            entry_atr = float(pos.get("entry_atr") or 0)
+
+            # R배수 우선 트리거 (entry_atr 있을 때), 없으면 고정 % 폴백
+            if entry_atr > 0:
+                r_multiple = (current_price - entry_price) / entry_atr
+                triggered = r_multiple >= (partial_r * regime_tighten)
+            else:
+                triggered = gain_pct >= threshold
+
+            if triggered:
                 exit_qty = round(qty * exit_pct)
                 if exit_qty < 1:
                     exit_qty = 1
