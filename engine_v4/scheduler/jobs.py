@@ -32,6 +32,9 @@ from engine_v4.strategy.swing import SwingStrategy
 
 DEFAULT_INITIAL_CAPITAL = 2200.0
 
+# 벤치마크 — 유니버스 밖이지만 검증/리포트용으로 일일 가격 수집
+BENCHMARK_SYMBOLS = ["SPY", "QQQ"]
+
 logger = logging.getLogger(__name__)
 
 KST = pytz.timezone("Asia/Seoul")
@@ -87,6 +90,15 @@ class SwingScheduler:
             CronTrigger(day_of_week="tue-sat", hour=2, minute=0, timezone=KST),
             id="daily_pipeline_midsession",
             name="Daily Pipeline (02:00 KST · US mid-session)",
+            replace_existing=True,
+        )
+
+        # 1d) 매월 1·16일 09:00 KST — 검증 재평가 (수정본 기준 ~15일 주기)
+        self.scheduler.add_job(
+            self._job_validation_recheck,
+            CronTrigger(day="1,16", hour=9, minute=0, timezone=KST),
+            id="validation_recheck",
+            name="Validation Recheck (1·16일 09:00 KST · ~15일 주기)",
             replace_existing=True,
         )
 
@@ -316,7 +328,9 @@ class SwingScheduler:
                 universe = self.universe_mgr.refresh_universe()
             symbols = [u["symbol"] for u in universe]
 
-            price_count = self.collector.collect_prices(symbols, days=30)
+            # 벤치마크(SPY/QQQ)도 함께 수집 — 유니버스엔 없지만 검증 stop 조건(SPY 대비) +
+            # daily_report.spy_return 산출에 필요. 가격만 수집(스캔/지표 대상 아님).
+            price_count = self.collector.collect_prices(symbols + BENCHMARK_SYMBOLS, days=30)
             ind_count = self.collector.compute_indicators(symbols)
 
             # Step 2: 시그널 스캔
@@ -351,6 +365,93 @@ class SwingScheduler:
                                         elapsed, error_msg=str(e))
             logger.error(f"Daily pipeline failed: {e}", exc_info=True)
             asyncio.run(self.notifier.notify_error("daily_pipeline", str(e)))
+
+    def _job_validation_recheck(self):
+        """검증 재평가 (15일 단위) — 수정본 기준 거래 누적 성과 + stop 조건 판정 → Telegram.
+
+        수정본(집중캡/RSI2/스냅샷, 2026-06-24~) 적용 후 청산거래만 집계.
+        stop 조건: 30거래 후 (a) 전략수익 ≥ SPY+3%p 또는 (b) SQN ≥ 1.6 — 둘 다 미달 시 폐기 신호.
+        """
+        import math as _math
+        try:
+            base = self.pg.get_config_value("validation_postfix_start", "2026-06-24")
+            sqn_target = float(self.pg.get_config_value("validation_sqn_target", "1.6"))
+            spy_pp = float(self.pg.get_config_value("validation_spy_outperform_pp", "3.0"))
+
+            with self.pg.get_conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT realized_pct, realized_pnl
+                    FROM swing_positions
+                    WHERE status='closed' AND exit_time >= %s AND realized_pct IS NOT NULL
+                    """, (base,)).fetchall()
+            rs = [float(r["realized_pct"]) for r in rows]
+            n = len(rs)
+            wins = sum(1 for r in rs if r > 0)
+            total_pnl = sum(float(r["realized_pnl"] or 0) for r in rows)
+            win_rate = (wins / n * 100) if n else 0.0
+            avg_pct = (sum(rs) / n * 100) if n else 0.0
+
+            # SQN = sqrt(N) * mean(R) / std(R)
+            sqn = None
+            if n >= 2:
+                mean_r = sum(rs) / n
+                var = sum((x - mean_r) ** 2 for x in rs) / (n - 1)
+                std_r = _math.sqrt(var)
+                if std_r > 1e-9:
+                    sqn = _math.sqrt(n) * mean_r / std_r
+
+            # 전략 수익(기준일 이후) vs SPY
+            def _ret(symbol):
+                with self.pg.get_conn() as conn:
+                    r = conn.execute(
+                        """
+                        SELECT (SELECT close FROM daily_prices WHERE symbol=%s AND time::date <= %s ORDER BY time DESC LIMIT 1) last_c,
+                               (SELECT close FROM daily_prices WHERE symbol=%s AND time::date >= %s ORDER BY time ASC LIMIT 1) first_c
+                        """, (symbol, datetime.now(KST).date(), symbol, base)).fetchone()
+                if r and r["first_c"] and r["last_c"]:
+                    return (float(r["last_c"]) / float(r["first_c"]) - 1) * 100
+                return None
+            spy_ret = _ret("SPY")
+
+            base_snap = None
+            with self.pg.get_conn() as conn:
+                bs = conn.execute(
+                    "SELECT total_value_usd FROM swing_snapshots WHERE time::date >= %s ORDER BY time ASC LIMIT 1",
+                    (base,)).fetchone()
+                if bs and bs["total_value_usd"]:
+                    base_snap = float(bs["total_value_usd"])
+            latest = self.pg.get_latest_snapshot()
+            strat_ret = None
+            if base_snap and latest and latest.get("total_value_usd"):
+                strat_ret = (float(latest["total_value_usd"]) / base_snap - 1) * 100
+
+            # 판정
+            cond_b = (sqn is not None and sqn >= sqn_target)
+            cond_a = (strat_ret is not None and spy_ret is not None and strat_ret >= spy_ret + spy_pp)
+            evaluable = n >= 30
+            if not evaluable:
+                verdict = f"📊 누적 중 ({n}/30거래) — 30거래 도달 시 공식 판정"
+            elif cond_a or cond_b:
+                verdict = "✅ 존속 조건 충족 (a 또는 b)"
+            else:
+                verdict = "🔴 두 조건 모두 미달 — 폐기 신호 (사용자 결정 필요)"
+
+            def _f(v, suf="", nd=2):
+                return f"{v:.{nd}f}{suf}" if v is not None else "—"
+
+            msg = (
+                f"<b>🔬 검증 재평가</b> (수정본 기준 {base}~, 15일 주기)\n\n"
+                f"<b>거래</b>: {n}건 · 승률 {win_rate:.0f}% · 평균 {_f(avg_pct,'%')} · 누적 ${total_pnl:.2f}\n"
+                f"<b>SQN</b>: {_f(sqn)} (목표 ≥{sqn_target})\n"
+                f"<b>수익</b>: 전략 {_f(strat_ret,'%')} vs SPY {_f(spy_ret,'%')} "
+                f"(조건 ≥SPY+{spy_pp:.0f}%p)\n\n"
+                f"{verdict}"
+            )
+            asyncio.run(self.notifier.send(msg))
+            logger.info(f"Validation recheck: n={n} sqn={sqn} strat={strat_ret} spy={spy_ret}")
+        except Exception as e:
+            logger.error(f"Validation recheck failed: {e}", exc_info=True)
 
     def _send_pipeline_summary(self, elapsed: float, n_symbols: int,
                                 n_entries: int, n_exits: int) -> None:

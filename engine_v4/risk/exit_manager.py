@@ -161,6 +161,11 @@ class ExitManager:
         # 최소 R(또는 entry_atr 없을 때 최소 수익률) 도달 후에만 rsi2 청산 허용 → 승자가 트레일링으로 달리게.
         rsi2_min_r = self._get_config_float("rsi2_exit_min_r", 1.0)
         rsi2_min_gain = self._get_config_float("rsi2_exit_min_gain", 0.03)
+        # 손익비 교정: 브레이크이븐 스톱 — +trigger_R 도달 후 손절을 본전(+버퍼)으로 올려
+        # '이겼다 진 거래'(+1R~+2.5R 반전 시 풀손실)를 무손실 청산으로 전환 → 손실측 축소.
+        be_enabled = self.pg.get_config_value("breakeven_enabled", "true") == "true"
+        be_trigger_r = self._get_config_float("breakeven_trigger_r", 1.0)
+        be_buffer = self._get_config_float("breakeven_buffer_pct", 0.002)
 
         # Regime adaptation
         regime = self._get_macro_regime()
@@ -252,6 +257,17 @@ class ExitManager:
                     self.pg.activate_trailing_stop(pid)
                     logger.info(f"L1 ATR Trailing ACTIVATED: {symbol} R={r_multiple:.1f} "
                                 f">= {activation_r}R")
+
+                # 브레이크이븐 스톱: +trigger_R 도달 시 손절을 본전(+버퍼)으로 상향.
+                # trail_sl 은 +2.5R 전까지 본전에 못 미치므로, 그 구간 반전 손실을 본 블록이 막는다.
+                if be_enabled and r_multiple >= be_trigger_r:
+                    be_stop = entry_price * (1 + be_buffer)
+                    cur_stored = float(pos.get("stop_loss") or hard_stop)
+                    if be_stop > cur_stored:
+                        self.pg.update_position_stop_loss(pid, round(be_stop, 4))
+                        pos["stop_loss"] = be_stop  # 이번 사이클 effective_sl 에 반영
+                        logger.info(f"L1 BREAKEVEN SL: {symbol} R={r_multiple:.1f} "
+                                    f">= {be_trigger_r}R → SL ${cur_stored:.2f} → ${be_stop:.2f}")
 
                 # Trailing SL 계산
                 if trailing_active:
