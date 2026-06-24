@@ -1,7 +1,8 @@
 [Unit]
 Description=Quant V3.1 Blazor Server Dashboard
-After=quant-engine.service
-Wants=quant-engine.service
+# NOTE: V3.1 레거시 엔진(quant-engine.service) 의존성 제거 (2026-06-25)
+# 부팅 시 이 Wants=가 disabled 상태의 V3.1을 끌어올려 8000/50051 부활시키던 원인.
+# 대시보드(V4)는 localhost:8001 엔진과 통신하므로 V3.1 의존성 불필요.
 
 [Service]
 Type=simple
