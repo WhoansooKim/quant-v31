@@ -19,6 +19,44 @@ MACRO_POSITION_MULTIPLIER = {
 }
 
 
+def concentration_capped_qty(
+    base_qty: int,
+    account_value: float,
+    entry_price: float,
+    stop_loss: float | None,
+    open_exposure: float,
+    *,
+    max_position_pct_cap: float = 0.20,
+    max_risk_per_trade_pct: float = 0.015,
+    max_total_exposure_pct: float = 0.90,
+    allow_min_one: bool = True,
+) -> tuple[int, str]:
+    """집중 리스크 캡을 적용한 최종 수량 계산 (순수 함수 — 라이브/백테스트 공용).
+
+    각 캡을 '허용 상한(ceiling)'으로 계산 → base_qty 가 0주로 내림돼도 1주가 모든 캡
+    이내면 허용(allow_min_one), 1주조차 캡 초과면 0 반환(진입 거부).
+    반환: (qty, cap_reason). qty=0 이면 거부, cap_reason 은 구속한 캡 이름.
+    """
+    if account_value <= 0 or entry_price <= 0:
+        return 0, "invalid"
+
+    ceilings: list[tuple[int, str]] = []
+    # 1) 리스크 캡 (스톱거리 기반)
+    if stop_loss and 0 < stop_loss < entry_price:
+        risk_per_share = entry_price - stop_loss
+        ceilings.append((int((account_value * max_risk_per_trade_pct) / risk_per_share), "risk_cap"))
+    # 2) 명목 캡 (단일 종목 상한)
+    ceilings.append((int((account_value * max_position_pct_cap) / entry_price), "notional_cap"))
+    # 3) 총노출 캡 (기존 오픈 명목 + 신규)
+    room = account_value * max_total_exposure_pct - open_exposure
+    ceilings.append((int(room / entry_price) if room > 0 else 0, "total_exposure_cap"))
+
+    max_allowed, bind_reason = min(ceilings, key=lambda c: c[0])
+    desired = base_qty if base_qty >= 1 else (1 if allow_min_one else 0)
+    qty = min(desired, max_allowed)
+    return max(qty, 0), (bind_reason if qty < desired else "")
+
+
 class PositionManager:
     """
     포지션 사이징 규칙:
@@ -93,34 +131,17 @@ class PositionManager:
         target_amount = account_value_usd * adjusted_pct
         base_qty = int(target_amount / entry_price) if entry_price > 0 else 0  # 목표 수량(내림)
 
-        # ── 집중 캡: 각 캡을 '허용 상한(ceiling)'으로 계산 ──
-        # 목표가 0주로 내림돼도 1주가 모든 캡 이내면 허용, 1주조차 초과면 거부.
+        # ── 집중 캡 (공용 순수 함수 위임) ──
         cap_reason = ""
         cap_enabled = self.pg.get_config_value("concentration_cap_enabled", "true") == "true"
-        if cap_enabled and account_value_usd > 0 and entry_price > 0:
-            ceilings = []  # (max_qty, reason)
-
-            # 1) 리스크 캡 (스톱거리 기반) — 변동성 큰(스톱 먼) 종목 자동 축소
-            if stop_loss and stop_loss > 0 and stop_loss < entry_price:
-                max_risk_pct = float(self.pg.get_config_value("max_risk_per_trade_pct", "0.015"))
-                risk_per_share = entry_price - stop_loss
-                ceilings.append((int((account_value_usd * max_risk_pct) / risk_per_share), "risk_cap"))
-
-            # 2) 명목 캡 (단일 종목 상한)
-            max_pos_cap = float(self.pg.get_config_value("max_position_pct_cap", "0.20"))
-            ceilings.append((int((account_value_usd * max_pos_cap) / entry_price), "notional_cap"))
-
-            # 3) 총노출 캡 (기존 오픈 명목 합 + 신규)
-            max_total = float(self.pg.get_config_value("max_total_exposure_pct", "0.90"))
-            room = account_value_usd * max_total - self._get_open_exposure_usd()
-            ceilings.append((int(room / entry_price) if room > 0 else 0, "total_exposure_cap"))
-
-            max_allowed, bind_reason = min(ceilings, key=lambda c: c[0])
-            # 목표가 0이면 1주 시도 (소액계좌 고가주 대응), 단 캡 상한 내에서만
-            desired = base_qty if base_qty >= 1 else 1
-            qty = min(desired, max_allowed)
-            if qty < desired:
-                cap_reason = bind_reason
+        if cap_enabled:
+            qty, cap_reason = concentration_capped_qty(
+                base_qty, account_value_usd, entry_price, stop_loss,
+                self._get_open_exposure_usd(),
+                max_position_pct_cap=float(self.pg.get_config_value("max_position_pct_cap", "0.20")),
+                max_risk_per_trade_pct=float(self.pg.get_config_value("max_risk_per_trade_pct", "0.015")),
+                max_total_exposure_pct=float(self.pg.get_config_value("max_total_exposure_pct", "0.90")),
+            )
         else:
             qty = base_qty if base_qty >= 1 else 1
 

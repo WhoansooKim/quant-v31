@@ -1290,7 +1290,8 @@ def _generate_snapshot() -> dict:
     closed = pg.get_closed_positions(limit=9999)
     realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
 
-    # 3.5) 총 수수료 차감
+    # 3.5) 총 수수료 차감 — scheduler/jobs.py:_generate_snapshot 와 동일 공식 유지 필수.
+    #      (두 생성기가 달라지면 스냅샷이 진동함 — 과거 976↔954 글리치 원인)
     comm_data = pg.get_total_commissions()
     total_commission = float(comm_data["total_commission"])
 
@@ -1931,6 +1932,13 @@ def _run_replay_backtest(req: ReplayBacktestRequest):
     trades_log = []
     slippage = 0.001  # 0.1%
 
+    # 집중 리스크 캡 (라이브와 동일 — 공용 순수 함수 사용)
+    from engine_v4.risk.position_manager import concentration_capped_qty
+    cap_enabled = pg.get_config_value("concentration_cap_enabled", "true") == "true"
+    cap_max_pos = float(pg.get_config_value("max_position_pct_cap", "0.20"))
+    cap_max_risk = float(pg.get_config_value("max_risk_per_trade_pct", "0.015"))
+    cap_max_total = float(pg.get_config_value("max_total_exposure_pct", "0.90"))
+
     for day in dates:
         signals = {s["symbol"]: s for s in daily_signals[day]}
 
@@ -2001,6 +2009,11 @@ def _run_replay_backtest(req: ReplayBacktestRequest):
         # Sort by score descending
         candidates.sort(key=lambda s: s["weighted_score"], reverse=True)
 
+        # 진입 시점 계좌가치(equity) + 현재 노출(명목 합) — 집중 캡 기준
+        cur_invested = sum(p["last_price"] * p["qty"] for p in positions.values())
+        equity = cash + cur_invested
+        open_exposure = sum(p["entry_price"] * p["qty"] for p in positions.values())
+
         for sig in candidates:
             if len(positions) >= req.max_positions:
                 break
@@ -2008,13 +2021,27 @@ def _run_replay_backtest(req: ReplayBacktestRequest):
             alloc = cash * req.position_pct
             if alloc < 10 or price <= 0:
                 continue
-            qty = int(alloc / price)
+            base_qty = int(alloc / price)
+
+            # 집중 캡 적용 (라이브와 동일 로직)
+            if cap_enabled:
+                stop_px = float(sig["stop_price"]) if sig.get("stop_price") else None
+                qty, _cap_reason = concentration_capped_qty(
+                    base_qty, equity, price, stop_px, open_exposure,
+                    max_position_pct_cap=cap_max_pos,
+                    max_risk_per_trade_pct=cap_max_risk,
+                    max_total_exposure_pct=cap_max_total,
+                )
+            else:
+                qty = base_qty
+
             if qty < 1:
                 continue
             cost = price * qty
             if cost > cash:
                 continue
             cash -= cost
+            open_exposure += cost  # 같은 날 후속 진입의 총노출 캡 반영
             positions[sig["symbol"]] = {
                 "entry_price": price,
                 "qty": qty,

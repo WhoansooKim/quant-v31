@@ -893,7 +893,19 @@ class SwingScheduler:
                 self.pg.get_config_value("initial_capital",
                                          str(DEFAULT_INITIAL_CAPITAL)))
 
-            positions = self.pg.get_open_positions()
+            # 오픈/청산 경계 레이스 방어 (스냅샷 ~$22 글리치 버그 수정).
+            # get_open_positions() 와 get_closed_positions() 를 따로 읽는 사이 포지션이
+            # 청산되면, 같은 포지션이 양쪽에 잡혀 손익이 이중 계산됨.
+            # → 오픈을 먼저 읽고, 청산을 읽은 뒤, 청산 집합에 있는 id 는 오픈에서 제외.
+            #   (오픈-우선 순서 → 경계에서 청산되는 포지션은 항상 '청산'으로 정확히 1회 계산)
+            all_open = self.pg.get_open_positions()
+            closed = self.pg.get_closed_positions(limit=9999)
+            closed_ids = {p["position_id"] for p in closed}
+            positions = [p for p in all_open if p["position_id"] not in closed_ids]
+            if len(positions) != len(all_open):
+                logger.warning(
+                    f"Snapshot 레이스 방어: 오픈/청산 동시 출현 "
+                    f"{len(all_open) - len(positions)}건 오픈에서 제외(청산으로 계산)")
             open_count = len(positions)
 
             # 현재가 조회 (period=2d로 장외 시간에도 이전 종가 확보)
@@ -931,18 +943,21 @@ class SwingScheduler:
                 else:
                     invested_usd += qty * ep
 
-            # 실현손익
-            closed = self.pg.get_closed_positions(limit=9999)
+            # 실현손익 (위에서 이미 읽은 closed 재사용 — 오픈/청산 일관성 유지)
             realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
 
-            # 포트폴리오 계산
+            # 총 수수료 차감 — api/main.py:_generate_snapshot 와 동일 공식 유지 필수.
+            # (두 스냅샷 생성기가 달라 976↔954 진동했던 글리치 수정: 수수료 일관 차감)
+            total_commission = float(self.pg.get_total_commissions()["total_commission"])
+
+            # 포트폴리오 계산 (수수료 차감)
             capital_adj = self.pg.get_total_capital_adjustments()
-            cash_usd = INITIAL_CAPITAL + capital_adj + realized_pnl - entry_cost
+            cash_usd = INITIAL_CAPITAL + capital_adj + realized_pnl - entry_cost - total_commission
             total_value = cash_usd + invested_usd
 
-            # 순수 트레이딩 손익 (입출금 제외)
+            # 순수 트레이딩 손익 (입출금 제외, 수수료 차감)
             unrealized_pnl = invested_usd - entry_cost
-            trading_pnl = realized_pnl + unrealized_pnl
+            trading_pnl = realized_pnl + unrealized_pnl - total_commission
 
             total_invested = INITIAL_CAPITAL + capital_adj
             cumulative_return = trading_pnl / total_invested if total_invested > 0 else 0
