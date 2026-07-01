@@ -80,6 +80,14 @@ print("\n".join(L))
 PY
 )
 
+# Claude 세션 인수인계용 결과 파일 (다음 세션이 추가 설명 없이 읽고 보고)
+RESULT_FILE=/home/quant/quant-v31/scripts/rsi2_review_result.txt
+{
+  echo "# rsi2 출구 정책 1주 전진검증 결과 — $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
+  echo "# 상태: PENDING_CLAUDE_REPORT (Claude가 사용자에게 보고 후 이 줄을 REPORTED 로 바꿀 것)"
+  echo "$MSG" | sed 's/<[^>]*>//g'
+} > "$RESULT_FILE"
+
 RESP=$(curl -s -m 15 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
   -d chat_id="${CHAT}" -d parse_mode=HTML --data-urlencode text="${MSG}")
 echo "telegram resp: $RESP"
