@@ -1742,11 +1742,48 @@ macro -0.042 / flow **-0.356** / value **-0.363**)로 전 regime 리밸런싱:
   대시보드 사용처 없음(8000/gRPC 참조는 전부 `_v31_backup/`).
 - 활성 시스템 = `quant-engine-v4`(8001) + `quant-dashboard`(5000)뿐. 04:30 오류 알림 중단됨.
 
+### 2026-06-25 재부팅 후속 — V3.1 부활 원인 제거 (대시보드 유닛 의존성)
+- **증상**: 재부팅 후 disabled 상태의 `quant-engine`(V3.1, 8000+gRPC 50051)이 다시 `active`. `@reboot` 검증
+  스크립트가 `🔴 FAIL — V3.1 재가동`을 자동 기록.
+- **원인**: `quant-dashboard.service` 에 V3.1 시절 잔재인 `After=`/`Wants=quant-engine.service` 두 줄.
+  enabled 인 대시보드가 부팅 시 약한 의존성으로 disabled V3.1 을 함께 기동시킴.
+- **조치**: 라이브 유닛(`/etc/systemd/system/`)·저장소 사본(`systemd/quant-dashboard.service`) 양쪽에서 두 줄
+  제거 → **다음 재부팅부터 영구 차단**. V3.1 은 `Restart=always` 라 `systemctl kill -s KILL` 후 `stop` 으로
+  정지 고정(단순 kill 은 10초 후 부활). 커밋 `ead8870`.
+
+## 22.AC 2026-07-01 IC 재진단 + rsi2 출구 정책 교정 (승자 과조기절단)
+- **핵심 결론**: 팩터 가중치(REGIME_WEIGHTS)는 정상. 음수 IC 의 진짜 원인은 **출구 정책**이었음.
+- **두 종류 IC 구분**:
+  - 신호 IC(정책 중립 forward-5d, `_signal_forward_ic`) = **+0.074 (양수)**, quality +0.20 → 진입 신호·가중치 양호.
+  - 거래 IC(rolling_30, realized 기반) — 청산정책 오염값. 6/24 −0.117 → **7/1 +0.103 으로 이미 양전**(최근
+    rsi2 청산이 +5~8% 큰 승자였던 영향).
+- **반사실 검증 (out-of-sample 실가격)**: rsi2 청산 23건이 청산 후 5일 +2.31% / **10일 +8.53% 추가 상승**
+  (65%/61% 계속 상승). 실제 챙긴 +2.19% 의 약 4배를 놓침 → 승자 과조기절단 확정.
+  - 청산 사유별: rsi2_overbought 24건 평균 +2.43%/1.9일(승자 조기절단) vs take_profit 2건 **+26.57%**(끝까지 보유).
+- **조치 (DB config, 라이브 즉시반영·재시작불요·되돌리기 가능)**:
+  - `rsi2_exit_min_r`: 1.0 → **2.0** (승자 +2R 도달 전 rsi2 청산 금지 → 트레일링으로 달리게)
+  - `rsi2_exit_threshold`: 90 → **95** (극단 과매수만 발동)
+  - `exit_manager.py:60,158,162` 가 `_get_config_float` 로 실시간 read. 되돌리려면 1.0 / 90 으로 UPDATE.
+- **전진검증 예약**: 백테스트 엔진에 rsi2 로직 미탑재 → 사후 백테스트 불가, **전진 관찰로 검증**.
+  `scripts/rsi2_exit_review_20260708.sh` + user crontab `0 9 8 7 *` → **2026-07-08 09:00 KST 1회**(변경후 청산/
+  반사실/IC 를 baseline 대비 평가 → Telegram, 성공 시 cron 자기제거, 로그 `scripts/rsi2_exit_review.log`).
+  재부팅 생존(cron). 커밋 `f2c1b40`.
+- **부수 발견 — 스코어링 누락 = 해소됨**: 6월 ENTRY 시그널 NULL-score 9건은 전부 6/1~6/21 에 몰림, 6/22 이후 0건.
+  파이프라인 실패(V3.1/SPY 충돌) 기간 부수피해로 안정화와 함께 자동복구. 코드 수정 불요, 모니터링만.
+- **자동 하네스 맹점**: 7/1 월간 변이 26개 중 rsi2 변이(#19·21·24)는 전부 임계치 **낮추는(70·75·80) 잘못된 방향**,
+  백테스트도 0 trades 로 rejected. 이번 출구 픽스는 자동 하네스로는 못 찾는 것 → 변이 생성기에 반사실/보유기간 신호
+  반영 여지.
+
 ---
 
 ## 23. Git History
 
 ```
+f2c1b40  feat(exit): rsi2 출구 정책 교정 1주 전진검증 스크립트 + cron 예약 (min_r 2.0 / thr 95)
+ead8870  fix(systemd): 대시보드 유닛에서 V3.1 엔진 의존성 제거 (재부팅 부활 차단)
+5fac8e1  chore: 재부팅 후 V3.1 비활성화 자동 검증 스크립트 (@reboot cron)
+01c4f66  docs: V3.1 레거시 엔진 완전 비활성화 기록 (2026-06-25)
+f590e96  docs: project_status.md — 22.AB 수익률 진단 + 집중캡/손익비 교정 + Git History 갱신
 4686f00  feat: take_profit 활용 확대 — R배수 기반 부분익절 (손익비 교정)
 b35d462  feat: SPY/QQQ 벤치마크 수집 복구 + 15일 검증 재평가 잡 + 브레이크이븐 스톱
 a7ef1ba  fix: 조기청산 재활성화 + 백테스트 집중캡 반영 + 스냅샷 진동 글리치 수정
