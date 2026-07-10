@@ -295,15 +295,22 @@ async def scan_signals():
         entries = strategy.scan_entries()
         exits = strategy.scan_exits()
         elapsed = time.time() - start
-        pg.insert_pipeline_log("scan", "completed", elapsed, {
-            "entries": len(entries), "exits": len(exits),
-        })
+        no_entry_reason = None
+        if not entries:
+            funnel = getattr(strategy, "_last_entry_funnel", None)
+            if funnel:
+                no_entry_reason = funnel.get("message")
+        scan_details = {"entries": len(entries), "exits": len(exits)}
+        if no_entry_reason:
+            scan_details["no_entry_reason"] = no_entry_reason
+        pg.insert_pipeline_log("scan", "completed", elapsed, scan_details)
         return {
             "status": "ok",
             "entries": len(entries),
             "exits": len(exits),
             "signals": entries + exits,
             "elapsed_sec": round(elapsed, 2),
+            "no_entry_reason": no_entry_reason,
         }
     except Exception as e:
         pg.insert_pipeline_log("scan", "failed", time.time() - start, error_msg=str(e))
@@ -1173,9 +1180,18 @@ def _run_pipeline():
             logger.info(f"Expired {expired} old signals")
 
         elapsed = time.time() - start
-        pg.insert_pipeline_log("full_pipeline", "completed", elapsed, {
-            "entries": len(entries), "exits": len(exits), "expired": expired,
-        })
+        details = {"entries": len(entries), "exits": len(exits), "expired": expired}
+        # 진입 0이면 "왜 없는지" 깔때기 사유를 details 에 포함 (대시보드 표시용)
+        if not entries:
+            funnel = getattr(strategy, "_last_entry_funnel", None)
+            if funnel:
+                details["no_entry_reason"] = funnel.get("message")
+                details["entry_funnel"] = {
+                    k: funnel[k] for k in
+                    ("total", "price_ok", "trend", "breakout", "volume", "three_cond")
+                    if k in funnel
+                }
+        pg.insert_pipeline_log("full_pipeline", "completed", elapsed, details)
     except Exception as e:
         pg.insert_pipeline_log("full_pipeline", "failed", time.time() - start,
                                error_msg=str(e))

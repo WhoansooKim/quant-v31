@@ -360,14 +360,20 @@ class SwingScheduler:
             self.generate_snapshot()
 
             elapsed = time.time() - start
-            self.pg.insert_pipeline_log("scheduled_pipeline", "completed", elapsed, {
+            pipe_details = {
                 "symbols": len(symbols),
                 "prices": price_count,
                 "indicators": ind_count,
                 "entries": len(entries),
                 "scored": scored_count,
                 "exits": len(exits),
-            })
+            }
+            # 진입 0이면 "왜 없는지" 깔때기 사유 포함 (대시보드 표시용)
+            if not entries:
+                funnel = getattr(self.strategy, "_last_entry_funnel", None)
+                if funnel:
+                    pipe_details["no_entry_reason"] = funnel.get("message")
+            self.pg.insert_pipeline_log("scheduled_pipeline", "completed", elapsed, pipe_details)
             logger.info(f"Daily pipeline done: {len(entries)} entries, "
                         f"{len(exits)} exits in {elapsed:.1f}s")
 
@@ -496,6 +502,11 @@ class SwingScheduler:
                 f"Pending ENTRY {pending} · Open positions {open_pos}",
                 f"Regime: {regime}",
             ]
+            # 진입 0이면 "왜 없는지" 사유 한 줄 추가 (안심용)
+            if n_entries == 0:
+                funnel = getattr(self.strategy, "_last_entry_funnel", None)
+                if funnel and funnel.get("message"):
+                    lines.append(f"ℹ️ {funnel['message']}")
             self.notifier.send_sync("\n".join(lines))
         except Exception as e:
             logger.warning(f"Pipeline summary telegram failed: {e}")

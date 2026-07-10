@@ -31,6 +31,8 @@ class SwingStrategy:
         self.pg = pg
         self.cfg = settings
         self.finnhub = finnhub  # FinnhubClient (optional, for value scoring)
+        # 마지막 scan_entries 진입 깔때기 (진입 0일 때 "왜 없는지" 설명용)
+        self._last_entry_funnel: dict | None = None
 
     # ─── Value Score (lightweight) ────────────────────
     def _quick_value_score(self, symbol: str) -> float:
@@ -136,6 +138,11 @@ class SwingStrategy:
         indicators = self.pg.get_latest_indicators()
         if not indicators:
             logger.warning("No indicators available for entry scan")
+            self._last_entry_funnel = {
+                "total": 0, "price_ok": 0, "trend": 0, "breakout": 0,
+                "volume": 0, "three_cond": 0, "passed_basic": 0, "final": 0,
+                "message": "진입 시그널 0 — 지표 데이터가 없습니다(수집/지표계산 확인 필요).",
+            }
             return []
 
         # 런타임 설정 오버라이드
@@ -145,6 +152,9 @@ class SwingStrategy:
         price_max = float(self.pg.get_config_value("price_range_max", str(self.cfg.price_range_max)))
 
         # Step 1: 기본 필터 (추세/브레이크아웃/거래량/가격) 통과 후보
+        # 진입 0일 때 "왜 없는지" 설명하기 위해 각 조건별 통과 수(깔때기)도 집계한다.
+        n_total = len(indicators)
+        f_price = f_trend = f_breakout = f_volume = f_three = 0
         candidates = []
         for ind in indicators:
             symbol = ind["symbol"]
@@ -153,13 +163,24 @@ class SwingStrategy:
                 continue
 
             close = float(ind["close"])
-            if close < price_min or close > price_max:
-                continue
-
+            price_ok = price_min <= close <= price_max
             trend_ok = bool(ind["trend_aligned"])
             breakout_ok = bool(ind["breakout_5d"])
             volume_ok = bool(ind["volume_surge"])
 
+            if price_ok:
+                f_price += 1
+            if trend_ok:
+                f_trend += 1
+            if breakout_ok:
+                f_breakout += 1
+            if volume_ok:
+                f_volume += 1
+            if trend_ok and breakout_ok and volume_ok:
+                f_three += 1
+
+            if not price_ok:
+                continue
             if not (trend_ok and breakout_ok and volume_ok):
                 continue
 
@@ -172,9 +193,16 @@ class SwingStrategy:
                 if rank_ok:
                     candidates.append(ind)
 
+        n_passed_basic = len(candidates)
+
         # Step 2: 이중 정렬 필터 적용
         if dual_sort and candidates:
             candidates = self._apply_dual_sort(candidates)
+
+        # 진입 깔때기 저장 (대시보드/텔레그램 "왜 시그널이 없나" 설명용)
+        self._last_entry_funnel = self._build_entry_funnel(
+            n_total, f_price, f_trend, f_breakout, f_volume, f_three,
+            n_passed_basic, len(candidates), dual_sort)
 
         # Step 3: 시그널 생성
         signals = []
@@ -210,6 +238,38 @@ class SwingStrategy:
         mode = "dual_sort" if dual_sort else "momentum"
         logger.info(f"Entry scan [{mode}]: {len(signals)} signals from {len(indicators)} stocks")
         return signals
+
+    def _build_entry_funnel(self, total, price, trend, breakout, volume,
+                            three, passed_basic, final, dual_sort) -> dict:
+        """진입 깔때기 요약 + '왜 시그널이 없나' 한글 사유 메시지 생성."""
+        counts = {
+            "total": total, "price_ok": price, "trend": trend,
+            "breakout": breakout, "volume": volume, "three_cond": three,
+            "passed_basic": passed_basic, "final": final,
+        }
+        if final > 0:
+            counts["message"] = (
+                f"진입 후보 {final}개 도출 ({total}종목 중). "
+                f"조건 통과: 추세 {trend}·브레이크아웃 {breakout}·거래량급증 {volume}, 3조건 동시 {three}."
+            )
+            return counts
+
+        head = (f"진입 시그널 0 — {total}종목 스캔. 통과 수: 가격대 {price}, "
+                f"추세 {trend}, 브레이크아웃 {breakout}, 거래량급증 {volume}, 3조건 동시 {three}.")
+        if passed_basic > 0:
+            tail = (f" 기본필터 {passed_basic}개가 통과했으나 "
+                    f"이중정렬(모멘텀+가치) 순위 컷에서 전부 제외됨.")
+        elif three == 0:
+            binding = min(
+                ("추세", trend), ("브레이크아웃", breakout), ("거래량급증", volume),
+                key=lambda x: x[1])
+            tail = (f" 추세·브레이크아웃·거래량급증을 동시에 만족하는 종목이 없습니다"
+                    f" (병목: {binding[0]} {binding[1]}개). "
+                    f"조용한 장에서 흔한 정상 상태이며, 셋업이 없을 때 진입하지 않는 것이 설계 의도입니다.")
+        else:
+            tail = (f" 3조건 충족 {three}개가 가격대 또는 순위 필터에서 제외됨.")
+        counts["message"] = head + tail
+        return counts
 
     def scan_exits(self) -> list[dict]:
         """청산 시그널 스캔 → swing_signals 생성."""

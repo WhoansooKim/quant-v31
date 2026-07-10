@@ -848,6 +848,13 @@
                 var exits = json.TryGetProperty("exits", out var x) ? x.GetInt32() : 0;
                 var elapsed = json.TryGetProperty("elapsed_sec", out var t) ? t.GetDouble() : 0;
                 statusMsg = $"Scan complete ({elapsed:F1}s) — {entries} entry signals, {exits} exit signals";
+                // 진입 0일 때 "왜 없는지" 사유 표시 (안심용)
+                if (entries == 0 && json.TryGetProperty("no_entry_reason", out var nr)
+                    && nr.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var reason = nr.GetString();
+                    if (!string.IsNullOrEmpty(reason)) statusMsg += $" — {reason}";
+                }
             }
             else
             {
@@ -910,9 +917,18 @@
                 && l.CreatedAt >= startedAt);
             if (latest != null)
             {
-                statusMsg = latest.Status == "completed"
-                    ? $"{stepName} completed in {latest.ElapsedSec:F1}s"
-                    : $"{stepName} failed: {latest.ErrorMsg}";
+                if (latest.Status == "completed")
+                {
+                    statusMsg = $"{stepName} completed in {latest.ElapsedSec:F1}s";
+                    // 진입 시그널 0일 때 "왜 없는지" 사유를 붙여 표시 (안심용)
+                    var reason = ExtractNoEntryReason(latest.Details);
+                    if (!string.IsNullOrEmpty(reason))
+                        statusMsg += $" — {reason}";
+                }
+                else
+                {
+                    statusMsg = $"{stepName} failed: {latest.ErrorMsg}";
+                }
                 return;
             }
 
@@ -927,6 +943,20 @@
     // ════════════════════════════════
     // Helpers
     // ════════════════════════════════
+
+    private static string? ExtractNoEntryReason(string? details)
+    {
+        if (string.IsNullOrWhiteSpace(details)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(details);
+            if (doc.RootElement.TryGetProperty("no_entry_reason", out var r)
+                && r.ValueKind == System.Text.Json.JsonValueKind.String)
+                return r.GetString();
+        }
+        catch { }
+        return null;
+    }
 
     private static string StatusCss(string status) => status switch
     {
