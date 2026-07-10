@@ -121,7 +121,7 @@ fundamental_analyzer = FundamentalAnalyzer(
     ollama_url=config.ollama_url,
     ollama_model=config.ollama_model)
 swing_scheduler = SwingScheduler(
-    pg, cache, config, universe_mgr, collector, strategy, notifier)
+    pg, cache, config, universe_mgr, collector, strategy, notifier, scorer)
 
 # ── SSE (Server-Sent Events) ──
 _sse_subscribers: list[asyncio.Queue] = []

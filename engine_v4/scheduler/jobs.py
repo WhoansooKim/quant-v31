@@ -52,6 +52,7 @@ class SwingScheduler:
         collector: DataCollector,
         strategy: SwingStrategy,
         notifier: TelegramNotifier,
+        scorer=None,
     ):
         self.pg = pg
         self.cache = cache
@@ -60,6 +61,7 @@ class SwingScheduler:
         self.collector = collector
         self.strategy = strategy
         self.notifier = notifier
+        self.scorer = scorer  # MultiFactorScorer — 파이프라인 스캔 직후 자동 스코어링용
         self.exit_mgr = ExitManager(pg)
         self.scheduler = BackgroundScheduler(timezone=KST)
         self._setup_jobs()
@@ -337,6 +339,19 @@ class SwingScheduler:
             entries = self.strategy.scan_entries()
             exits = self.strategy.scan_exits()
 
+            # Step 2b: 신규 ENTRY 시그널 즉시 멀티팩터 스코어링
+            # 스코어링 없이 수동 승인되면 팩터 게이트를 우회하므로(예: MRNA #154),
+            # 스캔 직후 점수를 부여해 무점수 실행을 방지한다.
+            # (full_pipeline main.py:1156 과 동일 패턴 — factor_scoring_enabled 플래그 존중)
+            scored_count = 0
+            if entries and self.scorer is not None and self.cfg.factor_scoring_enabled:
+                try:
+                    scored = self.scorer.score_pending_signals()
+                    scored_count = len(scored)
+                    logger.info(f"Factor scoring: {scored_count} signal(s) scored")
+                except Exception as e:
+                    logger.warning(f"Factor scoring failed (non-fatal): {e}")
+
             # Step 3: 텔레그램 알림
             if entries or exits:
                 asyncio.run(self.notifier.notify_signals(entries, exits))
@@ -350,6 +365,7 @@ class SwingScheduler:
                 "prices": price_count,
                 "indicators": ind_count,
                 "entries": len(entries),
+                "scored": scored_count,
                 "exits": len(exits),
             })
             logger.info(f"Daily pipeline done: {len(entries)} entries, "
