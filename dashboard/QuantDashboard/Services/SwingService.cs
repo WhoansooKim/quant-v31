@@ -1025,8 +1025,10 @@ public class SwingService
     {
         await using var conn = new NpgsqlConnection(_connStr);
         await conn.OpenAsync();
+        // 스캔은 활성(is_active) 유니버스만 처리하므로 카운트도 활성 기준으로 표시
+        // (총계에는 비활성 종목이 포함돼 스캔 종목수와 불일치를 유발)
         await using var cmd = new NpgsqlCommand(
-            "SELECT count(*) FROM swing_universe", conn);
+            "SELECT count(*) FROM swing_universe WHERE is_active = true", conn);
         var result = await cmd.ExecuteScalarAsync();
         return Convert.ToInt32(result);
     }

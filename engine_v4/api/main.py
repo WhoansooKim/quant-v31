@@ -296,13 +296,20 @@ async def scan_signals():
         exits = strategy.scan_exits()
         elapsed = time.time() - start
         no_entry_reason = None
+        entry_funnel = None
         if not entries:
             funnel = getattr(strategy, "_last_entry_funnel", None)
             if funnel:
                 no_entry_reason = funnel.get("message")
+                entry_funnel = {
+                    k: funnel[k] for k in
+                    ("total", "price_ok", "trend", "breakout", "volume", "three_cond")
+                    if k in funnel
+                }
         scan_details = {"entries": len(entries), "exits": len(exits)}
         if no_entry_reason:
             scan_details["no_entry_reason"] = no_entry_reason
+            scan_details["entry_funnel"] = entry_funnel
         pg.insert_pipeline_log("scan", "completed", elapsed, scan_details)
         return {
             "status": "ok",
@@ -311,6 +318,7 @@ async def scan_signals():
             "signals": entries + exits,
             "elapsed_sec": round(elapsed, 2),
             "no_entry_reason": no_entry_reason,
+            "entry_funnel": entry_funnel,
         }
     except Exception as e:
         pg.insert_pipeline_log("scan", "failed", time.time() - start, error_msg=str(e))

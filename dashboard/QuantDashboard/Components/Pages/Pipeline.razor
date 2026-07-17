@@ -433,6 +433,35 @@
                         <div class="text-muted" style="padding:2rem;text-align:center">열린 포지션이 없습니다</div>
                     }
                     break;
+
+                case 6: // 진입 시그널 0 — 사유
+                    <h4 class="pp-title">
+                        <span class="material-symbols-outlined" style="color:#f59e0b">info</span>
+                        진입 시그널 없음 — 사유
+                    </h4>
+                    <div style="padding:0.25rem 0.25rem 0.75rem">
+                        @if (entryFunnel != null && entryFunnel.Count > 0)
+                        {
+                            <table class="data-table" style="margin-bottom:1rem">
+                                <thead>
+                                    <tr><th>진입 조건 (AND)</th><th class="text-right">통과 종목</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td class="text-muted">스캔 종목 (활성 유니버스)</td><td class="text-right font-mono">@FunnelVal("total")</td></tr>
+                                    <tr><td>가격대 통과</td><td class="text-right font-mono">@FunnelVal("price_ok")</td></tr>
+                                    <tr><td>추세 정렬</td><td class="text-right font-mono">@FunnelVal("trend")</td></tr>
+                                    <tr><td>5일 브레이크아웃</td><td class="text-right font-mono">@FunnelVal("breakout")</td></tr>
+                                    <tr><td>거래량 급증</td><td class="text-right font-mono">@FunnelVal("volume")</td></tr>
+                                    <tr style="border-top:2px solid var(--border,#333)">
+                                        <td><strong>3조건 동시 충족</strong></td>
+                                        <td class="text-right font-mono"><strong>@FunnelVal("three_cond")</strong></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        }
+                        <p style="line-height:1.65;margin:0">@noEntryReason</p>
+                    </div>
+                    break;
             }
         </div>
     </div>
@@ -596,6 +625,9 @@
     private List<SwingIndicatorRow> popupIndicators = new();
     private List<SwingSignal> popupSignals = new();
     private List<SwingPosition> popupPositions = new();
+    // 진입 0 사유 팝업 (case 6)
+    private string? noEntryReason;
+    private Dictionary<string, int>? entryFunnel;
 
     // ── Symbol Detail Modal ──
     private bool sdmVisible;
@@ -848,12 +880,27 @@
                 var exits = json.TryGetProperty("exits", out var x) ? x.GetInt32() : 0;
                 var elapsed = json.TryGetProperty("elapsed_sec", out var t) ? t.GetDouble() : 0;
                 statusMsg = $"Scan complete ({elapsed:F1}s) — {entries} entry signals, {exits} exit signals";
-                // 진입 0일 때 "왜 없는지" 사유 표시 (안심용)
+                // 진입 0일 때 "왜 없는지" 사유 표시 + 팝업 자동 표시
                 if (entries == 0 && json.TryGetProperty("no_entry_reason", out var nr)
                     && nr.ValueKind == System.Text.Json.JsonValueKind.String)
                 {
                     var reason = nr.GetString();
-                    if (!string.IsNullOrEmpty(reason)) statusMsg += $" — {reason}";
+                    if (!string.IsNullOrEmpty(reason))
+                    {
+                        statusMsg += $" — {reason}";
+                        noEntryReason = reason;
+                        entryFunnel = null;
+                        if (json.TryGetProperty("entry_funnel", out var ef)
+                            && ef.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            var dict = new Dictionary<string, int>();
+                            foreach (var p in ef.EnumerateObject())
+                                if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Number)
+                                    dict[p.Name] = p.Value.GetInt32();
+                            entryFunnel = dict;
+                        }
+                        popupStep = 6;
+                    }
                 }
             }
             else
@@ -920,10 +967,15 @@
                 if (latest.Status == "completed")
                 {
                     statusMsg = $"{stepName} completed in {latest.ElapsedSec:F1}s";
-                    // 진입 시그널 0일 때 "왜 없는지" 사유를 붙여 표시 (안심용)
+                    // 진입 시그널 0일 때 "왜 없는지" 사유를 붙여 표시 + 팝업 자동 표시
                     var reason = ExtractNoEntryReason(latest.Details);
                     if (!string.IsNullOrEmpty(reason))
+                    {
                         statusMsg += $" — {reason}";
+                        noEntryReason = reason;
+                        entryFunnel = ExtractEntryFunnel(latest.Details);
+                        popupStep = 6;
+                    }
                 }
                 else
                 {
@@ -957,6 +1009,29 @@
         catch { }
         return null;
     }
+
+    private static Dictionary<string, int>? ExtractEntryFunnel(string? details)
+    {
+        if (string.IsNullOrWhiteSpace(details)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(details);
+            if (doc.RootElement.TryGetProperty("entry_funnel", out var f)
+                && f.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                var dict = new Dictionary<string, int>();
+                foreach (var p in f.EnumerateObject())
+                    if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        dict[p.Name] = p.Value.GetInt32();
+                return dict;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private string FunnelVal(string key)
+        => entryFunnel != null && entryFunnel.TryGetValue(key, out var v) ? v.ToString() : "-";
 
     private static string StatusCss(string status) => status switch
     {
