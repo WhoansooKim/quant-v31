@@ -1716,7 +1716,7 @@ macro -0.042 / flow **-0.356** / value **-0.363**)로 전 regime 리밸런싱:
 ### 신규 config (요약)
 | 그룹 | 키 |
 |------|-----|
-| 집중 캡 | `concentration_cap_enabled`, `max_position_pct_cap`(0.20), `max_risk_per_trade_pct`(0.015), `max_total_exposure_pct`(0.90) |
+| 집중 캡 | `concentration_cap_enabled`, `max_position_pct_cap`(**0.25**, 2026-07-24 0.20→0.25 상향), `max_risk_per_trade_pct`(0.015), `max_total_exposure_pct`(0.90) |
 | 손익비 | `breakeven_enabled`, `breakeven_trigger_r`(1.0), `breakeven_buffer_pct`(0.002), `partial_exit_r`(2.0) |
 | 검증 추적 | `validation_postfix_start`(2026-06-24), `validation_sqn_target`(1.6), `validation_spy_outperform_pp`(3.0) |
 
@@ -1776,9 +1776,45 @@ macro -0.042 / flow **-0.356** / value **-0.363**)로 전 regime 리밸런싱:
 
 ---
 
+## 22.AD 2026-07 파이프라인 스코어링 누락 수정 + 진입/승인 사유 가시화 + 집중캡 상향
+
+**① 스케줄 파이프라인 팩터 스코어링 누락 수정 (`733fc57`)**
+- 증상: MRNA #154 가 무점수(composite_score NULL)로 실행됨. 원인 = 스케줄 파이프라인(`_job_daily_pipeline`)에
+  스코어링 단계가 없어, 07:00 post-close 가 만든 시그널이 무점수로 방치되다가 대시보드 **수동 승인**
+  (`POST /signals/{id}/approve`, 게이트 미강제)으로 실행됨. (auto_approve 는 `no_composite_score` 스킵이라 안전.)
+- 수정: `jobs.py` scan 직후 `scorer.score_pending_signals()` 호출(full_pipeline main.py:1156 과 동일 패턴,
+  `factor_scoring_enabled` 존중), `SwingScheduler.__init__` scorer 주입. 프로덕션 확인: CFG #160 자동 채점 71.
+
+**② 진입 시그널 0 "왜 없는지" 가시화 (`a4e40e9`, `276d751`)**
+- `scan_entries` 진입 깔때기 집계 + `_build_entry_funnel` 사유 빌더(병목 조건 자동 식별). 진입 0 시
+  `/scan`·`full_pipeline`·`scheduled_pipeline` 로그 details + Telegram 요약 + 대시보드에 사유 노출.
+- 대시보드: statusMsg 에 사유 append + **팝업 case 6**(깔때기 표 + 설명) 자동 표시.
+- 병목은 주로 **거래량 급증**(예: 199종목 중 추세 74·브레이크아웃 39지만 거래량급증 2 → 3조건 동시 0). 조용한
+  장의 정상 상태.
+
+**③ 유니버스 카운트 정합 (`276d751`)**
+- 대시보드 Universe 카운트만 `count(*)` 총계(비활성 포함, 391)라 스캔 종목수(활성)와 불일치 → `GetUniverseCountAsync`
+  `WHERE is_active=true` 로 변경. 활성 유니버스 = 최신 지표 종목수 일치.
+
+**④ 승인 실패 사유 상세화 + 집중캡 20%→25% (2026-07-24)**
+- RTX(주당 $208) 를 $949 계좌에서 Approve 시 계속 400 실패 — 원인: 집중 명목 캡(`max_position_pct_cap` 0.20).
+  1주=계좌 22% > 20% → `concentration_capped_qty` = 0주 → 진입 거부(강제 1주 금지). **정상 동작.**
+- UX 수정: 승인 실패 시 일반 메시지 대신 **구체 사유 반환**(`main.py` approve_signal — "집중 리스크 캡 초과 —
+  1주 $X 가 계좌 $Y 의 Z% 로 한도(20%) 초과"). 대시보드는 이미 400 body 표시하므로 그대로 노출됨.
+- 사용자 요청으로 `max_position_pct_cap` **0.20 → 0.25** 상향(DB config, 실시간 반영). RTX 1주(22%)는 이제
+  25% 캡 내라 승인 가능. ⚠️ 단일종목 집중 위험 증가(모든 포지션에 적용).
+
+---
+
 ## 23. Git History
 
 ```
+(PENDING) docs: 22.AD 파이프라인 스코어링/사유 가시화/집중캡 25% + 승인 실패 사유 상세화
+276d751  feat(pipeline): 유니버스 카운트 활성 기준 정합 + 진입 0 사유 팝업
+a4e40e9  feat(pipeline): 진입 시그널 0일 때 '왜 없는지' 깔때기 사유 표시
+733fc57  fix(pipeline): 스케줄 파이프라인에 팩터 스코어링 단계 추가
+9813158  feat(exit): rsi2 7/8 재평가 결과 파일 생성 — 세션 재접속 자동 픽업
+cd3557b  docs: project_status.md — 22.AC rsi2 출구 정책 교정 + 재부팅 부활 픽스 + Git History 갱신
 f2c1b40  feat(exit): rsi2 출구 정책 교정 1주 전진검증 스크립트 + cron 예약 (min_r 2.0 / thr 95)
 ead8870  fix(systemd): 대시보드 유닛에서 V3.1 엔진 의존성 제거 (재부팅 부활 차단)
 5fac8e1  chore: 재부팅 후 V3.1 비활성화 자동 검증 스크립트 (@reboot cron)

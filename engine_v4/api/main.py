@@ -368,7 +368,24 @@ async def approve_signal(signal_id: int):
         result = pos_mgr.execute_entry(sig, account_value)
         if not result:
             pg.reject_signal(signal_id)
-            raise HTTPException(400, "Entry execution failed (limits or validation)")
+            # 실패 사유를 구체적으로 산출해 반환 (집중 캡 등) — 사용자가 "왜" 를 알도록
+            detail = "한도 또는 검증 초과"
+            try:
+                sizing = pos_mgr.calculate_position_size(
+                    account_value, float(sig["entry_price"]),
+                    float(sig["stop_loss"]) if sig.get("stop_loss") else None)
+                if sizing.get("qty", 0) < 1:
+                    cap = sizing.get("cap_reason", "cap")
+                    ep = float(sig["entry_price"])
+                    pct = (ep / account_value * 100) if account_value else 0
+                    cap_pct = float(pg.get_config_value("max_position_pct_cap", "0.20")) * 100
+                    detail = (
+                        f"집중 리스크 캡({cap}) 초과 — 1주 ${ep:.2f} 가 계좌 "
+                        f"${account_value:.2f} 의 {pct:.0f}% 로 단일종목 한도({cap_pct:.0f}%)를 "
+                        f"넘습니다. 이 종목은 현재 계좌 규모에 비해 너무 비싸 매수할 수 없습니다.")
+            except Exception:
+                pass
+            raise HTTPException(400, f"진입 실행 실패: {detail}")
 
         # KIS 주문 (live 모드에서 실패 시 경고만 — DB 포지션은 유지)
         order = kis.buy(
