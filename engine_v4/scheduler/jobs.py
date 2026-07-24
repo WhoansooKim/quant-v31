@@ -53,6 +53,7 @@ class SwingScheduler:
         strategy: SwingStrategy,
         notifier: TelegramNotifier,
         scorer=None,
+        sentiment=None,
     ):
         self.pg = pg
         self.cache = cache
@@ -62,6 +63,7 @@ class SwingScheduler:
         self.strategy = strategy
         self.notifier = notifier
         self.scorer = scorer  # MultiFactorScorer — 파이프라인 스캔 직후 자동 스코어링용
+        self.sentiment = sentiment  # SentimentAnalyzer — 스캔 직후 AI 분석(llm_score)용
         self.exit_mgr = ExitManager(pg)
         self.scheduler = BackgroundScheduler(timezone=KST)
         self._setup_jobs()
@@ -351,6 +353,14 @@ class SwingScheduler:
                     logger.info(f"Factor scoring: {scored_count} signal(s) scored")
                 except Exception as e:
                     logger.warning(f"Factor scoring failed (non-fatal): {e}")
+
+            # Step 2c: 신규 시그널 AI 분석 (llm_score) — 승인 전 채워 active 탭 빈칸 방지
+            if entries and self.sentiment is not None:
+                try:
+                    analyzed = self.sentiment.analyze_pending_signals()
+                    logger.info(f"AI analysis: {len(analyzed)} signal(s) analyzed")
+                except Exception as e:
+                    logger.warning(f"AI analysis failed (non-fatal): {e}")
 
             # Step 3: 텔레그램 알림
             if entries or exits:

@@ -112,6 +112,22 @@ class SentimentAnalyzer:
             return "ollama"
         return "mock"
 
+    def analyze_pending_signals(self, limit: int = 20) -> list[dict]:
+        """pending 시그널 중 llm_score 미설정분 일괄 AI 분석.
+
+        파이프라인(스캔 직후)과 /signals/analyze-pending 엔드포인트 공용.
+        승인 전 llm_score(AI 점수)를 채워 active 탭에서 빈칸 방지.
+        """
+        signals = self.pg.get_signals(status="pending", limit=limit)
+        todo = [s for s in signals if s.get("llm_score") is None]
+        results = []
+        for sig in todo:
+            try:
+                results.append(self.analyze_signal(sig["signal_id"]))
+            except Exception as e:
+                logger.error(f"AI analysis failed for signal {sig['signal_id']}: {e}")
+        return results
+
     def analyze_signal(self, signal_id: int) -> dict:
         """단일 시그널 AI 분석 → DB 업데이트.
 

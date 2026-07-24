@@ -121,7 +121,7 @@ fundamental_analyzer = FundamentalAnalyzer(
     ollama_url=config.ollama_url,
     ollama_model=config.ollama_model)
 swing_scheduler = SwingScheduler(
-    pg, cache, config, universe_mgr, collector, strategy, notifier, scorer)
+    pg, cache, config, universe_mgr, collector, strategy, notifier, scorer, sentiment)
 
 # ── SSE (Server-Sent Events) ──
 _sse_subscribers: list[asyncio.Queue] = []
@@ -1192,6 +1192,14 @@ def _run_pipeline():
                 logger.info(f"Factor scoring: {len(scored)} signals scored")
             except Exception as e:
                 logger.warning(f"Factor scoring failed (non-fatal): {e}")
+
+        # Step 2.6: AI 분석 (llm_score) — 승인 전 채워 active 탭 빈칸 방지
+        if entries:
+            try:
+                analyzed = sentiment.analyze_pending_signals()
+                logger.info(f"AI analysis: {len(analyzed)} signals analyzed")
+            except Exception as e:
+                logger.warning(f"AI analysis failed (non-fatal): {e}")
 
         # Step 3: Notify
         if entries or exits:
