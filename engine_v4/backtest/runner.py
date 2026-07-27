@@ -34,6 +34,13 @@ class BacktestParams:
     max_daily_entries: int = 1
     price_range_min: float = 20.0
     price_range_max: float = 80.0
+    # ── ①번 손익비 개선: ATR 트레일링 + 부분익절 (기본 off = 기존 고정 TP 동작 보존) ──
+    use_atr_trailing: bool = False   # True 시 고정 take_profit 대신 ATR 트레일링으로 승자 추종
+    atr_period: int = 14
+    atr_trailing_mult: float = 2.5   # 트레일링 폭 = high_water − mult×ATR
+    atr_activation_r: float = 1.0    # +activation_r × 초기리스크 도달 후 트레일링 개시
+    partial_exit_r: float = 0.0      # >0 이면 +R 도달 시 partial_exit_pct 만큼 부분익절 (0=off)
+    partial_exit_pct: float = 0.5
 
 
 @dataclass
@@ -46,6 +53,9 @@ class BacktestResult:
     win_rate: float = 0.0
     total_trades: int = 0
     profit_factor: float = 0.0
+    payoff_ratio: float = 0.0   # 평균승/평균패 (손익비) — ①번 검증 핵심 지표
+    avg_win_pct: float = 0.0
+    avg_loss_pct: float = 0.0
     avg_hold_days: float = 0.0
     final_value: float = 0.0
     equity_curve: list = field(default_factory=list)
@@ -141,6 +151,13 @@ class BacktestRunner:
             df["trend"] = (close > df["sma_50"]) & (df["sma_50"] > df["sma_200"])
             df["breakout"] = close > df["high_5d"]
             df["vol_surge"] = df["vol_ratio"] > params.volume_ratio_min
+            # ATR (Wilder) — 트레일링 스톱용
+            high = df["High"].astype(float)
+            low = df["Low"].astype(float)
+            prev_close = close.shift(1)
+            tr = pd.concat([high - low, (high - prev_close).abs(),
+                            (low - prev_close).abs()], axis=1).max(axis=1)
+            df["atr"] = tr.ewm(alpha=1 / params.atr_period, adjust=False).mean()
             indicators[sym] = df
 
         # ── 4. 시뮬레이션 ──
@@ -213,13 +230,50 @@ class BacktestRunner:
                 entry = pos["entry_price"]
                 pnl_pct = (current - entry) / entry
 
+                # high_water_mark 갱신 (트레일링용)
+                pos["high_water"] = max(pos.get("high_water", entry), current)
+
                 exit_reason = None
-                if pnl_pct <= params.stop_loss_pct:
-                    exit_reason = "stop_loss"
-                elif pnl_pct >= params.take_profit_pct:
-                    exit_reason = "take_profit"
-                elif not df.loc[day, "trend"]:
-                    exit_reason = "trend_break"
+                if params.use_atr_trailing:
+                    # ── ①번 개선: ATR 트레일링 + 부분익절 (고정 TP 대신) ──
+                    init_risk = entry - entry * (1 + params.stop_loss_pct)  # 초기 리스크(양수, 주당$)
+                    atr = float(df.loc[day, "atr"]) if pd.notna(df.loc[day, "atr"]) else 0.0
+                    gain = current - entry
+
+                    # 부분익절: +partial_exit_r × 초기리스크 도달 시 1회 (일부 청산)
+                    if (params.partial_exit_r > 0 and not pos.get("partial_done")
+                            and init_risk > 0 and gain >= params.partial_exit_r * init_risk):
+                        pexit_qty = int(pos["qty"] * params.partial_exit_pct)
+                        if pexit_qty >= 1:
+                            ppnl = (current - entry) * pexit_qty
+                            cash += current * pexit_qty
+                            pos["qty"] -= pexit_qty
+                            pos["partial_done"] = True
+                            trades_log.append({
+                                "date": day.strftime("%Y-%m-%d"), "symbol": sym, "side": "SELL",
+                                "qty": pexit_qty, "price": round(current, 2), "pnl": round(ppnl, 2),
+                                "pnl_pct": round(pnl_pct, 4), "reason": "partial_exit",
+                                "hold_days": (day - pos["entry_date"]).days,
+                            })
+
+                    # 청산 판정: 하드 스톱 / ATR 트레일링(활성화 후) / 추세이탈
+                    if pnl_pct <= params.stop_loss_pct:
+                        exit_reason = "stop_loss"
+                    elif not df.loc[day, "trend"]:
+                        exit_reason = "trend_break"
+                    elif (init_risk > 0 and atr > 0
+                          and gain >= params.atr_activation_r * init_risk):
+                        trail_stop = pos["high_water"] - params.atr_trailing_mult * atr
+                        if current <= trail_stop:
+                            exit_reason = "atr_trailing"
+                else:
+                    # ── 기존(baseline): 고정 stop/take_profit/trend ──
+                    if pnl_pct <= params.stop_loss_pct:
+                        exit_reason = "stop_loss"
+                    elif pnl_pct >= params.take_profit_pct:
+                        exit_reason = "take_profit"
+                    elif not df.loc[day, "trend"]:
+                        exit_reason = "trend_break"
 
                 if exit_reason:
                     pnl = (current - entry) * pos["qty"]
@@ -394,6 +448,11 @@ class BacktestRunner:
         gross_loss = abs(sum(t["pnl"] for t in losses)) if losses else 1
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
 
+        # 손익비(payoff ratio) = 평균 승 수익% / 평균 패 손실% — ①번 핵심 지표
+        avg_win_pct = np.mean([t["pnl_pct"] for t in wins]) if wins else 0
+        avg_loss_pct = np.mean([t["pnl_pct"] for t in losses]) if losses else 0
+        payoff_ratio = (avg_win_pct / abs(avg_loss_pct)) if avg_loss_pct < 0 else 0
+
         avg_hold = (np.mean([t["hold_days"] for t in sells])
                     if sells else 0)
 
@@ -405,6 +464,9 @@ class BacktestRunner:
             win_rate=round(win_rate, 4),
             total_trades=total_trades,
             profit_factor=round(profit_factor, 4),
+            payoff_ratio=round(payoff_ratio, 3),
+            avg_win_pct=round(avg_win_pct, 4),
+            avg_loss_pct=round(avg_loss_pct, 4),
             avg_hold_days=round(avg_hold, 1),
             final_value=round(final, 2),
             equity_curve=equity_curve,

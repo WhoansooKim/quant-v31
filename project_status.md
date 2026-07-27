@@ -1806,10 +1806,42 @@ macro -0.042 / flow **-0.356** / value **-0.363**)로 전 regime 리밸런싱:
 
 ---
 
+## 22.AE 2026-07-27 손익비 개선(①번) — 고정 TP→ATR 트레일링, 백테스트 검증 후 적용
+
+**배경 리서치 (18% 목표 방안, 영문 웹+논문):** 승률 61.9%는 우수한데 평균수익 +0.51%로 낮음 → **손익비가
+근본 병목**. 근거: Time Series Momentum(Moskowitz-Ooi-Pedersen 2012, Sharpe 1.28), A Century of Evidence
+on Trend-Following(Hurst-Ooi-Pedersen 2017), Risk-Managed Momentum(Barroso&Santa-Clara 2015 — 변동성
+타깃팅으로 Sharpe≈2배). "승자를 일찍 자르는 것이 가장 파괴적" + "1:3 손익비면 승률 25%로 손익분기". 18%는
+현실적 범위(스윙 10-40%).
+
+**백테스트 A/B 검증 (2022-2025, 활성 유니버스 200종목, 동일 진입조건, `scripts/backtest_payoff_ab.py`):**
+| 시나리오 | 총수익 | Sharpe | 손익비 | 승률 | MDD |
+|---|---|---|---|---|---|
+| A 고정TP+10% | +135.5% | 1.24 | 2.00 | 43% | −20.8% |
+| **A2 고정TP+20%(당시 라이브)** | **+84.0%** | **0.92** | 2.51 | 38% | −18.8% |
+| B ATR트레일링만 | +135.4% | 1.17 | 2.66 | 41% | −20.9% |
+| **C 트레일링+부분익절(채택)** | +103.7% | 1.20 | 2.57 | 54% | −18.7% |
+- **당시 라이브(A2)가 최악** — 리서치 진단(고정TP가 승자 자름)을 데이터로 확증. 사용자가 위험조정 최고 **C안** 선택.
+
+**백테스트 엔진 개선 (`engine_v4/backtest/runner.py`):** 기존엔 고정 stop/take_profit/trend_break 만 있어
+트레일링·부분익절 검증 불가 → `BacktestParams`에 `use_atr_trailing`(기본 off=기존동작 보존)/`atr_trailing_mult`
+/`atr_activation_r`/`partial_exit_r`/`partial_exit_pct` + ATR(Wilder) 지표 + `_simulate` 청산 분기 +
+`BacktestResult.payoff_ratio/avg_win_pct/avg_loss_pct` 추가.
+
+**라이브 적용 (DB config, 실시간 반영):** 라이브 exit_manager 는 이미 C안과 동일한 트레일링(activation 1R,
+2.5×)+부분익절(2R, 50%) 보유. 유일한 차이 = 고정 `take_profit_pct` 가 트레일링보다 먼저 +20%에서 승자를
+자름 → **`take_profit_pct` 0.20→0.50 상향(사실상 비활성화, 트레일링 지배)**. 이 한 값만 바꿔 C안 완성.
+되돌리려면 0.20. rsi2(백테스트 불가)와 달리 이건 **백테스트 검증됨**. 전진 관찰: 평균 승 수익%↑, 손익비↑,
+청산 사유 take_profit↓·atr_trailing/partial_exit↑.
+
+---
+
 ## 23. Git History
 
 ```
-(PENDING) docs: 22.AD 파이프라인 스코어링/사유 가시화/집중캡 25% + 승인 실패 사유 상세화
+(PENDING) docs+feat: 22.AE 손익비 개선(①번) 백테스트 검증+C안 적용 + backtest runner 트레일링/부분익절 지원
+b7eb80d  feat(approve)+docs: 승인 실패 사유 상세화 + 22.AD 세션 기록
+154a522  feat(pipeline): 파이프라인에 AI 분석(llm_score) 통합 — active 탭 빈칸 방지
 276d751  feat(pipeline): 유니버스 카운트 활성 기준 정합 + 진입 0 사유 팝업
 a4e40e9  feat(pipeline): 진입 시그널 0일 때 '왜 없는지' 깔때기 사유 표시
 733fc57  fix(pipeline): 스케줄 파이프라인에 팩터 스코어링 단계 추가
