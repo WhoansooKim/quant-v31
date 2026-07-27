@@ -1863,12 +1863,27 @@ C안(①번) 위에 종목 ATR%의 역수로 사이징 스케일 → 총수익 +
 **backtest runner 확장 (`engine_v4/backtest/runner.py`):** ②`use_vol_targeting`/`target_atr_pct`/`vol_mult_min/max`,
 ③`use_abs_momentum`/`abs_mom_period`/`abs_mom_min` + 워밍업 패딩(abs_mom 252거래일 커버) 추가. 전부 기본 off.
 
+**거래량 조건 완화 (2026-07-27, `volume_ratio_min` 1.2→1.0):** 진입빈도 병목 조사 겸 A/B.
+| 시나리오 | 진입(4y) | 총수익 | Sharpe | MDD |
+|---|---|---|---|---|
+| 기준 vol≥1.2 | 177 | +108.0% | 1.24 | −18.1% |
+| **vol≥1.0 (채택)** | 181 | **+114.5%** | 1.21 | **−15.8%** |
+| vol≥0.8 | 186 | +94.3% | 1.06 | −21.5% |
+| vol≥0.0 | 194 | +93.3% | 1.03 | −24.4% |
+- **발견①: 거래량은 진입빈도 병목 아님** — 완전 해제해도 진입 +17건(+10%)뿐. 진짜 병목은 추세+브레이크아웃
+  동시조건. **발견②: vol≥1.0은 소폭 개선**(총수익+6.5%p, MDD개선, Sharpe유지). 0.8↓는 저품질 진입 섞여 악화.
+- **부수 수정 (`collector.py`):** collector 가 `self.cfg.volume_ratio_min`(settings 기본 1.5)를 읽어
+  scan_entries(DB config)와 **불일치**했음 → collector 도 DB config 우선 읽도록 수정(일관성). 지표 재계산 후
+  volume_surge 통과 10→56/225 반영 확인.
+- ⚠️ 백테스트는 max_positions=5, 라이브는 레짐 프리셋(NEUTRAL→7)이라 절대수치 차이 가능. A/B 방향성은 유효.
+
 ---
 
 ## 23. Git History
 
 ```
-(PENDING) feat: 22.AF ②변동성타깃팅 기각+③절대모멘텀(6M) 적용 + ①주간재평가 cron
+(PENDING) feat: 거래량 완화(vol 1.2→1.0) + collector DB config 정합 + 진입빈도/거래량 백테스트
+7351b42  feat: ③번 절대모멘텀(6M>0) 진입필터 적용 + 백테스트 검증 (②는 기각)
 44a327c  feat(backtest)+config: 손익비 개선(①번) 백테스트 검증 후 C안 적용
 fd537a7  feat(backtest): ②번 변동성 타깃팅 검증(기각) + ①번 주간 재평가 cron
 b7eb80d  feat(approve)+docs: 승인 실패 사유 상세화 + 22.AD 세션 기록

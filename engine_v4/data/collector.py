@@ -252,6 +252,9 @@ class DataCollector:
 
         indicator_rows = []
         latest_date = df["time"].max()
+        # volume_ratio_min: DB config 우선(scan_entries 와 일관), 없으면 settings 폴백 — 루프 밖 1회
+        _vol_min = float(self.pg.get_config_value(
+            "volume_ratio_min", str(self.cfg.volume_ratio_min)))
 
         for sym, grp in df.groupby("symbol"):
             grp = grp.sort_values("time").copy()
@@ -269,7 +272,8 @@ class DataCollector:
             grp["volume_ratio"] = volume / grp["volume_avg_20d"]
             grp["trend_aligned"] = (close > grp["sma_50"]) & (grp["sma_50"] > grp["sma_200"])
             grp["breakout_5d"] = close > grp["high_5d"]
-            grp["volume_surge"] = grp["volume_ratio"] > self.cfg.volume_ratio_min
+            # volume_ratio_min: DB config 우선(scan_entries 와 일관), 없으면 settings 폴백
+            grp["volume_surge"] = grp["volume_ratio"] > _vol_min
 
             # 최신 날짜만 저장 (매일 실행 시)
             latest = grp[grp["time"] == latest_date]
