@@ -46,6 +46,10 @@ class BacktestParams:
     target_atr_pct: float = 0.03     # 목표 일일 ATR/price (3%) — 이 변동성 기준으로 정규화
     vol_mult_min: float = 0.5        # 사이즈 승수 하한
     vol_mult_max: float = 1.25       # 사이즈 승수 상한 (position_pct 0.20×1.25=0.25 → 라이브 캡 정합)
+    # ── ③번 절대 모멘텀 필터 (Time Series Momentum, Moskowitz-Ooi-Pedersen 2012) ──
+    use_abs_momentum: bool = False   # True 시 과거 abs_mom_period 수익>임계 종목만 진입
+    abs_mom_period: int = 252        # 룩백 거래일 (252≈12개월)
+    abs_mom_min: float = 0.0         # 절대모멘텀 최소치 (0 = 과거수익 양(+)만 롱)
 
 
 @dataclass
@@ -104,7 +108,9 @@ class BacktestRunner:
 
         # ── 2. 데이터 다운로드 ──
         logger.info(f"Downloading data for {len(universe_symbols)} symbols...")
-        start_padded = pd.Timestamp(params.start_date) - pd.Timedelta(days=300)
+        # 패딩: sma_long/abs_mom(≈252거래일) 워밍업 커버 (거래일 252 ≈ 캘린더 370일 → 여유롭게 500)
+        pad_days = max(300, int(params.abs_mom_period * 1.6) + 120)
+        start_padded = pd.Timestamp(params.start_date) - pd.Timedelta(days=pad_days)
 
         all_data = {}
         batch_size = 50
@@ -150,6 +156,7 @@ class BacktestRunner:
             df["sma_50"] = close.rolling(params.sma_short).mean()
             df["sma_200"] = close.rolling(params.sma_long).mean()
             df["return_20d"] = close.pct_change(params.return_period)
+            df["abs_mom"] = close.pct_change(params.abs_mom_period)  # 12개월 절대모멘텀
             df["high_5d"] = close.shift(1).rolling(params.breakout_days).max()
             df["vol_avg_20"] = volume.rolling(20).mean()
             df["vol_ratio"] = volume / df["vol_avg_20"]
@@ -331,6 +338,12 @@ class BacktestRunner:
                         trend = df.loc[day, "trend"]
                         breakout = df.loc[day, "breakout"]
                         vol_surge = df.loc[day, "vol_surge"]
+
+                        # ③번 절대 모멘텀 필터: 과거 12개월 수익 > 임계치인 종목만 롱
+                        if params.use_abs_momentum:
+                            am = df.loc[day, "abs_mom"]
+                            if pd.isna(am) or float(am) < params.abs_mom_min:
+                                continue
 
                         if (rank >= params.return_rank_min and trend
                                 and breakout and vol_surge):

@@ -159,6 +159,28 @@ class PostgresStore:
             """).fetchall()
         return [dict(r) for r in rows]
 
+    def get_abs_momentum(self, lookback_days: int = 126) -> dict[str, float]:
+        """③번 절대 모멘텀(TSMOM): 심볼별 최신 close 대비 lookback_days 거래일 전 수익률.
+
+        daily_prices 에서 한 쿼리로 배치 조회. {symbol: return} 반환.
+        126거래일 ≈ 6개월. 데이터 부족 심볼은 결과에서 제외.
+        """
+        with self.get_conn() as conn:
+            rows = conn.execute("""
+                WITH ranked AS (
+                    SELECT symbol, close,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY time DESC) AS rn
+                    FROM daily_prices
+                )
+                SELECT cur.symbol AS symbol,
+                       (cur.close / NULLIF(past.close, 0) - 1) AS mom
+                FROM ranked cur
+                JOIN ranked past
+                  ON cur.symbol = past.symbol AND past.rn = %s
+                WHERE cur.rn = 1 AND cur.close IS NOT NULL AND past.close IS NOT NULL
+            """, (lookback_days,)).fetchall()
+        return {r["symbol"]: float(r["mom"]) for r in rows if r["mom"] is not None}
+
     def get_indicator_history(self, symbol: str, days: int = 60) -> list[dict]:
         with self.get_conn() as conn:
             rows = conn.execute("""

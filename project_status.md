@@ -1836,11 +1836,44 @@ on Trend-Following(Hurst-Ooi-Pedersen 2017), Risk-Managed Momentum(Barroso&Santa
 
 ---
 
+## 22.AF 2026-07-27 18% 방안 ②·③ 백테스트 — ②변동성타깃팅 기각, ③절대모멘텀 적용
+
+**②번 변동성 타깃팅 (Barroso&Santa-Clara inverse-vol) — 백테스트 기각, 라이브 미적용.**
+C안(①번) 위에 종목 ATR%의 역수로 사이징 스케일 → 총수익 +104%→+50%, Sharpe 1.20→0.76(MDD만
+−18.7%→−16.2% 소폭 개선). 모멘텀은 변동성과 양의 상관이라 고변동 승자 비중을 깎으면 수익 훼손 →
+개별주 브레이크아웃 스윙엔 부적합(월간 팩터 포트폴리오 크래시방지용 기법). config 무변경.
+
+**③번 절대 모멘텀 필터 (TSMOM, Moskowitz-Ooi-Pedersen 2012) — E2(6개월>0) 적용.**
+| 시나리오 | 총수익 | Sharpe | 승률 | MDD |
+|---|---|---|---|---|
+| C 기준(①번) | +103.7% | 1.20 | 54% | −18.7% |
+| E 12M>0(원논문) | +82.3% | 0.99 | 50% | −20.6% |
+| **E2 6M>0 (채택)** | **+108.0%** | **1.24** | 55% | −18.1% |
+| E3 12M>+10% | +74.9% | 0.92 | 50% | −16.1% |
+- 원논문 12개월은 스윙엔 너무 느려 악화. **6개월>0(E2)만 전 지표 소폭 개선**(하방 없음). 개선폭은
+  소폭(Sharpe +0.04, 노이즈 범위 가능)이나 하락추세 종목 브레이크아웃 함정 회피 견고성 이점.
+- 라이브: `storage.get_abs_momentum(126)` — daily_prices 배치 조회(한 쿼리, 1526심볼 중 565 음수 필터).
+  `swing.scan_entries` 에 절대모멘텀 게이트(데이터 없으면 통과=보수적). config `abs_momentum_enabled`
+  (true)/`abs_momentum_min`(0.0)/`abs_momentum_lookback_days`(126). 되돌리려면 enabled=false.
+- ⚠️ swing_config INSERT 시 `category` NOT NULL — 신규 키는 category 포함 필수.
+
+**①번 주간 자동 재평가:** `scripts/payoff_weekly_review.sh` + user crontab `3 9 * * 1`(매주 월 09:03 KST).
+적용 전 baseline 승 +5.86%/손익비 ~1.0 → C안 목표 승 +13.9%/손익비 2.57 추적. 결과 `payoff_review_result.txt`.
+
+**backtest runner 확장 (`engine_v4/backtest/runner.py`):** ②`use_vol_targeting`/`target_atr_pct`/`vol_mult_min/max`,
+③`use_abs_momentum`/`abs_mom_period`/`abs_mom_min` + 워밍업 패딩(abs_mom 252거래일 커버) 추가. 전부 기본 off.
+
+---
+
 ## 23. Git History
 
 ```
-(PENDING) docs+feat: 22.AE 손익비 개선(①번) 백테스트 검증+C안 적용 + backtest runner 트레일링/부분익절 지원
+(PENDING) feat: 22.AF ②변동성타깃팅 기각+③절대모멘텀(6M) 적용 + ①주간재평가 cron
+44a327c  feat(backtest)+config: 손익비 개선(①번) 백테스트 검증 후 C안 적용
+fd537a7  feat(backtest): ②번 변동성 타깃팅 검증(기각) + ①번 주간 재평가 cron
 b7eb80d  feat(approve)+docs: 승인 실패 사유 상세화 + 22.AD 세션 기록
+154a522  feat(pipeline): 파이프라인에 AI 분석(llm_score) 통합 — active 탭 빈칸 방지
+276d751  feat(pipeline): 유니버스 카운트 활성 기준 정합 + 진입 0 사유 팝업
 154a522  feat(pipeline): 파이프라인에 AI 분석(llm_score) 통합 — active 탭 빈칸 방지
 276d751  feat(pipeline): 유니버스 카운트 활성 기준 정합 + 진입 0 사유 팝업
 a4e40e9  feat(pipeline): 진입 시그널 0일 때 '왜 없는지' 깔때기 사유 표시

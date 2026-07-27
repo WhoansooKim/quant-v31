@@ -151,10 +151,18 @@ class SwingStrategy:
         price_min = float(self.pg.get_config_value("price_range_min", str(self.cfg.price_range_min)))
         price_max = float(self.pg.get_config_value("price_range_max", str(self.cfg.price_range_max)))
 
+        # ③번 절대 모멘텀 필터 (TSMOM, 백테스트 E2: 6개월>0 → Sharpe 1.20→1.24, MDD 개선)
+        # 하락추세 종목의 브레이크아웃 함정 회피. config off 시 기존 동작.
+        abs_mom_enabled = self.pg.get_config_value("abs_momentum_enabled", "false") == "true"
+        abs_mom_min = float(self.pg.get_config_value("abs_momentum_min", "0.0"))
+        abs_mom_days = int(self.pg.get_config_value("abs_momentum_lookback_days", "126"))
+        abs_mom = self.pg.get_abs_momentum(abs_mom_days) if abs_mom_enabled else {}
+
         # Step 1: 기본 필터 (추세/브레이크아웃/거래량/가격) 통과 후보
         # 진입 0일 때 "왜 없는지" 설명하기 위해 각 조건별 통과 수(깔때기)도 집계한다.
         n_total = len(indicators)
         f_price = f_trend = f_breakout = f_volume = f_three = 0
+        f_absmom = 0
         candidates = []
         for ind in indicators:
             symbol = ind["symbol"]
@@ -183,6 +191,13 @@ class SwingStrategy:
                 continue
             if not (trend_ok and breakout_ok and volume_ok):
                 continue
+
+            # ③번 절대 모멘텀 게이트: 6개월 수익 < 임계면 제외 (데이터 없으면 통과=보수적)
+            if abs_mom_enabled:
+                m = abs_mom.get(symbol)
+                if m is not None and m < abs_mom_min:
+                    continue
+                f_absmom += 1
 
             if dual_sort:
                 # 이중 정렬: 모멘텀 순위 기준은 나중에 합산으로 처리
