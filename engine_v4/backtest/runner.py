@@ -41,6 +41,11 @@ class BacktestParams:
     atr_activation_r: float = 1.0    # +activation_r × 초기리스크 도달 후 트레일링 개시
     partial_exit_r: float = 0.0      # >0 이면 +R 도달 시 partial_exit_pct 만큼 부분익절 (0=off)
     partial_exit_pct: float = 0.5
+    # ── ②번 변동성 타깃팅 (Barroso&Santa-Clara): 포지션을 종목 ATR%의 역수로 스케일 ──
+    use_vol_targeting: bool = False  # True 시 변동성 낮은 종목↑ / 높은 종목↓ 배분
+    target_atr_pct: float = 0.03     # 목표 일일 ATR/price (3%) — 이 변동성 기준으로 정규화
+    vol_mult_min: float = 0.5        # 사이즈 승수 하한
+    vol_mult_max: float = 1.25       # 사이즈 승수 상한 (position_pct 0.20×1.25=0.25 → 라이브 캡 정합)
 
 
 @dataclass
@@ -347,6 +352,14 @@ class BacktestRunner:
                             if day in indicators[p["symbol"]].index
                         )
                         target_amount = total_val * params.position_pct
+                        # ②번 변동성 타깃팅: 종목 ATR%의 역수로 사이즈 스케일 (승수 상/하한 clip)
+                        if params.use_vol_targeting:
+                            atr_v = float(df.loc[day, "atr"]) if pd.notna(df.loc[day, "atr"]) else 0.0
+                            atr_pct = atr_v / close if close > 0 else 0.0
+                            if atr_pct > 0:
+                                mult = params.target_atr_pct / atr_pct
+                                mult = max(params.vol_mult_min, min(params.vol_mult_max, mult))
+                                target_amount *= mult
                         qty = int(target_amount / close)
                         if qty <= 0:
                             continue
