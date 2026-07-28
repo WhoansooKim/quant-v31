@@ -255,6 +255,8 @@ class DataCollector:
         # volume_ratio_min: DB config 우선(scan_entries 와 일관), 없으면 settings 폴백 — 루프 밖 1회
         _vol_min = float(self.pg.get_config_value(
             "volume_ratio_min", str(self.cfg.volume_ratio_min)))
+        # breakout_margin: 5일 고점 근접 허용(백테스트 검증 0.03=−3% → 진입↑·수익·Sharpe↑)
+        _bo_margin = float(self.pg.get_config_value("breakout_margin", "0.0"))
 
         for sym, grp in df.groupby("symbol"):
             grp = grp.sort_values("time").copy()
@@ -271,7 +273,7 @@ class DataCollector:
             grp["volume_avg_20d"] = volume.rolling(20).mean()
             grp["volume_ratio"] = volume / grp["volume_avg_20d"]
             grp["trend_aligned"] = (close > grp["sma_50"]) & (grp["sma_50"] > grp["sma_200"])
-            grp["breakout_5d"] = close > grp["high_5d"]
+            grp["breakout_5d"] = close > grp["high_5d"] * (1 - _bo_margin)
             # volume_ratio_min: DB config 우선(scan_entries 와 일관), 없으면 settings 폴백
             grp["volume_surge"] = grp["volume_ratio"] > _vol_min
 

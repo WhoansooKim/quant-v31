@@ -1879,10 +1879,42 @@ C안(①번) 위에 종목 ATR%의 역수로 사이징 스케일 → 총수익 +
 
 ---
 
+## 22.AG 2026-07-28 브레이크아웃 완화 + 레짐프리셋 정합 + 집중캡 조정
+
+**브레이크아웃 근접 −3% 완화 (백테스트 검증 → 적용).** 진입빈도 진짜 병목(추세+브레이크아웃 동시조건) 검증.
+| 시나리오 | 진입(4y) | 총수익 | Sharpe | MDD |
+|---|---|---|---|---|
+| 기준 5일돌파 엄격 | 181 | +114.5% | 1.21 | −15.8% |
+| **근접 5일 −3% (채택)** | 199 | **+136.6%** | **1.30** | −18.6% |
+| 3일돌파 | 198 | +110.8% | 1.16 | −15.9% |
+| 브레이크아웃 제거 | 214 | +112.3% | 1.04 | −21.3% |
+- 근접 −3%가 명확한 승자(총수익 +22%p, Sharpe↑, 진입 +10%). "5일고점 3% 이내 근접"까지 허용 → 돌파 직전
+  종목 포착(더 좋은 진입가). 완전 제거는 품질 저하. 라이브: `collector.py` breakout_5d = close > high_5d×(1−margin),
+  config `breakout_margin=0.03`. 지표 재계산 후 breakout 통과 73→132/200 반영.
+
+**🔴 레짐 프리셋 충돌 발견·수정 (근본).** `regime_switcher.REGIME_PRESETS`가 레짐 변경 시 `max_positions`와
+`take_profit_pct` 도 덮어씀 → 레짐 바뀌면 사용자 지정 max_positions·①번 손익비 개선(take_profit 0.50)이
+프리셋값(5/7/3, 0.25/0.20/0.15)으로 **리셋되는 심각한 충돌**. **해결: 두 키를 프리셋에서 제거** → 레짐 스위치는
+position_pct/composite_score_min/atr_trailing_multiplier 만 조정. max_positions·take_profit_pct 는 고정 유지.
+
+**집중 캡 조정 (사용자 요청) + 승인 실패 메시지 버그 수정.**
+- `max_positions` 10 (레짐 무관 고정), `max_position_pct_cap` 0.25→0.50, `max_total_exposure_pct` 0.90→1.0.
+- **버그**: approve_signal 실패 메시지가 cap_reason 무관하게 항상 "단일종목 한도(25%)" 표시 → total_exposure_cap
+  인데 오해 유발. **수정**: cap_reason 별 정확한 메시지(총노출/단일종목/리스크 구분, `main.py`).
+- 교훈: 오픈 7개가 계좌의 88.5%($849/$959) 차지 → 현금 $109뿐. 캡 올려도 현금보다 비싼 종목(UPS $113)은
+  물리적 매수 불가. 소액계좌 다포지션은 현금 소진이 실질 제약.
+
+**현재 라이브 config (2026-07-28):** take_profit_pct=0.50(①), abs_momentum_enabled=true/6M(③),
+volume_ratio_min=1.0(거래량), breakout_margin=0.03(브레이크아웃), max_positions=10, max_position_pct_cap=0.50,
+max_total_exposure_pct=1.0.
+
+---
+
 ## 23. Git History
 
 ```
-(PENDING) feat: 거래량 완화(vol 1.2→1.0) + collector DB config 정합 + 진입빈도/거래량 백테스트
+(PENDING) feat: 브레이크아웃 완화(margin 3%)+레짐프리셋 정합+집중캡 조정+승인실패 메시지 수정
+dcd2a95  feat: 거래량 완화(vol 1.2→1.0) + collector DB config 정합 + 진입빈도/거래량 백테스트
 7351b42  feat: ③번 절대모멘텀(6M>0) 진입필터 적용 + 백테스트 검증 (②는 기각)
 44a327c  feat(backtest)+config: 손익비 개선(①번) 백테스트 검증 후 C안 적용
 fd537a7  feat(backtest): ②번 변동성 타깃팅 검증(기각) + ①번 주간 재평가 cron

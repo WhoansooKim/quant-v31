@@ -26,6 +26,8 @@ class BacktestParams:
     return_period: int = 20
     return_rank_min: float = 0.6
     breakout_days: int = 5
+    breakout_margin: float = 0.0     # 근접 허용: close > high_Nd×(1−margin). 0=엄격 돌파
+    require_breakout: bool = True     # False 시 브레이크아웃 조건 제외(추세+거래량만)
     volume_ratio_min: float = 1.5
     stop_loss_pct: float = -0.05
     take_profit_pct: float = 0.10
@@ -161,7 +163,7 @@ class BacktestRunner:
             df["vol_avg_20"] = volume.rolling(20).mean()
             df["vol_ratio"] = volume / df["vol_avg_20"]
             df["trend"] = (close > df["sma_50"]) & (df["sma_50"] > df["sma_200"])
-            df["breakout"] = close > df["high_5d"]
+            df["breakout"] = close > df["high_5d"] * (1 - params.breakout_margin)
             df["vol_surge"] = df["vol_ratio"] > params.volume_ratio_min
             # ATR (Wilder) — 트레일링 스톱용
             high = df["High"].astype(float)
@@ -336,7 +338,7 @@ class BacktestRunner:
 
                         rank = ranks.get(sym, 0)
                         trend = df.loc[day, "trend"]
-                        breakout = df.loc[day, "breakout"]
+                        breakout = df.loc[day, "breakout"] or (not params.require_breakout)
                         vol_surge = df.loc[day, "vol_surge"]
 
                         # ③번 절대 모멘텀 필터: 과거 12개월 수익 > 임계치인 종목만 롱

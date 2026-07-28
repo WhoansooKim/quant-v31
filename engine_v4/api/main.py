@@ -368,7 +368,7 @@ async def approve_signal(signal_id: int):
         result = pos_mgr.execute_entry(sig, account_value)
         if not result:
             pg.reject_signal(signal_id)
-            # 실패 사유를 구체적으로 산출해 반환 (집중 캡 등) — 사용자가 "왜" 를 알도록
+            # 실패 사유를 cap_reason 별로 정확히 산출 — 사용자가 "왜" 를 알도록
             detail = "한도 또는 검증 초과"
             try:
                 sizing = pos_mgr.calculate_position_size(
@@ -378,11 +378,26 @@ async def approve_signal(signal_id: int):
                     cap = sizing.get("cap_reason", "cap")
                     ep = float(sig["entry_price"])
                     pct = (ep / account_value * 100) if account_value else 0
-                    cap_pct = float(pg.get_config_value("max_position_pct_cap", "0.20")) * 100
-                    detail = (
-                        f"집중 리스크 캡({cap}) 초과 — 1주 ${ep:.2f} 가 계좌 "
-                        f"${account_value:.2f} 의 {pct:.0f}% 로 단일종목 한도({cap_pct:.0f}%)를 "
-                        f"넘습니다. 이 종목은 현재 계좌 규모에 비해 너무 비싸 매수할 수 없습니다.")
+                    if cap == "total_exposure_cap":
+                        exp = pos_mgr._get_open_exposure_usd()
+                        exp_pct = (exp / account_value * 100) if account_value else 0
+                        tot_pct = float(pg.get_config_value("max_total_exposure_pct", "0.90")) * 100
+                        detail = (
+                            f"총노출 캡 초과 — 기존 오픈 명목 ${exp:.0f}({exp_pct:.0f}%) + 신규 1주 "
+                            f"${ep:.2f}({pct:.0f}%) 가 계좌 ${account_value:.0f} 의 총노출 한도"
+                            f"({tot_pct:.0f}%)를 넘습니다. 기존 포지션 청산 또는 총노출 한도 상향 필요.")
+                    elif cap == "notional_cap":
+                        cap_pct = float(pg.get_config_value("max_position_pct_cap", "0.25")) * 100
+                        detail = (
+                            f"단일종목 집중 캡 초과 — 1주 ${ep:.2f} 가 계좌 ${account_value:.0f} 의 "
+                            f"{pct:.0f}% 로 단일종목 한도({cap_pct:.0f}%)를 넘습니다.")
+                    elif cap == "risk_cap":
+                        rp = float(pg.get_config_value("max_risk_per_trade_pct", "0.015")) * 100
+                        detail = (
+                            f"거래당 리스크 캡 초과 — 스톱 거리 기준 손실이 계좌의 {rp:.1f}% "
+                            f"한도를 넘습니다(변동성 큰 종목). 스톱을 좁히거나 리스크 한도 상향 필요.")
+                    else:
+                        detail = f"진입 사이징 실패({cap}) — 1주도 배정 불가."
             except Exception:
                 pass
             raise HTTPException(400, f"진입 실행 실패: {detail}")
