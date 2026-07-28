@@ -1908,12 +1908,27 @@ position_pct/composite_score_min/atr_trailing_multiplier 만 조정. max_positio
 volume_ratio_min=1.0(거래량), breakout_margin=0.03(브레이크아웃), max_positions=10, max_position_pct_cap=0.50,
 max_total_exposure_pct=1.0.
 
+## 22.AH 2026-07-28 자본 추가 $1,000 + 포지션 정책 20개 분산 전환
+
+**자본 추가 입금 $1,000 (paper).** 오픈 8개로 현금 소진($2.46)되어 신규 진입 불가 → `POST /capital/event`
+(event_type=deposit, $1000). 총자산 $958→$1,958, 현금 $2.46→$1,002. **TWR 무결성 확인**: 기준자본 1000→2000
+조정되어 입금이 수익률에 미포함(누적 −2.07% 유지). `swing_capital_events` 기록(event_id 3).
+- **교훈(대시보드 읽는 법):** Total Value ≠ 매수가능액. 실제 매수가능 = Cash. Total Value 는 현금+포지션평가액.
+  paper 도 실제 현금 차감 시뮬레이션(실전 동일). 소액계좌 다포지션 = 현금 소진이 실질 제약.
+
+**포지션 정책: 집중 → 20개 분산 전환 (사용자 지정).** max_positions 10→20, position_pct 0.14→**0.05**
+(계좌 $1,959 × 5% × 20 = 총노출 100%). **레짐 프리셋에서 position_pct 도 제거**(max_positions/take_profit 에 이어)
+→ 레짐 무관 5% 고정. 레짐 적응은 이제 composite_score_min + atr_trailing_multiplier 만 담당(위기 방어 = 진입
+score 70 + 트레일 2.0, 포지션 크기 축소는 제외).
+- ⚠️ **백테스트 검증 범위 밖**(백테스트 max 5·종목당 20%). 20개·5% 는 개별 임팩트↓·지수화 경향(분산↑ 초과수익↓).
+
 ---
 
 ## 23. Git History
 
 ```
-(PENDING) feat: 브레이크아웃 완화(margin 3%)+레짐프리셋 정합+집중캡 조정+승인실패 메시지 수정
+(PENDING) feat: 자본 +$1000 입금 + 포지션 정책 20개 분산(position_pct 0.05, 레짐프리셋서 제거)
+a3273bc  feat: 브레이크아웃 완화(margin 3%)+레짐프리셋 정합+집중캡 조정+승인실패 메시지 수정
 dcd2a95  feat: 거래량 완화(vol 1.2→1.0) + collector DB config 정합 + 진입빈도/거래량 백테스트
 7351b42  feat: ③번 절대모멘텀(6M>0) 진입필터 적용 + 백테스트 검증 (②는 기각)
 44a327c  feat(backtest)+config: 손익비 개선(①번) 백테스트 검증 후 C안 적용

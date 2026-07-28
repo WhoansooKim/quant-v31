@@ -41,26 +41,25 @@ from engine_v4.notify.telegram import TelegramNotifier
 logger = logging.getLogger(__name__)
 
 
-# NOTE: max_positions / take_profit_pct 는 프리셋에서 제외 (2026-07-28).
-#   - max_positions: 사용자 지정 고정(10). 레짐 스위치가 덮어쓰지 않음.
+# NOTE: max_positions / take_profit_pct / position_pct 는 프리셋에서 제외 (2026-07-28).
+#   - max_positions: 사용자 지정 고정(20). 레짐 스위치가 덮어쓰지 않음.
 #   - take_profit_pct: ①번 손익비 개선(백테스트 검증, 0.50=트레일링 지배) 보호.
-#   레짐 적응은 포지션 크기/진입 엄격도/트레일 폭만 담당.
+#   - position_pct: 사용자 지정 고정(0.05, 20개 분산). 레짐 무관.
+#   레짐 적응은 진입 엄격도(composite_score_min) + 트레일 폭(atr_trailing_multiplier)만 담당.
+#   위기(RISK_OFF) 방어 = 진입 score 70 + 좁은 트레일 2.0 으로 유지(포지션 크기 축소는 제외).
 REGIME_PRESETS: dict[str, dict[str, str]] = {
     "RISK_ON": {
-        "position_pct": "0.20",
         # 2026-06-03 IC 보정: 55 → 58 (60일 분석 결과 sweet spot 65-70)
         "composite_score_min": "58",
         "atr_trailing_multiplier": "3.0",
     },
     "NEUTRAL": {
-        "position_pct": "0.14",
         # 2026-06-03 IC 보정: 60 → 63
         # 2026-06-04 절충 완화: 63 → 61 (시그널 0건 회복, 1주 관찰)
         "composite_score_min": "61",
         "atr_trailing_multiplier": "2.5",
     },
     "RISK_OFF": {
-        "position_pct": "0.05",
         "composite_score_min": "70",
         "atr_trailing_multiplier": "2.0",
     },
