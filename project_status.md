@@ -1,8 +1,42 @@
 # Quant V4 Swing Trading System — Project Status
 
-> Last updated: 2026-06-03
-> Author: Claude Code (Opus 4.7)
-> Purpose: Session continuity — 재부팅 후 사용자 추가 설명 없이 자동 이어서 진행 가능
+> Last updated: **2026-08-14** (Opus 4.8)
+> Purpose: Session continuity — 이 파일 + 메모리(MEMORY.md)만 보면 Claude 재시작 후 즉시 이어서 작업 가능.
+
+## ⭐ 2026-08-14 현재 상태 스냅샷 (재개 시 여기부터)
+
+**한 줄 요약:** paper 모드, 총자산 ~$1,915(자본 $2,000, TWR −4.26%), 오픈 11개. 18% 목표 위해 백테스트 검증
+기반 개선 진행 중. **다음 할 일 = 하락장 방어(Tier 1~3), §25 참조.**
+
+**재부팅/재시작 후 자동 점검 (복붙):**
+```bash
+systemctl is-active quant-engine-v4 quant-dashboard           # active active 이어야
+curl -s http://localhost:8001/health | python3 -m json.tool   # status ok
+ss -ltnp | grep -E ':8000|:50051' || echo "V3.1 clear(OK)"     # 나오면 V3.1 부활(§13 조치)
+cat /home/quant/quant-v31/scripts/payoff_review_result.txt 2>/dev/null   # 주간 재평가 결과(있으면 사용자 보고)
+git -C /home/quant/quant-v31 log --oneline -3                  # 최신 커밋 확인
+```
+
+**현재 라이브 config (백테스트 검증 완료 스택, 2026-08-14):**
+| key | value | 근거 |
+|---|---|---|
+| take_profit_pct | 0.50 | ① 손익비(트레일링 지배) §22.AE |
+| abs_momentum_enabled / lookback | true / 126(6M) | ③ 절대모멘텀 §22.AF |
+| volume_ratio_min | 1.0 | 거래량 완화 §22.AF |
+| breakout_margin | 0.0 | 분산정합 복귀 §22.AI |
+| max_positions | 20 | 사용자 지정 §22.AH |
+| position_pct | 0.05 | 20개 분산(CAGR 18.9%/Sharpe 1.48) §22.AH |
+| max_position_pct_cap / total_exposure | 0.50 / 1.0 | 캡 §22.AG |
+| rsi2_exit_min_r / threshold | 2.0 / 95 | rsi2 승자보호 §22.AC |
+
+**⚠️ 미해결 핵심 과제 (사용자 강조, 2026-08-14):** 시스템이 **롱-온리**라 하락/횡보장엔 손절만 쌓임(=buy&hold+수수료).
+"하락장에서도 수익 + 변동성 최소화 장치"가 필요 → **§25 Tier 1~3 로드맵**이 그 해답. 메모리 [[bear-market-defense-research]].
+
+**주간 자동 재평가:** ① 손익비 = user crontab `3 9 * * 1`(매월 → 매주 월 09:03 KST) → Telegram + `scripts/payoff_review_result.txt`.
+
+**핵심 진단 기록:** −4.13~4.26% 손실의 절반은 **수수료**(−$42, 20×5% 분산 매매빈도↑). hard_stop 급증은 시장부진이 주원인(§22.AI).
+
+---
 
 ## 🔥 새 세션 시작 시 가장 먼저 읽을 것
 
@@ -2133,3 +2167,102 @@ ebff79e docs: update git history hash in project_status.md
   - .env: `KIS_USER_ID`, `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_ACCOUNT_NO` (크레덴셜은 .env에만, git 미포함)
   - Broker API 8개: /broker/status, /broker/balance, /broker/quote/{sym}, /broker/pending-orders, /broker/cancel/{id}, /broker/orderable/{sym}, /broker/orders, /broker/sync
   - Live 전환 예정: 2026-04-21 주간
+
+---
+
+## 25. 하락장 방어 로드맵 (Tier 1~3) — 진행 중 (2026-08-14 시작)
+
+**배경:** 현재 시스템은 롱-온리 모멘텀 브레이크아웃 → 하락/횡보장엔 진입해봐야 손절만 쌓임. macro_scorer/
+regime_switcher는 **포지션 크기만** 줄이고 방향은 항상 롱 → "덜 잃기"만 하고 못 범 = buy&hold + 수수료.
+사용자 요구: **하락장에서도 수익 + 변동성 최소화 장치.** 메모리 [[bear-market-defense-research]].
+전부 **백테스트 검증 후 config on/off 로 적용** (rsi2 제외 대부분 검증 가능). 리서치 출처: Antonacci GEM,
+Faber TAA(SSRN-962461), Jump Model(arxiv 2402.05272).
+
+### Tier 1 — 시장 트렌드 필터 (최우선, 즉시 구현) ⬅ 다음 작업
+- **규칙:** SPY(또는 QQQ)가 200일 SMA 아래면 **신규 롱 진입 중단·현금 보유**. 하락장에 아예 안 들어가니
+  hard_stop 원천 차단. 근거: GEM 절대모멘텀이 최악낙폭 51%→10%.
+- **구현:** SPY 데이터 이미 `daily_prices` 에 있음(V4 매일 수집). `backtest/runner.py` 에 `market_trend_filter`
+  파라미터 추가(기본 off) → SPY 200일 SMA 계산 → 시장이 SMA 아래인 날은 진입 스킵. A/B(필터 on/off, 특히
+  2022 약세장 구간) 백테스트 → 효과 시 `strategy/swing.scan_entries` 에 게이트 추가 + config
+  `market_trend_filter_enabled`. 상태: **미착수.**
+- 검증 관전: 2022 약세장에서 필터 on 이 MDD·손절 줄이는지, 상승장 수익은 유지되는지.
+
+### Tier 2 — 레짐 스위칭 강화 (진입 중단 신호로 격상)
+- **규칙:** 기존 macro_scorer(VIX+금리+Cu/Au+DXY+BTC)를 "크기 조정"에서 "진입 중단"으로 격상. VIX>30 또는
+  macro risk-off 강할 때 신규 진입 차단. Jump Model 식 레짐 조기감지.
+- **구현:** macro_score < 임계(예 20) 또는 VIX term backwardation → 진입 중단 플래그. Tier 1 위에 얹어 백테스트.
+  상태: **미착수.**
+
+### Tier 3 — 숏/헤지 (하락장 능동 수익, 고급·후순위)
+- **옵션 A(간단):** 시장 risk-off 시 Inverse ETF(SH) 소량 헤지 포지션. 장기부적합(일일감쇠) → 전술적 단기만.
+- **옵션 B(고급):** 롱숏/마켓뉴트럴 — 약한 종목 숏 + 강한 종목 롱. 상승·하락 양방향 수익. 2000-02·08·20·22 방어
+  입증. **KIS 실거래 숏 연동 필요**(paper 시뮬레이션 한계) → Live 전환 후. 상태: **설계만, 미착수.**
+
+**진행 원칙:** Tier 1 → 백테스트 검증 → 적용 → Tier 2 → … 순차. 각 단계 커밋 + 이 문서 갱신.
+
+---
+
+## 26. 백업 / 복구 가이드 (다른 VM 이전 시)
+
+**시스템 구성 요소 (백업 대상):**
+1. **코드** — git 저장소 `/home/quant/quant-v31` (원격 https://github.com/WhoansooKim/quant-v31)
+2. **DB** — PostgreSQL+TimescaleDB (Docker `quant-postgres`), DB명 `quantdb`. **config·포지션·시그널·가격·스냅샷 전부 여기.**
+3. **.env** — API 키(Telegram/KIS/Anthropic), DB 비밀번호. **git 미포함, 별도 백업 필수.**
+4. **cron** — user crontab (재부팅 검증 + 주간 재평가)
+5. **systemd 유닛** — `/etc/systemd/system/quant-engine-v4.service`, `quant-dashboard.service` (저장소 `systemd/` 에도 사본)
+6. **Claude 메모리** — `/home/quant/.claude/projects/-home-quant-quant-v31/memory/` (작업 맥락·의사결정)
+
+### 백업 (기존 VM에서)
+```bash
+cd /home/quant/quant-v31
+# 1. 코드는 git push 로 원격 보관 (이미 되어 있으면 생략)
+git add -A && git commit -m "backup snapshot" && git push origin main
+
+# 2. DB 전체 덤프 (가장 중요 — config/포지션/가격 전부)
+docker exec quant-postgres pg_dump -U quant -Fc quantdb > ~/quantdb_backup_$(date +%Y%m%d).dump
+
+# 3. .env + cron + 메모리 묶기 (git 밖 자산)
+tar czf ~/quant_secrets_$(date +%Y%m%d).tar.gz \
+  -C /home/quant/quant-v31 .env \
+  -C /home/quant/.claude/projects/-home-quant-quant-v31 memory
+crontab -l > ~/quant_crontab_$(date +%Y%m%d).txt
+
+# 4. 위 3개 파일(dump, secrets.tar.gz, crontab.txt)을 새 VM 으로 복사(scp 등)
+```
+
+### 복구 (새 VM에서)
+```bash
+# 0. 전제: Docker, conda(quant-v31 py3.11), .NET 8 설치됨. PG 컨테이너는 docker-compose up -d
+# 1. 코드
+git clone https://github.com/WhoansooKim/quant-v31 /home/quant/quant-v31
+
+# 2. .env + 메모리 복원
+tar xzf ~/quant_secrets_YYYYMMDD.tar.gz -C /tmp/restore
+cp /tmp/restore/.env /home/quant/quant-v31/.env
+mkdir -p /home/quant/.claude/projects/-home-quant-quant-v31
+cp -r /tmp/restore/memory /home/quant/.claude/projects/-home-quant-quant-v31/
+
+# 3. DB 복원 (컨테이너 먼저 기동: docker-compose up -d postgres)
+docker exec -i quant-postgres psql -U quant -c "DROP DATABASE IF EXISTS quantdb;"
+docker exec -i quant-postgres psql -U quant -c "CREATE DATABASE quantdb;"
+cat ~/quantdb_backup_YYYYMMDD.dump | docker exec -i quant-postgres pg_restore -U quant -d quantdb
+
+# 4. cron 복원
+crontab ~/quant_crontab_YYYYMMDD.txt
+# ⚠️ 경로가 /home/quant/quant-v31 로 동일해야 cron/systemd 스크립트가 맞음
+
+# 5. systemd 유닛 (저장소 사본 사용, sudo 필요)
+sudo cp /home/quant/quant-v31/systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now quant-engine-v4 quant-dashboard
+
+# 6. 검증
+systemctl is-active quant-engine-v4 quant-dashboard
+curl -s http://localhost:8001/health | python3 -m json.tool
+docker exec quant-postgres psql -U quant -d quantdb -c "SELECT COUNT(*) FROM swing_config;"
+```
+
+### 복구 후 체크리스트
+- config 개수·값 확인(위 §스냅샷 표와 대조), 오픈 포지션 수 일치, cron 2줄, V3.1(8000) down.
+- Claude 새 세션: 이 파일 + `memory/MEMORY.md` 읽으면 맥락 복원. `[[bear-market-defense-research]]` 에 다음 할 일.
+- ⚠️ **경로 의존**: 스크립트/cron/systemd 가 `/home/quant/quant-v31` 하드코딩 → 새 VM 도 동일 경로 권장.
