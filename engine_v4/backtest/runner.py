@@ -28,6 +28,9 @@ class BacktestParams:
     breakout_days: int = 5
     breakout_margin: float = 0.0     # 근접 허용: close > high_Nd×(1−margin). 0=엄격 돌파
     require_breakout: bool = True     # False 시 브레이크아웃 조건 제외(추세+거래량만)
+    # ── Tier 1 시장 트렌드 필터 (GEM/Faber): SPY < SMA면 신규 롱 중단(현금) ──
+    use_market_filter: bool = False   # True 시 SPY가 시장SMA 아래면 진입 차단
+    market_sma_days: int = 200         # 시장 추세 SMA (200일 ≈ Faber 10개월)
     volume_ratio_min: float = 1.5
     stop_loss_pct: float = -0.05
     take_profit_pct: float = 0.10
@@ -108,6 +111,10 @@ class BacktestRunner:
                     "SBUX", "GILD", "ISRG", "BKNG", "ADI",
                 ]
 
+        # 시장 필터용 SPY 를 유니버스에 포함(진입 후보에선 제외)
+        if params.use_market_filter and "SPY" not in universe_symbols:
+            universe_symbols = universe_symbols + ["SPY"]
+
         # ── 2. 데이터 다운로드 ──
         logger.info(f"Downloading data for {len(universe_symbols)} symbols...")
         # 패딩: sma_long/abs_mom(≈252거래일) 워밍업 커버 (거래일 252 ≈ 캘린더 370일 → 여유롭게 500)
@@ -129,12 +136,15 @@ class BacktestRunner:
                 )
                 if data.empty:
                     continue
+                cols = ["Open", "High", "Low", "Close", "Volume"]
                 for sym in batch:
                     try:
-                        if len(batch) == 1:
-                            df = data[["Open", "High", "Low", "Close", "Volume"]].copy()
+                        # group_by='ticker' 는 단일 배치도 MultiIndex(('SYM','Open')) 반환 →
+                        # 항상 data[sym] 로 접근(단순컬럼이면 폴백). 단일배치 SPY 누락 버그 수정.
+                        if isinstance(data.columns, pd.MultiIndex):
+                            df = data[sym][cols].copy()
                         else:
-                            df = data[sym][["Open", "High", "Low", "Close", "Volume"]].copy()
+                            df = data[cols].copy()
                         df = df.dropna(subset=["Close"])
                         if len(df) > params.sma_long:
                             all_data[sym] = df
@@ -172,6 +182,7 @@ class BacktestRunner:
             tr = pd.concat([high - low, (high - prev_close).abs(),
                             (low - prev_close).abs()], axis=1).max(axis=1)
             df["atr"] = tr.ewm(alpha=1 / params.atr_period, adjust=False).mean()
+            df["sma_market"] = close.rolling(params.market_sma_days).mean()  # 시장필터용
             indicators[sym] = df
 
         # ── 4. 시뮬레이션 ──
@@ -308,8 +319,18 @@ class BacktestRunner:
             for cp in closed_positions:
                 positions.remove(cp)
 
+            # ── Tier 1 시장 트렌드 필터: SPY < SMA면 신규 진입 차단(현금 보유) ──
+            market_ok = True
+            if params.use_market_filter and "SPY" in indicators:
+                spy = indicators["SPY"]
+                if day in spy.index:
+                    sc = spy.loc[day, "Close"]
+                    ss = spy.loc[day, "sma_market"]
+                    if pd.notna(sc) and pd.notna(ss):
+                        market_ok = float(sc) > float(ss)
+
             # ── 진입 체크 ──
-            if len(positions) < params.max_positions:
+            if market_ok and len(positions) < params.max_positions:
                 # 일별 return_20d 랭크 계산
                 day_returns = {}
                 for sym, df in indicators.items():
@@ -327,6 +348,8 @@ class BacktestRunner:
                     candidates = []
 
                     for sym, df in indicators.items():
+                        if sym == "SPY" and params.use_market_filter:
+                            continue  # 시장필터용 벤치마크 — 진입 후보 제외
                         if day not in df.index:
                             continue
                         if sym in [p["symbol"] for p in positions]:

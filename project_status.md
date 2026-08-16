@@ -1959,10 +1959,47 @@ margin 무관). **더 중요한 발견: 분산(20×5%)에선 margin 0%가 총수
 
 ---
 
+## 22.AJ 2026-08-16 하락장 방어 3계층(Tier 1~3) 구축 — 롱온리 구조결함 대응
+
+**배경:** 사용자 지적 — "시장 부진에도 수익 못 내면 장기투자와 뭐가 다른가. 하락장 수익 + 변동성 최소화
+장치 필요." 롱온리 모멘텀 브레이크아웃의 구조결함(하락장=손절만 누적) 정면 대응. 영문웹/논문 리서치 근거:
+GEM(Antonacci 2014, 절대모멘텀 필터로 최악낙폭 51%→10%), Faber(2007, 10개월 SMA 택티컬), VIX term structure,
+regime-switching jump model.
+
+**Tier 1 시장 트렌드 필터 (SPY 200일 SMA) — 백테스트 검증 후 적용.** SPY<SMA200 하락국면이면 신규 롱 진입
+전면 중단(현금 보유).
+| 구간 | 필터 | 총수익 | Sharpe | MDD |
+|---|---|---|---|---|
+| 전체 22-25 | OFF | +97.5% | 1.48 | −12.4% |
+| | **ON** | +98.2% | **1.63** | **−9.1%** |
+| 약세장 2022 | OFF | +0.5% | — | −8.5% |
+| | **ON** | +1.1% | — | **−4.4%** |
+- Sharpe 1.48→1.63, MDD −12.4%→−9.1%(약세장 −8.5%→−4.4% 절반). 강세장 기회비용 소폭(-6.8%p)이나 약세장
+  방어가 상쇄. `storage.get_market_trend()` + `scan_entries` 최상단 게이트. config `market_filter_enabled=true`
+  /`market_filter_sma_days=200`. 되돌리려면 enabled=false.
+- **🔴 runner 버그 수정:** yfinance `group_by='ticker'` 는 단일배치도 MultiIndex 반환 → runner 가 단순컬럼
+  인덱싱해 SPY(201번째 단독배치) 조용히 누락. 항상 `data[sym]` 접근으로 수정(기존 코드 잠복버그).
+
+**Tier 2 레짐 킬스위치 (VIX 조기경보).** RISK_OFF regime 또는 VIX>30 시 진입 중단. Tier1(SPY 추세=느림) 보완 —
+변동성 급등을 더 빠르게 감지(risk-off 시 종목상관 1로 수렴해 분산 무력→현금이 유일방어). `storage.get_macro_risk_state()`
++ `scan_entries` 게이트. config `macro_kill_switch_enabled=true`/`vix_kill_threshold=30`. 기존 swing_macro_snapshots 활용.
+
+**Tier 3 하락장 헤지 (inverse ETF, 골격+기본 off).** 하락국면 SH(inverse SPY) 보유 백테스트: **하락국면 +22.5%**
+(2022 +14.5%) — Tier1=손실회피(현금), Tier3=능동수익(숏). `swing.scan_hedge()` — 하락전환 시 SH ENTER, 상승복귀
+시 EXIT. config `hedge_enabled=false`(리스크, 기본off)/`hedge_symbol=SH`/`hedge_pct=0.20`. ⚠️ inverse ETF 장기부적합
+(일일리밸 감쇠)→전술적 보유만. 완전 자동실행(스케줄러 연결+SH 자동수집)은 활성화 결정 후 추가.
+
+**현재 라이브 config (2026-08-16):** Tier1 market_filter_enabled=true(SPY>SMA200 현재 상승국면=진입허용),
+Tier2 macro_kill_switch_enabled=true(VIX 14=평온), Tier3 hedge_enabled=false. 기존 스택(take_profit 0.50/absmom/
+vol 1.0/breakout 0/20×5% 분산) 유지.
+
+---
+
 ## 23. Git History
 
 ```
-(PENDING) docs+test: 브레이크아웃 margin 0 복귀(분산 정합) + 수익률/hard_stop 진단
+(PENDING) feat: 하락장 방어 Tier1~3(SPY필터+VIX킬스위치+SH헤지골격) + runner MultiIndex 버그수정
+0264ac9  docs+test: 브레이크아웃 margin 0 복귀(분산 정합) + 수익률/hard_stop 진단
 1d8a20f  docs+test: 20개·5% 분산 백테스트 검증(위험조정 최고, CAGR 18.9%/Sharpe 1.48)
 f759b73  feat: 자본 +$1000 입금 + 포지션 정책 20개 분산(position_pct 0.05, 레짐프리셋서 제거)
 a3273bc  feat: 브레이크아웃 완화(margin 3%)+레짐프리셋 정합+집중캡 조정+승인실패 메시지 수정

@@ -151,6 +151,38 @@ class SwingStrategy:
         price_min = float(self.pg.get_config_value("price_range_min", str(self.cfg.price_range_min)))
         price_max = float(self.pg.get_config_value("price_range_max", str(self.cfg.price_range_max)))
 
+        # Tier 1 시장 트렌드 필터 (GEM/Faber): SPY<SMA200 하락국면이면 신규 진입 전면 중단(현금).
+        # 백테스트: Sharpe 1.48→1.63, MDD −12.4%→−9.1%(약세장 −8.5%→−4.4%). config off 시 기존 동작.
+        market_filter = self.pg.get_config_value("market_filter_enabled", "false") == "true"
+        if market_filter:
+            mkt_days = int(self.pg.get_config_value("market_filter_sma_days", "200"))
+            mkt = self.pg.get_market_trend("SPY", mkt_days)
+            if not mkt["ok"]:
+                msg = (f"진입 시그널 0 — 시장 하락국면(SPY ${mkt.get('close')} < "
+                       f"SMA{mkt_days} ${mkt.get('sma')}). Tier 1 시장필터가 신규 진입 중단(현금 보유). "
+                       f"하락장 손실 회피 — 설계 의도.")
+                logger.info(f"Market filter: SPY below SMA{mkt_days} → entries suspended")
+                self._last_entry_funnel = {
+                    "total": len(indicators), "price_ok": 0, "trend": 0, "breakout": 0,
+                    "volume": 0, "three_cond": 0, "passed_basic": 0, "final": 0, "message": msg}
+                return []
+
+        # Tier 2 레짐 킬스위치 (VIX 급등 조기경보): RISK_OFF 또는 VIX>임계면 진입 중단.
+        # Tier 1(SPY 추세, 느림) 보완 — 변동성 급등을 더 빠르게 감지(risk-off 시 상관 1로 수렴).
+        macro_kill = self.pg.get_config_value("macro_kill_switch_enabled", "false") == "true"
+        if macro_kill:
+            vix_kill = float(self.pg.get_config_value("vix_kill_threshold", "30"))
+            ms = self.pg.get_macro_risk_state()
+            vix = ms.get("vix")
+            if ms.get("regime") == "RISK_OFF" or (vix is not None and vix > vix_kill):
+                msg = (f"진입 시그널 0 — 리스크오프 국면(regime={ms.get('regime')}, "
+                       f"VIX={vix}). Tier 2 킬스위치가 신규 진입 중단. 변동성 급등 방어 — 설계 의도.")
+                logger.info(f"Macro kill switch: regime={ms.get('regime')} VIX={vix} → entries suspended")
+                self._last_entry_funnel = {
+                    "total": len(indicators), "price_ok": 0, "trend": 0, "breakout": 0,
+                    "volume": 0, "three_cond": 0, "passed_basic": 0, "final": 0, "message": msg}
+                return []
+
         # ③번 절대 모멘텀 필터 (TSMOM, 백테스트 E2: 6개월>0 → Sharpe 1.20→1.24, MDD 개선)
         # 하락추세 종목의 브레이크아웃 함정 회피. config off 시 기존 동작.
         abs_mom_enabled = self.pg.get_config_value("abs_momentum_enabled", "false") == "true"
@@ -253,6 +285,33 @@ class SwingStrategy:
         mode = "dual_sort" if dual_sort else "momentum"
         logger.info(f"Entry scan [{mode}]: {len(signals)} signals from {len(indicators)} stocks")
         return signals
+
+    def scan_hedge(self) -> dict | None:
+        """Tier 3 하락장 헤지 (inverse ETF): 시장 국면 전환 시 SH 진입/청산 판정.
+
+        백테스트: 하락국면(SPY<SMA200) SH 보유 시 +22.5%(2022 +14.5%). Tier1=현금회피,
+        Tier3=하락장 능동수익. hedge_enabled=false 기본(리스크). 반환: 헤지 액션 dict 또는 None.
+
+        - 하락 전환 + 헤지 미보유 → SH 진입 시그널(ENTER)
+        - 상승 전환 + 헤지 보유 → SH 청산 시그널(EXIT)
+        ⚠️ inverse ETF 는 장기부적합(일일 리밸 감쇠) — 시장국면 기반 전술적 보유만.
+        """
+        if self.pg.get_config_value("hedge_enabled", "false") != "true":
+            return None
+        hedge_sym = self.pg.get_config_value("hedge_symbol", "SH")
+        mkt_days = int(self.pg.get_config_value("market_filter_sma_days", "200"))
+        mkt = self.pg.get_market_trend("SPY", mkt_days)
+        has_hedge = self.pg.has_open_position(hedge_sym)
+
+        if not mkt["ok"] and not has_hedge:
+            logger.info(f"Hedge: bear regime (SPY<SMA{mkt_days}) → SH hedge ENTER signal")
+            return {"action": "ENTER", "symbol": hedge_sym,
+                    "reason": f"시장 하락국면(SPY ${mkt.get('close')}<SMA{mkt_days} ${mkt.get('sma')}) — inverse ETF 헤지 진입"}
+        if mkt["ok"] and has_hedge:
+            logger.info(f"Hedge: bull regime recovered → SH hedge EXIT signal")
+            return {"action": "EXIT", "symbol": hedge_sym,
+                    "reason": "시장 상승국면 복귀 — 헤지 청산"}
+        return None
 
     def _build_entry_funnel(self, total, price, trend, breakout, volume,
                             three, passed_basic, final, dual_sort) -> dict:

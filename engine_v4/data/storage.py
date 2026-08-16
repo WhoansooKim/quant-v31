@@ -159,6 +159,45 @@ class PostgresStore:
             """).fetchall()
         return [dict(r) for r in rows]
 
+    def get_macro_risk_state(self) -> dict:
+        """Tier 2 레짐 킬스위치: 최신 macro 스냅샷의 regime/score/VIX.
+
+        Tier 1(SPY 추세=느림)을 보완하는 변동성 급등 조기경보. RISK_OFF 또는 VIX 급등 시
+        진입 중단 판단에 사용. 데이터 없으면 NEUTRAL(진입 허용).
+        """
+        with self.get_conn() as conn:
+            row = conn.execute("""
+                SELECT macro_score, regime, vix FROM swing_macro_snapshots
+                ORDER BY time DESC LIMIT 1
+            """).fetchone()
+        if not row:
+            return {"regime": "NEUTRAL", "macro_score": None, "vix": None}
+        return {"regime": row["regime"] or "NEUTRAL",
+                "macro_score": float(row["macro_score"]) if row["macro_score"] is not None else None,
+                "vix": float(row["vix"]) if row["vix"] is not None else None}
+
+    def get_market_trend(self, symbol: str = "SPY", sma_days: int = 200) -> dict:
+        """Tier 1 시장 트렌드 필터(GEM/Faber): SPY 현재가 vs N일 SMA.
+
+        daily_prices 에서 최근 sma_days 종가로 SMA 계산 → {ok, close, sma, symbol}.
+        ok=True 면 시장 상승국면(진입 허용), False 면 하락국면(신규 진입 중단).
+        데이터 부족 시 ok=True(보수적=진입 허용) 반환.
+        """
+        with self.get_conn() as conn:
+            rows = conn.execute("""
+                SELECT close FROM daily_prices
+                WHERE symbol = %s AND close IS NOT NULL
+                ORDER BY time DESC LIMIT %s
+            """, (symbol, sma_days)).fetchall()
+        closes = [float(r["close"]) for r in rows]
+        if len(closes) < sma_days:
+            return {"ok": True, "close": None, "sma": None, "symbol": symbol,
+                    "reason": "데이터부족(진입허용)"}
+        cur = closes[0]
+        sma = sum(closes) / len(closes)
+        return {"ok": cur > sma, "close": round(cur, 2), "sma": round(sma, 2),
+                "symbol": symbol}
+
     def get_abs_momentum(self, lookback_days: int = 126) -> dict[str, float]:
         """③번 절대 모멘텀(TSMOM): 심볼별 최신 close 대비 lookback_days 거래일 전 수익률.
 
