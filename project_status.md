@@ -1993,12 +1993,26 @@ regime-switching jump model.
 Tier2 macro_kill_switch_enabled=true(VIX 14=평온), Tier3 hedge_enabled=false. 기존 스택(take_profit 0.50/absmom/
 vol 1.0/breakout 0/20×5% 분산) 유지.
 
+## 22.AK 2026-08-16 Tier 3 완전 활성화 (SH 헤지 자동 실행)
+
+골격(scan_hedge)에서 **완전 자동 실행**으로 격상. 하락국면(SPY<SMA200) 전환 시 SH 자동 진입, 상승복귀 시 자동 청산.
+- **SH 데이터 수집:** `BENCHMARK_SYMBOLS`에 SH 추가(daily_pipeline이 SPY/QQQ/SH 수집). 초기 300행 수집(종가 $31.98).
+- **`_job_hedge_check` 스케줄러 잡:** 화~토 05:35 KST(16:35 ET, 종가 기준) — scan_hedge ENTER/EXIT 판정 →
+  SH 포지션 자동 생성(side=HEDGE)/청산. Telegram 알림. 헤지 사이징 = 계좌×hedge_pct(20%)/SH가.
+- **exit_manager 헤지 제외:** `_job_exit_check`가 side=HEDGE 포지션 스킵 → 5-Layer 출구(ATR트레일 등) 미적용,
+  시장국면 기반으로만 청산(inverse ETF 특성). `_get_account_value()` 헬퍼 추가.
+- **🔴 collector MultiIndex 버그 수정:** collect_prices 도 단일배치 `df=data`(MultiIndex 미처리)로 SH 단독수집
+  0행이던 잠복버그 → `data[sym]` 접근 수정(runner 와 동일 버그). scheduler_jobs 24→25.
+- **활성화:** `hedge_enabled=true`. 현재 상승국면이라 헤지 대기(진입 안함=정상), 하락 전환 시 자동 발동.
+  진입시뮬 검증: 계좌 $1,916×20%=$383 → SH 11주. ⚠️ inverse ETF 장기부적합 → 시장국면 기반 전술적 보유만.
+
 ---
 
 ## 23. Git History
 
 ```
-(PENDING) feat: 하락장 방어 Tier1~3(SPY필터+VIX킬스위치+SH헤지골격) + runner MultiIndex 버그수정
+(PENDING) feat: Tier3 완전활성화(SH 헤지 자동실행 스케줄러+collector 버그수정+hedge on)
+1912e2e  feat: 하락장 방어 Tier1~3(SPY필터+VIX킬스위치+SH헤지골격) + runner MultiIndex 버그수정
 0264ac9  docs+test: 브레이크아웃 margin 0 복귀(분산 정합) + 수익률/hard_stop 진단
 1d8a20f  docs+test: 20개·5% 분산 백테스트 검증(위험조정 최고, CAGR 18.9%/Sharpe 1.48)
 f759b73  feat: 자본 +$1000 입금 + 포지션 정책 20개 분산(position_pct 0.05, 레짐프리셋서 제거)

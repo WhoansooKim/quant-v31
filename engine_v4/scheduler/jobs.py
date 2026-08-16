@@ -33,7 +33,7 @@ from engine_v4.strategy.swing import SwingStrategy
 DEFAULT_INITIAL_CAPITAL = 2200.0
 
 # 벤치마크 — 유니버스 밖이지만 검증/리포트용으로 일일 가격 수집
-BENCHMARK_SYMBOLS = ["SPY", "QQQ"]
+BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SH"]  # SH: Tier3 헤지용 inverse ETF 가격 수집
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,15 @@ class SwingScheduler:
             CronTrigger(day_of_week="mon-fri", hour=23, minute=30, timezone=KST),
             id="exit_check_1",
             name="Exit Check (09:30 ET)",
+            replace_existing=True,
+        )
+
+        # 2c) Tier3 헤지 체크 — 화~토 05:35 KST (장 마감 후, 종가 기준 시장국면 판정)
+        self.scheduler.add_job(
+            self._job_hedge_check,
+            CronTrigger(day_of_week="tue-sat", hour=5, minute=35, timezone=KST),
+            id="hedge_check",
+            name="Tier3 Hedge Check (16:35 ET · SPY 국면 기반 SH 진입/청산)",
             replace_existing=True,
         )
 
@@ -534,6 +543,8 @@ class SwingScheduler:
 
         try:
             positions = self.pg.get_open_positions()
+            # Tier3 헤지 포지션(side=HEDGE)은 5-Layer 출구 대상 제외 — 시장국면 기반으로만 청산
+            positions = [p for p in positions if p.get("side") != "HEDGE"]
             if not positions:
                 self.pg.insert_pipeline_log("exit_check", "completed",
                                             time.time() - start,
@@ -674,6 +685,68 @@ class SwingScheduler:
             self.pg.insert_pipeline_log("exit_check", "failed",
                                         time.time() - start, error_msg=str(e))
             logger.error(f"Exit check failed: {e}", exc_info=True)
+
+    def _get_account_value(self) -> float:
+        """최신 스냅샷 총자산(헤지 사이징용). 없으면 initial_capital 폴백."""
+        with self.pg.get_conn() as conn:
+            row = conn.execute(
+                "SELECT total_value_usd FROM swing_snapshots ORDER BY time DESC LIMIT 1"
+            ).fetchone()
+        if row and row.get("total_value_usd"):
+            return float(row["total_value_usd"])
+        return float(self.pg.get_config_value("initial_capital", "1000"))
+
+    def _job_hedge_check(self):
+        """Tier 3 하락장 헤지: 시장 국면 전환 시 SH(inverse ETF) 진입/청산 자동 실행.
+
+        scan_hedge()가 ENTER/EXIT 판정 → SH 포지션 생성/청산(side=HEDGE, 5-Layer 출구 제외).
+        하락국면(SPY<SMA200) 진입, 상승복귀 청산. hedge_enabled=false 면 no-op.
+        """
+        import yfinance as yf
+        start = time.time()
+        try:
+            action = self.strategy.scan_hedge()
+            if not action:
+                return
+            sym = action["symbol"]
+            # SH 현재가 (yfinance 2d)
+            try:
+                data = yf.download(sym, period="2d", progress=False)
+                price = float(data["Close"].dropna().iloc[-1])
+            except Exception as e:
+                logger.error(f"Hedge price fetch failed for {sym}: {e}")
+                return
+
+            if action["action"] == "ENTER":
+                account = self._get_account_value()
+                hedge_pct = float(self.pg.get_config_value("hedge_pct", "0.20"))
+                qty = int((account * hedge_pct) / price) if price > 0 else 0
+                if qty < 1:
+                    logger.warning(f"Hedge ENTER skipped: qty<1 (account ${account:.0f}, {sym} ${price:.2f})")
+                    return
+                is_paper = self.pg.get_config_value("trading_mode", "paper") == "paper"
+                pid = self.pg.open_position({
+                    "symbol": sym, "side": "HEDGE", "qty": qty, "entry_price": price,
+                    "stop_loss": None, "take_profit": None, "signal_id": None, "is_paper": is_paper,
+                })
+                logger.info(f"Hedge ENTER: {sym} x{qty} @ ${price:.2f} (#{pid}) — {action['reason']}")
+                self.notifier.send_sync(
+                    f"🛡️ <b>Tier3 헤지 진입</b>\n{sym} x{qty} @ ${price:.2f}\n{action['reason']}")
+
+            elif action["action"] == "EXIT":
+                positions = [p for p in self.pg.get_open_positions()
+                             if p.get("side") == "HEDGE" and p["symbol"] == sym]
+                for p in positions:
+                    self.pg.close_position(p["position_id"], price, "hedge_exit")
+                    pnl = (price - float(p["entry_price"])) * float(p["qty"])
+                    logger.info(f"Hedge EXIT: {sym} @ ${price:.2f} PnL ${pnl:+.2f} — {action['reason']}")
+                    self.notifier.send_sync(
+                        f"🛡️ <b>Tier3 헤지 청산</b>\n{sym} @ ${price:.2f} · PnL ${pnl:+.2f}\n{action['reason']}")
+            self.pg.insert_pipeline_log("hedge_check", "completed", time.time() - start,
+                                        {"action": action["action"], "symbol": sym})
+        except Exception as e:
+            self.pg.insert_pipeline_log("hedge_check", "failed", time.time() - start, error_msg=str(e))
+            logger.error(f"Hedge check failed: {e}", exc_info=True)
 
     def _auto_execute_exit(self, action: ExitAction):
         """자동 매도 실행 — 포지션 종료 + trade 기록 + 시그널 + KIS 주문 + 텔레그램."""

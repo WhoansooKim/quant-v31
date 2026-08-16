@@ -206,10 +206,12 @@ class DataCollector:
                 rows = []
                 for sym in batch:
                     try:
-                        if len(batch) == 1:
-                            df = data
-                        else:
+                        # group_by='ticker' 는 단일배치도 MultiIndex 반환 → 항상 data[sym].
+                        # (단일 심볼 수집 시 df=data 로 하면 Close 접근 실패하던 잠복버그 수정)
+                        if isinstance(data.columns, pd.MultiIndex):
                             df = data[sym]
+                        else:
+                            df = data
                         df = df.dropna(subset=["Close"])
                         for ts, row in df.iterrows():
                             rows.append({
