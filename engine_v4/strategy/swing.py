@@ -299,7 +299,9 @@ class SwingStrategy:
         if self.pg.get_config_value("hedge_enabled", "false") != "true":
             return None
         hedge_sym = self.pg.get_config_value("hedge_symbol", "SH")
-        mkt_days = int(self.pg.get_config_value("market_filter_sma_days", "200"))
+        # 헤지 전용 신호 SMA (Tier1 진입필터와 분리). 백테스트: SMA150 이 SMA200 대비
+        # 하락국면 수익↑(+14→+20%)·낙폭↓ — 하락을 더 일찍 포착(A안, 2026-08-18).
+        mkt_days = int(self.pg.get_config_value("hedge_sma_days", "150"))
         mkt = self.pg.get_market_trend("SPY", mkt_days)
         has_hedge = self.pg.has_open_position(hedge_sym)
 
