@@ -65,7 +65,7 @@ from engine_v4.events.edgar import EdgarRssMonitor
 from engine_v4.events.processor import EventProcessor
 from engine_v4.risk.exit_manager import ExitManager
 from engine_v4.risk.position_manager import PositionManager
-from engine_v4.scheduler.jobs import SwingScheduler
+from engine_v4.scheduler.jobs import SwingScheduler, BENCHMARK_SYMBOLS
 from engine_v4.strategy.swing import SwingStrategy
 from engine_v4.strategy.watchlist_strategy import WatchlistStrategy
 
@@ -1193,7 +1193,10 @@ def _run_pipeline():
             universe = universe_mgr.refresh_universe()
         symbols = [u["symbol"] for u in universe]
 
-        collector.collect_prices(symbols, days=300)
+        # 벤치마크(SPY/QQQ/SH)도 함께 수집 — 스케줄 파이프라인과 일관.
+        # SPY=Tier1 필터, SH=Tier3 헤지 신호원이라 수동 실행 시에도 갱신 필수
+        # (누락 시 Tier 게이트가 stale SPY 로 판정. QQQ 8/13 정체 버그의 원인).
+        collector.collect_prices(symbols + BENCHMARK_SYMBOLS, days=300)
         collector.compute_indicators(symbols)
 
         # Step 2: Scan

@@ -2097,12 +2097,21 @@ Tier3 를 방어→알파원천으로 강화 백테스트(`scripts/backtest_tier
 - ⚠️ **한계:** 2022 단일 약세장 표본 → 100% 승률은 out-of-sample 미보장. 인버스는 구조적 음기대값(게이팅이 반전).
   레버리지는 whipsaw 시 손실증폭이라 보류. 현 상승국면은 헤지 대기(정상), 하락 전환 시 SMA150·40%로 발동.
 
+## 22.AN 2026-08-18 🔴 수동 파이프라인 벤치마크 누락 버그 (QQQ 8/13 정체 원인)
+
+**증상:** QQQ 가 8/13 에 멈춤(SPY/SH 는 8/17). **원인:** `/pipeline/run`(`_run_pipeline`, main.py)이 유니버스만
+수집하고 `BENCHMARK_SYMBOLS`(SPY/QQQ/SH) 누락 — 스케줄 파이프라인(`_job_daily_pipeline`)은 `symbols+BENCHMARK`
+수집하는데 수동 경로만 빠짐. VM 복구 후 내가 수동 pipeline 여러번 + SPY/SH 만 개별수집 → QQQ 만 방치돼 드러남.
+**심각도:** SPY(Tier1)·SH(Tier3) 신호원이라, 수동 실행만 하면 Tier 게이트가 stale SPY 로 판정하는 잠복위험.
+**수정:** `_run_pipeline` 도 `symbols + BENCHMARK_SYMBOLS` 수집(스케줄과 일관). QQQ 8/17 갱신 확인.
+
 ---
 
 ## 23. Git History
 
 ```
-(PENDING) feat: Tier3 완전활성화(SH 헤지 자동실행 스케줄러+collector 버그수정+hedge on)
+(PENDING) fix: 수동 파이프라인 벤치마크(SPY/QQQ/SH) 누락 수정 + Tier3 알파강화(SMA150+40%)
+6188aec  feat: Tier3 완전활성화(SH 헤지 자동실행 스케줄러+collector 버그수정+hedge on)
 1912e2e  feat: 하락장 방어 Tier1~3(SPY필터+VIX킬스위치+SH헤지골격) + runner MultiIndex 버그수정
 0264ac9  docs+test: 브레이크아웃 margin 0 복귀(분산 정합) + 수익률/hard_stop 진단
 1d8a20f  docs+test: 20개·5% 분산 백테스트 검증(위험조정 최고, CAGR 18.9%/Sharpe 1.48)
