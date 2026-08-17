@@ -28,9 +28,17 @@ git -C /home/quant/quant-v31 log --oneline -3                  # 최신 커밋 �
 | position_pct | 0.05 | 20개 분산(CAGR 18.9%/Sharpe 1.48) §22.AH |
 | max_position_pct_cap / total_exposure | 0.50 / 1.0 | 캡 §22.AG |
 | rsi2_exit_min_r / threshold | 2.0 / 95 | rsi2 승자보호 §22.AC |
+| **market_filter_enabled** | **true** (SMA200) | Tier1 하락장 진입중단 §22.AJ |
+| **macro_kill_switch_enabled** | **true** (VIX>30) | Tier2 VIX 킬스위치 §22.AJ |
+| **hedge_enabled** | **true** (SH 20%) | Tier3 하락장 헤지 §22.AK |
 
-**⚠️ 미해결 핵심 과제 (사용자 강조, 2026-08-14):** 시스템이 **롱-온리**라 하락/횡보장엔 손절만 쌓임(=buy&hold+수수료).
-"하락장에서도 수익 + 변동성 최소화 장치"가 필요 → **§25 Tier 1~3 로드맵**이 그 해답. 메모리 [[bear-market-defense-research]].
+**✅ 하락장 방어(롱온리 구조결함) = Tier 1~3 배포 완료 (2026-08-18):** SPY<SMA200 진입중단 + VIX킬스위치 +
+SH 헤지. 사용자 핵심지적 "하락장 손실만 쌓이면 buy&hold와 무엇이 다른가" 해결. 상세 §25 / §22.AJ·AK.
+
+**⚠️ 재부팅/스냅샷복구 시 필수 점검 (2026-08-18 교훈):** 스냅샷 복구로 **시스템 시계가 과거로 되돌아가면**
+Yahoo SSL cert "not yet valid" → **전 종목 데이터 수집 실패**(전체 파이프라인 마비). 재개 시 `date -u` 로 시각
+확인, 틀리면 `sudo chronyc makestep` 또는 NTP 강제 재동기화. git 원격이 로컬보다 앞설 수 있음(다른 VM 세션
+push분) → `git fetch && git log origin/main` 확인 후 `git rebase origin/main`.
 
 **주간 자동 재평가:** ① 손익비 = user crontab `3 9 * * 1`(매월 → 매주 월 09:03 KST) → Telegram + `scripts/payoff_review_result.txt`.
 
@@ -2170,35 +2178,25 @@ ebff79e docs: update git history hash in project_status.md
 
 ---
 
-## 25. 하락장 방어 로드맵 (Tier 1~3) — 진행 중 (2026-08-14 시작)
+## 25. 하락장 방어 로드맵 (Tier 1~3) — ✅ 구현·배포 완료 (상세 §22.AJ/AK)
 
-**배경:** 현재 시스템은 롱-온리 모멘텀 브레이크아웃 → 하락/횡보장엔 진입해봐야 손절만 쌓임. macro_scorer/
-regime_switcher는 **포지션 크기만** 줄이고 방향은 항상 롱 → "덜 잃기"만 하고 못 범 = buy&hold + 수수료.
-사용자 요구: **하락장에서도 수익 + 변동성 최소화 장치.** 메모리 [[bear-market-defense-research]].
-전부 **백테스트 검증 후 config on/off 로 적용** (rsi2 제외 대부분 검증 가능). 리서치 출처: Antonacci GEM,
+**배경:** 롱-온리 모멘텀 브레이크아웃의 구조결함(하락/횡보장=손절만 누적, buy&hold+수수료) 대응. 사용자 요구
+"하락장 수익 + 변동성 최소화 장치". 메모리 [[bear-market-defense-research]]. 리서치: Antonacci GEM,
 Faber TAA(SSRN-962461), Jump Model(arxiv 2402.05272).
 
-### Tier 1 — 시장 트렌드 필터 (최우선, 즉시 구현) ⬅ 다음 작업
-- **규칙:** SPY(또는 QQQ)가 200일 SMA 아래면 **신규 롱 진입 중단·현금 보유**. 하락장에 아예 안 들어가니
-  hard_stop 원천 차단. 근거: GEM 절대모멘텀이 최악낙폭 51%→10%.
-- **구현:** SPY 데이터 이미 `daily_prices` 에 있음(V4 매일 수집). `backtest/runner.py` 에 `market_trend_filter`
-  파라미터 추가(기본 off) → SPY 200일 SMA 계산 → 시장이 SMA 아래인 날은 진입 스킵. A/B(필터 on/off, 특히
-  2022 약세장 구간) 백테스트 → 효과 시 `strategy/swing.scan_entries` 에 게이트 추가 + config
-  `market_trend_filter_enabled`. 상태: **미착수.**
-- 검증 관전: 2022 약세장에서 필터 on 이 MDD·손절 줄이는지, 상승장 수익은 유지되는지.
+**구현 이력:** 이전 VM 세션(2026-08-16)에 Tier 1~3 구현·push(커밋 1912e2e, 6188aec). VM 손상 → 2026-08-14
+스냅샷 복구(git보다 뒤처짐) → 2026-08-18 재연결 후 **git 신규버전 rebase 수령 + 실행시스템 재배포**(config 7키
+복원 + SH 300행 수집 + 엔진 재시작 25 jobs). ⚠️ 배포 중 **시계 skew 이슈** 발견: 스냅샷 복구로 시계가 3일 과거
+→ Yahoo SSL cert "not yet valid" → 전 종목 수집 실패. 시계 교정 후 정상화(교훈: 스냅샷 복구 시 `date -u` 확인 필수).
 
-### Tier 2 — 레짐 스위칭 강화 (진입 중단 신호로 격상)
-- **규칙:** 기존 macro_scorer(VIX+금리+Cu/Au+DXY+BTC)를 "크기 조정"에서 "진입 중단"으로 격상. VIX>30 또는
-  macro risk-off 강할 때 신규 진입 차단. Jump Model 식 레짐 조기감지.
-- **구현:** macro_score < 임계(예 20) 또는 VIX term backwardation → 진입 중단 플래그. Tier 1 위에 얹어 백테스트.
-  상태: **미착수.**
+| Tier | 상태 | 규칙 | config | 검증 |
+|---|---|---|---|---|
+| **1 시장트렌드필터** | ✅ 배포 | SPY<SMA200 하락국면 진입중단(현금) | market_filter_enabled=true, sma_days=200 | Sharpe 1.48→1.63, MDD −12.4→−9.1%(약세장 절반) |
+| **2 VIX 킬스위치** | ✅ 배포 | RISK_OFF or VIX>30 진입중단 | macro_kill_switch_enabled=true, vix_kill_threshold=30 | Tier1 조기경보 보완 |
+| **3 SH 헤지** | ✅ 배포(대기) | SPY<SMA200 전환 시 SH 자동진입/상승복귀 청산 | hedge_enabled=true, hedge_symbol=SH, hedge_pct=0.20 | 하락국면 백테 +22.5%(2022 +14.5%). scheduler `hedge_check` 화~토 05:35 |
 
-### Tier 3 — 숏/헤지 (하락장 능동 수익, 고급·후순위)
-- **옵션 A(간단):** 시장 risk-off 시 Inverse ETF(SH) 소량 헤지 포지션. 장기부적합(일일감쇠) → 전술적 단기만.
-- **옵션 B(고급):** 롱숏/마켓뉴트럴 — 약한 종목 숏 + 강한 종목 롱. 상승·하락 양방향 수익. 2000-02·08·20·22 방어
-  입증. **KIS 실거래 숏 연동 필요**(paper 시뮬레이션 한계) → Live 전환 후. 상태: **설계만, 미착수.**
-
-**진행 원칙:** Tier 1 → 백테스트 검증 → 적용 → Tier 2 → … 순차. 각 단계 커밋 + 이 문서 갱신.
+**현재 게이트 상태(2026-08-18):** SPY 773>SMA200 703(상승)+VIX 14.6(평온) → 진입 허용, Tier3 헤지 대기(정상).
+**되돌리기:** 각 `*_enabled=false`. **미래 확장(미착수):** Tier3 옵션B(롱숏/마켓뉴트럴)는 KIS 실거래 숏 연동 필요 → Live 전환 후.
 
 ---
 
