@@ -2105,6 +2105,11 @@ Tier3 를 방어→알파원천으로 강화 백테스트(`scripts/backtest_tier
 **심각도:** SPY(Tier1)·SH(Tier3) 신호원이라, 수동 실행만 하면 Tier 게이트가 stale SPY 로 판정하는 잠복위험.
 **수정:** `_run_pipeline` 도 `symbols + BENCHMARK_SYMBOLS` 수집(스케줄과 일관). QQQ 8/17 갱신 확인.
 
+**전 경로 전수조사(후속):** 모든 `collect_prices` 호출 4곳 점검 → **`/collect`(`_run_collect`, main.py) 도 동일
+누락** 발견·수정(벤치마크 추가). 나머지: `/pipeline/run` 수정완료, `daily_pipeline`(스케줄) 정상(benchmark 포함),
+`premarket_check`(스케줄, days=5, 청산스캔용)은 유니버스만이나 벤치마크는 daily_pipeline이 갱신하므로 OK. `_job_hedge_check`
+는 자체수집 없이 daily_pipeline 의존(정상). 결론: 수동 데이터경로 `/collect`·`/pipeline/run` 둘 다 수정 완료.
+
 ---
 
 ## 23. Git History

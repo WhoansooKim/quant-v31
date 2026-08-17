@@ -269,7 +269,9 @@ def _run_collect():
             universe = universe_mgr.refresh_universe()
         symbols = [u["symbol"] for u in universe]
 
-        count = collector.collect_prices(symbols, days=300)
+        # 벤치마크(SPY/QQQ/SH)도 함께 수집 — 스케줄/파이프라인과 일관.
+        # SPY=Tier1 필터·SH=Tier3 헤지 신호원이라 수동 /collect 시에도 갱신 필수.
+        count = collector.collect_prices(symbols + BENCHMARK_SYMBOLS, days=300)
         ind_count = collector.compute_indicators(symbols)
 
         elapsed = time.time() - start
