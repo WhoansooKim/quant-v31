@@ -1,0 +1,20 @@
+# 손익비 개선(①번) 주간 검증 — 2026-08-10 09:03 KST
+📈 손익비 개선(①번) 주간 검증 (08/10 09:03 KST)
+변경(7/27): take_profit 0.20→0.50 — 트레일링+부분익절 지배
+
+설정 유지: take_profit_pct=0.50,atr_trailing_multiplier=2.5,partial_exit_r=2.0
+
+적용 후 청산 (7/27~)
+  청산 21건 · 승률 24%
+  평균 승 +7.07% (백테스트 목표 +13.9%)
+  평균 패 -2.88%
+  손익비 2.45 (백테스트 목표 2.57)
+  → ✅ 손익비 개선 궤도
+
+기준(적용 전 직전 30건): 평균 승 +5.86%
+  승 수익 변화: +5.86% → +7.07% (+1.21p)
+
+청산 사유(적용후): hard_stop:7, rsi2_overbought:5, atr_trailing_stop:5, trend_break:4
+기대: take_profit↓, atr_trailing_stop/partial_exit↑
+
+판단: 평균 승%·손익비 상승 + take_profit 청산 비중 감소면 ①번 유효. 되돌리려면 take_profit_pct=0.20.

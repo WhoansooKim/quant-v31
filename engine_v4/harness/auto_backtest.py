@@ -9,10 +9,18 @@ Pass criteria (configurable via swing_config):
   - OR Sharpe delta >= harness_sharpe_delta_min (default +0.2)
   - AND total trades >= harness_min_backtest_trades (default 30)
   - AND consistency across 3 periods (no period worse than baseline by 50%)
+
+판정 기준기간은 harness_primary_period (기본 365d). 90d 는 실측 거래가 2~6건뿐이라
+min_trades=30 게이트를 물리적으로 통과할 수 없어 변이가 품질과 무관하게 전건 기각됐음
+(2026-08-18 §22.AO). 365d 는 48~61건이라 표본이 유효하다.
+
+무한 hang 방어: 구간별 wall-clock 타임아웃(harness_backtest_period_timeout_sec) +
+'testing' 좀비 자동 회수(harness_testing_stuck_min) + 동시실행 1건 제한(DB 뮤텍스).
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import math
@@ -89,13 +97,108 @@ def _compute_sqn(trades_log: list, capital: float) -> float | None:
     return round((mean / sd) * math.sqrt(len(pnls)), 3)
 
 
+class BacktestTimeout(Exception):
+    """A single backtest period exceeded its wall-clock budget."""
+
+
 def _run_period(runner: BacktestRunner, base: dict, diff: dict,
-                 start: date, end: date) -> tuple[BacktestResult, float | None]:
-    """Run one backtest period and compute SQN."""
+                 start: date, end: date,
+                 timeout_sec: float | None = None) -> tuple[BacktestResult, float | None]:
+    """Run one backtest period and compute SQN.
+
+    timeout_sec 를 주면 별도 워커 스레드에서 실행하고 초과 시 BacktestTimeout.
+    yfinance 다운로드가 응답 없이 멈추는 사례(2026-08-18, 35분 CPU 0%)를 막는다.
+    파이썬은 스레드를 강제 종료할 수 없어 초과된 워커는 유기(daemon)하고 진행한다.
+    """
     params = _make_params(base, diff, start, end)
-    result = runner.run(params)
+
+    if not timeout_sec or timeout_sec <= 0:
+        result = runner.run(params)
+    else:
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="variant-bt")
+        fut = pool.submit(runner.run, params)
+        try:
+            result = fut.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError:
+            # 워커는 회수 불가 — 대기하지 않고 버린다
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise BacktestTimeout(
+                f"backtest period {start}~{end} exceeded {timeout_sec:.0f}s")
+        finally:
+            pool.shutdown(wait=False)
+
     sqn = _compute_sqn(result.trades_log, params.initial_capital)
     return result, sqn
+
+
+def recover_stuck_testing(pg: PostgresStore, stuck_min: int | None = None) -> dict[str, Any]:
+    """'testing' 상태로 고착된 좀비 변이를 pending 으로 원복.
+
+    백테스트 스레드가 네트워크에서 멈추면 status='testing' 인 채 영원히 남아
+    월간 잡의 슬롯을 막는다. 스케줄러(매시 rollback_check)와 validate_all_pending
+    진입 시점에 호출된다.
+    """
+    if stuck_min is None:
+        stuck_min = int(pg.get_config_value("harness_testing_stuck_min", "45"))
+    with pg.get_conn() as conn:
+        rows = conn.execute(
+            """
+            UPDATE swing_strategy_variants
+               SET status = 'pending', testing_started_at = NULL
+             WHERE status = 'testing'
+               AND (testing_started_at IS NULL
+                    OR testing_started_at < now() - make_interval(mins => %s))
+            RETURNING variant_id
+            """,
+            (stuck_min,),
+        ).fetchall()
+        conn.commit()
+    ids = [r["variant_id"] for r in rows]
+    if ids:
+        logger.warning(f"Recovered stuck 'testing' variants -> pending: {ids}")
+        log_action(pg, "variant_recover", "completed",
+                   details={"recovered": ids, "stuck_min": stuck_min})
+    return {"recovered": ids, "stuck_min": stuck_min}
+
+
+def _claim_slot(pg: PostgresStore, variant_id: int) -> bool:
+    """DB 뮤텍스 — 동시에 한 변이만 백테스트.
+
+    프로세스 내 Lock 은 좀비 스레드가 영구 점유할 수 있어 쓰지 않는다.
+    testing_started_at 타임스탬프가 곧 만료되는 잠금이라 재시작에도 안전하다.
+    """
+    recover_stuck_testing(pg)
+    with pg.get_conn() as conn:
+        busy = conn.execute(
+            "SELECT variant_id FROM swing_strategy_variants "
+            "WHERE status = 'testing' AND variant_id <> %s LIMIT 1",
+            (variant_id,),
+        ).fetchone()
+        if busy:
+            logger.info(
+                f"Variant {variant_id} backtest deferred — variant "
+                f"{busy['variant_id']} still testing")
+            return False
+        conn.execute(
+            "UPDATE swing_strategy_variants "
+            "SET status = 'testing', testing_started_at = now() WHERE variant_id = %s",
+            (variant_id,),
+        )
+        conn.commit()
+    return True
+
+
+def _release_slot(pg: PostgresStore, variant_id: int, status: str,
+                  reason: str | None = None) -> None:
+    """슬롯 해제 — 상태를 확정하고 testing_started_at 을 비운다."""
+    with pg.get_conn() as conn:
+        conn.execute(
+            "UPDATE swing_strategy_variants SET status = %s, testing_started_at = NULL, "
+            "rejection_reason = COALESCE(%s, rejection_reason) WHERE variant_id = %s",
+            (status, reason, variant_id),
+        )
+        conn.commit()
 
 
 def _save_backtest(pg: PostgresStore, result: BacktestResult, params: BacktestParams,
@@ -141,13 +244,12 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
     diff = diff_raw if isinstance(diff_raw, dict) else json.loads(diff_raw)
     base = _baseline_config(pg)
 
-    # Mark testing
-    with pg.get_conn() as conn:
-        conn.execute(
-            "UPDATE swing_strategy_variants SET status = 'testing' WHERE variant_id = %s",
-            (variant_id,),
-        )
-        conn.commit()
+    # Mark testing (동시실행 1건 제한 — 좀비 슬롯은 recover_stuck_testing 이 회수)
+    if not _claim_slot(pg, variant_id):
+        log_action(pg, "variant_backtest", "skipped",
+                   details={"reason": "another_variant_testing"},
+                   related_variant_id=variant_id)
+        return {"variant_id": variant_id, "status": "pending", "reason": "busy"}
 
     # Multi-period
     runner = BacktestRunner(pg)
@@ -157,6 +259,8 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
         ("180d", today - timedelta(days=180), today),
         ("365d", today - timedelta(days=365), today),
     ]
+    period_timeout = float(pg.get_config_value(
+        "harness_backtest_period_timeout_sec", "900"))
 
     baseline_results: dict[str, tuple[BacktestResult, float | None]] = {}
     variant_results: dict[str, tuple[BacktestResult, float | None]] = {}
@@ -165,28 +269,40 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
 
     for label, start, end in periods:
         try:
-            br, b_sqn = _run_period(runner, base, {}, start, end)
-            vr, v_sqn = _run_period(runner, base, diff, start, end)
+            br, b_sqn = _run_period(runner, base, {}, start, end, period_timeout)
+            vr, v_sqn = _run_period(runner, base, diff, start, end, period_timeout)
             baseline_results[label] = (br, b_sqn)
             variant_results[label] = (vr, v_sqn)
             # Persist variant backtest result
             v_params = _make_params(base, diff, start, end)
             run_ids[label] = _save_backtest(pg, vr, v_params, f"variant_{variant_id}_{label}")
+        except BacktestTimeout as e:
+            # 기각이 아니라 미판정 — pending 으로 되돌려 다음 회차에 재시도
+            logger.error(f"Backtest {label} timed out for variant {variant_id}: {e}")
+            _release_slot(pg, variant_id, "pending")
+            log_action(pg, "variant_backtest", "failed",
+                       details={"period": label, "timeout_sec": period_timeout},
+                       related_variant_id=variant_id, error_msg=str(e))
+            return {"variant_id": variant_id, "status": "pending",
+                    "reason": "timeout", "period": label}
         except Exception as e:
             logger.warning(f"Backtest {label} failed for variant {variant_id}: {e}")
 
     if not variant_results:
-        with pg.get_conn() as conn:
-            conn.execute(
-                """UPDATE swing_strategy_variants SET status='rejected',
-                   rejection_reason='all_backtests_failed' WHERE variant_id = %s""",
-                (variant_id,),
-            )
-            conn.commit()
+        _release_slot(pg, variant_id, "rejected", "all_backtests_failed")
         return {"variant_id": variant_id, "status": "rejected", "reason": "all_backtests_failed"}
 
-    # Decision based on 90d (primary) + consistency
-    primary_label = "90d" if "90d" in variant_results else next(iter(variant_results))
+    # Decision based on harness_primary_period (기본 365d) + consistency.
+    # 90d 는 실측 거래가 2~6건뿐이라 min_trades 게이트를 넘을 수 없다(§22.AO).
+    primary_pref = pg.get_config_value("harness_primary_period", "365d")
+    primary_label = next(
+        (lbl for lbl in (primary_pref, "365d", "180d", "90d") if lbl in variant_results),
+        next(iter(variant_results)),
+    )
+    if primary_label != primary_pref:
+        logger.warning(
+            f"Variant {variant_id}: primary period '{primary_pref}' unavailable "
+            f"— falling back to '{primary_label}'")
     b_result, b_sqn = baseline_results.get(primary_label, (None, None))
     v_result, v_sqn = variant_results[primary_label]
 
@@ -228,6 +344,7 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
             """
             UPDATE swing_strategy_variants SET
                 status = %s,
+                testing_started_at = NULL,
                 backtest_90d_run_id = %s,
                 backtest_180d_run_id = %s,
                 backtest_365d_run_id = %s,
@@ -253,6 +370,7 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
     summary = {
         "variant_id": variant_id,
         "status": new_status,
+        "primary_period": primary_label,
         "baseline_sqn": b_sqn,
         "variant_sqn": v_sqn,
         "sqn_delta": sqn_delta,
@@ -269,6 +387,8 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
 
 def validate_all_pending(pg: PostgresStore, max_per_run: int = 5) -> dict[str, Any]:
     """Run backtests for all pending variants. Capped to limit cost."""
+    # 좀비 슬롯을 먼저 회수해야 _claim_slot 이 막히지 않는다
+    recover_stuck_testing(pg)
     with pg.get_conn() as conn:
         rows = conn.execute(
             """

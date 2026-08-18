@@ -2112,6 +2112,99 @@ Tier3 를 방어→알파원천으로 강화 백테스트(`scripts/backtest_tier
 
 ---
 
+## 22.AO 2026-08-18 정기점검 3종 조치 (MDD 오염 / 리포트 공백 / 변이 백테스트 무력화)
+
+재부팅(08:27) 후 전수 점검에서 3건 발견 → 1·2번 조치 완료, 3번은 원인규명 완료 후 사용자 결정 대기.
+
+**① MDD −505% 오염 → −15.03% 정상화 (완료)**
+- 증상: `/portfolio`·대시보드 MDD 가 −505.12% 로 표시.
+- 원인: 계산식(`jobs.py:1188`, `main.py:1392`)은 정상이나 **전 이력을 스캔**하는데 `swing_snapshots` 에 오염 행이 섞임.
+  가짜 peak `2026-05-26 cum=+494.72%`(total $5,947 / invested $5,069) 가 영구 기준점이 돼 이후 모든 dd 를 −5.05 로 만듦.
+- 오염 행 5건: `04-01 07:00`(cash −$10,971 / invested $11,985), `05-26 23:08:01`(cum +494.72%),
+  `05-26 23:08:03`(cum +25.30%), `06-16 22:08`(전 지표 NULL), `07-02 21:15`(cum +79.56%).
+  전부 해당 일자에 정상 행이 4~15개 더 있어 삭제해도 일자 손실 없음.
+- 조치: CSV 백업(`scripts/backup/swing_snapshots_20260818.csv`, 895행) → 오염 5행 DELETE →
+  남은 890행 `max_drawdown` 을 엔진과 동일 로직(running peak, floor 0)으로 전 구간 재계산 UPDATE →
+  Redis `swing:snapshot` 캐시 무효화(캐시가 옛 값 반환하던 것 확인).
+- 결과: cum −5.26% 유지, **MDD −505.12% → −15.03%**(peak +4.64% → trough −10.39%). cum 범위도 −10.39~+4.64% 로 정상화.
+- ⚠️ 재발방지 미적용: 애초에 오염을 만든 원인(5/26 invested $5,069 등 이상 시세/수량)은 미규명.
+  `jobs.py` 에 isfinite 가드는 있으나 **범위 가드(예: invested > 자본×3 이면 저장거부)는 없음** — 필요 시 추가.
+
+**② 일일리포트 공백 소급 생성 (완료)**
+- `post_market_analysis` 는 **화~토 06:05 KST**(`day_of_week="tue-sat"`) → 정상 기대 일자는 화~토뿐(일·월 KST 는 US 휴장이라 원래 없음).
+- 실제 공백은 **8/15(토)·8/18(화)** 2건. VM 일시정지(8/15~8/17)로 미발화. 8/9(일)·8/10(월) 결번은 정상.
+- 조치: `POST /analysis/daily/run?report_date=...&notify=false` 로 2건 생성(MFE 85 / event-study 85 / counterfactual 74 전부 ok).
+- 결과: 8/15·8/18 rolling_30 = 승률 36.67% / 기대값 +0.60% / SQN −2.499 / **IC +0.0365**.
+  8/14 와 동일값인 건 정상 — 8/13 이후 청산이 없어 rolling_30 표본이 그대로임.
+
+**③ 🔴 변이(variant) 백테스트가 구조적으로 전건 기각 — 하네스 3C/3D 사실상 무력 (원인규명 완료, 조치 대기)**
+- 표면 증상: pending 30건 적체(7/1~8/5 생성분), 8/6 `variant_generate` 뒤 `variant_backtest` 로그 없음.
+- 원인 1 (적체): 월간 잡이 5개 생성 + `validate_all_pending(max_per_run=5)` 로 **오래된 5개만** 검증 →
+  생성속도 = 검증속도라 backlog 영구 고정. 8/6 05:03 건은 월간 스케줄(1일 11:00)이 아닌 **수동 API 호출**이라
+  `/harness/variants/generate` 에 자동검증이 없어 백테스트가 애초에 안 붙음(로그 결번의 진짜 이유).
+- **원인 2 (치명적): 합격조건이 물리적으로 달성 불가.** `validate_variant` 는 **90d 를 primary** 로 쓰는데
+  게이트는 `harness_min_backtest_trades=30`. 실제 90d 거래수는 **2~6건**:
+  | run | 기간 | 거래수 |
+  |---|---|---|
+  | variant_16_90d | 90d | **2** |
+  | variant_15_90d | 90d | **2** |
+  | variant_14_90d | 90d | **6** |
+  | variant_16_365d | 365d | 48 |
+  | variant_14_365d | 365d | 61 |
+  → `enough_trades` 가 절대 참이 될 수 없어 **품질과 무관하게 100% rejected**. 기각 16건 전부 사유가
+  `trades=N<30`. 실제로 variant_13 은 365d 에서 **+25.05% / Sharpe 2.54** 인데도 90d 표본미달로 기각됨.
+  (9~11번은 `trades=29<30` 1건 차이 기각 + variant_sqn=baseline_sqn=2.145 로 변이 효과 자체가 0)
+- **원인 3 (신규 발견): 백테스트 러너가 네트워크 I/O 에서 무한 hang.** 확인차 variant 18 을
+  `POST /harness/variants/18/backtest` 로 실행 → **35분간 CPU 0.0~0.3%, backtest_runs 0건 저장, status='testing' 고착**.
+  yfinance 소켓이 CLOSE-WAIT 9개로 누수. 8/1 정상 실행 때는 변이당 elapsed 113~115초였음.
+  타임아웃이 없어 한 번 걸리면 **월간 잡도 같은 자리에서 멈추고 변이는 'testing' 좀비로 남음**.
+  조치: 엔진 kill -9 재기동(25잡 정상) + variant 18 → 'pending' 원복.
+- **일괄 백테스트 미실행 사유(의도적):** 위 조건에서 30건을 돌리면 ①건당 ~2분×30 = 1시간 소모,
+  ②전건 `trades<30` 기각이 확정, ③30건이 영구 rejected 로 낙인 — 순손실뿐이라 **실행하지 않고 사용자 판단을 요청**.
+- **선택지:** (A) config 만 `harness_min_backtest_trades` 30→10 (90d 가 2~6건이라 여전히 미달, 미봉책) /
+  (B) primary 를 365d 로 / (C) 타임아웃 + 좀비 회수.
+- **사용자 결정(2026-08-18): B + C 채택 → 아래 구현 완료.**
+
+### 22.AO-1 (B) 판정 기준기간 90d → 365d
+
+- `validate_variant` 의 primary 를 하드코딩 `"90d"` → **`harness_primary_period` config(기본 `365d`)** 로 전환.
+  요청 기간이 없으면 `365d → 180d → 90d` 순으로 폴백하고 폴백 시 WARNING 로그.
+- 판정 결과 요약(`swing_harness_log.details`)에 **`primary_period`** 필드 추가 — 어느 기간이 판정했는지 추적 가능.
+- 신규 config 3종: `harness_primary_period=365d`, `harness_backtest_period_timeout_sec=900`,
+  `harness_testing_stuck_min=45`.
+
+### 22.AO-2 (C) 무한 hang 방어 3종
+
+1. **구간 wall-clock 타임아웃** — `_run_period(…, timeout_sec)` 가 별도 워커 스레드에서 실행,
+   초과 시 `BacktestTimeout`. 파이썬은 스레드를 죽일 수 없어 초과 워커는 유기(daemon)하고 진행.
+   타임아웃은 **기각이 아니라 미판정** 처리 → `pending` 원복 후 다음 회차 재시도(품질 누명 방지).
+2. **'testing' 좀비 자동 회수** — `recover_stuck_testing()` 이 `testing_started_at`(신규 컬럼) 기준
+   45분 초과 행을 `pending` 으로 원복 + `variant_recover` 감사로그. **매시 15분 `rollback_check` 잡**과
+   `validate_all_pending()` 진입 시 호출.
+3. **동시실행 1건 제한(DB 뮤텍스)** — `_claim_slot()`. 프로세스 내 `threading.Lock` 은 좀비 스레드가
+   영구 점유할 수 있어 쓰지 않고, `testing_started_at` 자체를 **만료되는 잠금**으로 사용 → 재시작에도 안전.
+   추가로 `runner.py` 의 `yf.download` 를 **`threads=False` + `timeout=30`(`YF_TIMEOUT_SEC`)** 로 고정
+   (yfinance 내부 스레드풀이 캐시 락에서 교착된 것이 hang 의 방아쇠로 추정 — 리포트 백필과 동시 실행 시 발생).
+
+**검증 (variant 18 실측, 2026-08-18 09:41):**
+| 항목 | 조치 전 | 조치 후 |
+|---|---|---|
+| 실행 | **35분 hang, CPU 0%, 저장 0건** | **246.7초 정상 완료** |
+| 판정 기간 | 90d (2~6 거래) | **365d (81 거래)** |
+| 결과 | testing 좀비 고착 | **validated** (하네스 사상 첫 합격) |
+- variant 18 「시간스 하향」 `{position_pct 0.18, max_positions 10, factor_weight_technical 0.35}`:
+  SQN **1.246 → 2.616 (Δ+1.37)**, Sharpe **1.639 → 2.631 (Δ+0.99)**, consistent=true.
+- ⚠️ `threads=False` 로 변이당 113초 → 247초(약 2배)로 느려졌으나, hang 리스크 제거가 우선.
+- ⚠️ **자동 배포 안 됨** — `deploy_best_variant` 는 스케줄러 잡이 없고 `/harness/variants/deploy-best`
+  API 호출로만 동작. validated 상태로 사용자 승인 대기 중.
+
+**미해결(별건):**
+- 적체 자체는 그대로 — `validate_all_pending(max_per_run=5)` 가 월 5건 생성과 동률이라 pending 29건 고정.
+  일괄 소진하려면 `max_per_run` 상향 또는 수동 반복 필요(변이당 ~4분).
+- `/harness/variants/generate`(수동 API)에는 여전히 자동검증이 붙지 않음 — 생성만 하고 pending 적재.
+
+---
+
 ## 23. Git History
 
 ```

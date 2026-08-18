@@ -14,6 +14,9 @@ from engine_v4.data.storage import PostgresStore
 
 logger = logging.getLogger(__name__)
 
+# yfinance HTTP 타임아웃(초). 무응답 소켓이 백테스트 전체를 멈추지 못하게 한다.
+YF_TIMEOUT_SEC = 30
+
 
 @dataclass
 class BacktestParams:
@@ -126,13 +129,17 @@ class BacktestRunner:
         for i in range(0, len(universe_symbols), batch_size):
             batch = universe_symbols[i:i + batch_size]
             try:
+                # threads=False: yfinance 내부 스레드풀이 캐시 락에서 교착돼
+                # 응답 없이 멈추는 사례가 있었다(2026-08-18 §22.AO). 배치 단위라
+                # 직렬화해도 비용 차이가 작다. timeout 은 명시적으로 고정.
                 data = yf.download(
                     " ".join(batch),
                     start=start_padded.strftime("%Y-%m-%d"),
                     end=params.end_date.isoformat(),
                     group_by="ticker",
-                    threads=True,
+                    threads=False,
                     progress=False,
+                    timeout=YF_TIMEOUT_SEC,
                 )
                 if data.empty:
                     continue
@@ -532,6 +539,8 @@ class BacktestRunner:
                 start=params.start_date.isoformat(),
                 end=params.end_date.isoformat(),
                 progress=False,
+                threads=False,
+                timeout=YF_TIMEOUT_SEC,
             )
             if spy.empty:
                 return BacktestResult()

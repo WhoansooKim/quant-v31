@@ -1327,7 +1327,7 @@ class SwingScheduler:
             logger.exception(f"regime_switch_check failed: {e}")
 
     def _job_rollback_check(self):
-        """Phase 3E — Hourly rollback condition check."""
+        """Phase 3E — Hourly rollback condition check (+ 변이 좀비 회수)."""
         try:
             from engine_v4.harness.auto_deploy import check_rollback_conditions
             result = check_rollback_conditions(self.pg, self.notifier)
@@ -1335,6 +1335,16 @@ class SwingScheduler:
                 logger.info(f"Auto-rollback fired: {result}")
         except Exception as e:
             logger.exception(f"rollback_check failed: {e}")
+
+        # 백테스트가 네트워크에서 멈추면 변이가 'testing' 좀비로 남아 다음 회차를
+        # 통째로 막는다 — 매시 회수(§22.AO).
+        try:
+            from engine_v4.harness.auto_backtest import recover_stuck_testing
+            rec = recover_stuck_testing(self.pg)
+            if rec.get("recovered"):
+                logger.warning(f"Stuck variant recovery: {rec}")
+        except Exception as e:
+            logger.exception(f"variant stuck-recovery failed: {e}")
 
     def _job_monthly_variant_gen(self):
         """Phase 3C/3D — Monthly variant generation + auto-backtest."""
