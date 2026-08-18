@@ -2341,7 +2341,12 @@ variant 18 은 최초 SQN +1.37/Sharpe +0.99 로 "하네스 사상 첫 합격" �
 ## 23. Git History
 
 ```
-(PENDING) fix: 수동 파이프라인 벤치마크(SPY/QQQ/SH) 누락 수정 + Tier3 알파강화(SMA150+40%)
+52887ce  docs: §22.AL Tier1 시장필터 정정 — 유령손실 버그로 결론이 뒤집힘
+26593bd  fix(backtest): 유령손실 버그 외 러너 결함 6종 교정 + 낙폭 게이트 신설
+fe0b103  fix: 정기점검 3종 — MDD 오염 정리 + 리포트 공백 + 변이 백테스트 무력화 해소
+000a127  fix: /collect 엔드포인트도 벤치마크 누락 수정 (전 경로 전수조사)
+4a4a2aa  fix: 수동 파이프라인 벤치마크(SPY/QQQ/SH) 누락 — QQQ 8/13 정체 버그
+b2e9ff2  feat: Tier3 알파 강화 — 헤지 신호 SMA150(A) + 사이징 40%(B)
 6188aec  feat: Tier3 완전활성화(SH 헤지 자동실행 스케줄러+collector 버그수정+hedge on)
 1912e2e  feat: 하락장 방어 Tier1~3(SPY필터+VIX킬스위치+SH헤지골격) + runner MultiIndex 버그수정
 0264ac9  docs+test: 브레이크아웃 margin 0 복귀(분산 정합) + 수익률/hard_stop 진단
@@ -2422,17 +2427,23 @@ ebff79e docs: update git history hash in project_status.md
 
 1. **Read this file**: `project_status.md` (전체 시스템 현황)
 2. **Read CLAUDE.md**: 코딩 규칙 (psycopg3, TimescaleDB, Npgsql Raw SQL)
-3. **Current state**: V4 Swing Trading 시스템 운영 중, 1개 포지션 오픈 (STZ 1주 @ $166.15, paper mode)
-   - **Live 전환 예정**: 2026-04-21 주간 (일주일 Paper 준비 기간 후)
-   - **V3.1 비활성화 필요**: `sudo systemctl stop/disable quant-engine.service` (Telegram 중복 알림 원인)
+3. **Current state (2026-08-18)**: V4 운영 중, **오픈 11 / 청산 74** (paper). 총자산 $1,894.86,
+   누적 −5.26%, MDD −15.03%. 자본 $2,000(초기 1,000 + 7/28 입금 1,000).
+   - **V3.1 비활성화 완료**(2026-06-25). 재부팅 후 자동점검: `scripts/v31_reboot_check.log`
+   - Live 전환은 미정 — paper 검증 우선(메모리 [[project-strategy-18pct]])
 4. **Dashboard**: 12 pages + Login/Register + Collapsible Sidebar + Live Ticker Bar + RBAC
-5. **Engine**: port 8001 (NOT 8000), 12 scheduler jobs (incl. macro_collect, social_collect, lstm_retrain, premarket/afterhours), SSE stream
+5. **Engine**: port 8001 (NOT 8000), **25 scheduler jobs**, SSE stream
 6. **Key service**: `SwingService.cs` (NOT PostgresService.cs)
 7. **Key models**: `SwingModels.cs` (NOT DashboardModels.cs)
 8. **All phases complete**: A(LLM) + B(Exit) + C(MultiFactor) + D(Optimizer) + E(Events) + F(Telegram/KIS) + **Tier 3(LSTM+Social+DualSort)** + **Macro Overlay**
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **백테스트 결론을 믿기 전에 러너 건전성부터 확인**(2026-08-18 교훈, §22.AO-3).
+  회계 항등식 **실현손익 + 미청산평가손익 = 자본증감** 이 맞는지 검산할 것.
+  유령손실 버그로 §22.AJ/AL 의 Tier1 판단이 두 번 뒤집혔다.
+- 🔴 **변이 평가 결과는 baseline 정합성에 좌우된다.** `_baseline_config` 가 라이브 config 전체를
+  싣고 있는지, 자본이 `_live_capital()` 로 맞춰졌는지 확인(같은 변이가 baseline 에 따라 4번 다른 판정).
 - Engine V4 = port **8001**, V3.1 = port 8000 (비활성)
 - `swing_*` prefix tables = V4 (13개), 일반 테이블 = V3.1
 - `SwingService.cs` = V4 서비스, `PostgresService.cs` = V3.1 레거시
@@ -2480,12 +2491,18 @@ Faber TAA(SSRN-962461), Jump Model(arxiv 2402.05272).
 
 | Tier | 상태 | 규칙 | config | 검증 |
 |---|---|---|---|---|
-| **1 시장트렌드필터** | ✅ 배포 | SPY<SMA200 하락국면 진입중단(현금) | market_filter_enabled=true, sma_days=200 | Sharpe 1.48→1.63, MDD −12.4→−9.1%(약세장 절반) |
-| **2 VIX 킬스위치** | ✅ 배포 | RISK_OFF or VIX>30 진입중단 | macro_kill_switch_enabled=true, vix_kill_threshold=30 | Tier1 조기경보 보완 |
-| **3 SH 헤지** | ✅ 배포(대기) | SPY<SMA200 전환 시 SH 자동진입/상승복귀 청산 | hedge_enabled=true, hedge_symbol=SH, hedge_pct=0.20 | 하락국면 백테 +22.5%(2022 +14.5%). scheduler `hedge_check` 화~토 05:35 |
+| **1 시장트렌드필터** | ✅ 배포 | SPY<SMA200 하락국면 진입중단(현금) | market_filter_enabled=true, market_filter_sma_days=200 | **2026-08-18 재검증(버그수정 후): 전체 +64.9→+103.1%, Sharpe 1.08→1.45, 약세장 −4.0→−0.5%·MDD −11.9→−4.4%, 강세장도 +46.7→+74.7% — 세 구간 모두 우위.** §22.AL 정정 참조 |
+| **2 VIX 킬스위치** | ✅ 배포 | RISK_OFF or VIX>30 진입중단 | macro_kill_switch_enabled=true, vix_kill_threshold=30 | Tier1 조기경보 보완. **백테스트 불가**(macro 표본 5개월) |
+| **3 SH 헤지** | ✅ 배포(대기) | SPY<**SMA150** 전환 시 SH 자동진입/상승복귀 청산 | hedge_enabled=true, hedge_symbol=SH, **hedge_sma_days=150, hedge_pct=0.40** | 하락국면 백테 +20.2%/MDD −5.3%(§22.AM A+B안 적용). **자체계산이라 유령손실 버그 무관 — 수치 유효.** scheduler `hedge_check` 화~토 05:35 |
 
 **현재 게이트 상태(2026-08-18):** SPY 773>SMA200 703(상승)+VIX 14.6(평온) → 진입 허용, Tier3 헤지 대기(정상).
-**되돌리기:** 각 `*_enabled=false`. **미래 확장(미착수):** Tier3 옵션B(롱숏/마켓뉴트럴)는 KIS 실거래 숏 연동 필요 → Live 전환 후.
+**되돌리기:** 각 `*_enabled=false`(Tier3 원복은 hedge_sma_days=200, hedge_pct=0.20).
+**미래 확장(미착수):** Tier3 옵션B(롱숏/마켓뉴트럴)는 KIS 실거래 숏 연동 필요 → Live 전환 후.
+
+⚠️ **2026-08-18 교훈:** Tier1 의 최초 평가(§22.AJ "Sharpe 1.48→1.63")와 1차 재검증(§22.AL "방어장치일 뿐
+알파원천 아님")이 모두 **백테스터 유령손실 버그** 위에서 내려진 판단이었다. 버그 수정 후 3차 검증에서야
+"세 구간 모두 우위"라는 실상이 드러났다. **백테스트 결론은 러너 건전성 검증 없이는 신뢰할 수 없다** —
+회계 항등식(실현손익 + 미청산평가손익 = 자본증감)이 맞는지부터 확인할 것.
 
 ---
 
