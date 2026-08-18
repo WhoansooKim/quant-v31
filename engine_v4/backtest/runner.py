@@ -58,6 +58,20 @@ class BacktestParams:
     use_abs_momentum: bool = False   # True 시 과거 abs_mom_period 수익>임계 종목만 진입
     abs_mom_period: int = 252        # 룩백 거래일 (252≈12개월)
     abs_mom_min: float = 0.0         # 절대모멘텀 최소치 (0 = 과거수익 양(+)만 롱)
+    # ── 5-Layer Exit 정합 (2026-08-18 §22.AO-4): risk/exit_manager.py 와 동일 로직 ──
+    # 라이브 청산 우선순위 L2(하드스탑) → L4(RSI2) → L3(시간청산) → L1(ATR 트레일링) 을 그대로 재현.
+    # R 배수는 라이브와 같이 진입시점 ATR(entry_atr) 기준 — 당일 ATR 이 아니다.
+    use_hard_stop: bool = False      # L2: entry − mult×entry_ATR 이탈 시 즉시 청산
+    atr_hard_stop_mult: float = 1.5
+    use_rsi2_exit: bool = False      # L4: RSI(2) > threshold (최소 R 도달 후에만)
+    rsi2_period: int = 2
+    rsi2_exit_threshold: float = 95.0
+    rsi2_exit_min_r: float = 2.0     # 승자 과조기절단 방지 게이팅 (2026-07-01 교정치)
+    use_time_stop: bool = False      # L3: 보유일 초과 시 청산
+    time_stop_days: int = 15
+    use_breakeven: bool = False      # +trigger_R 도달 시 손절을 본전(+버퍼)으로 상향
+    breakeven_trigger_r: float = 1.0
+    breakeven_buffer_pct: float = 0.002
 
 
 @dataclass
@@ -190,6 +204,14 @@ class BacktestRunner:
                             (low - prev_close).abs()], axis=1).max(axis=1)
             df["atr"] = tr.ewm(alpha=1 / params.atr_period, adjust=False).mean()
             df["sma_market"] = close.rolling(params.market_sma_days).mean()  # 시장필터용
+
+            # RSI(2) — 라이브 exit_manager.calc_rsi 와 동일한 단순평균 방식(Wilder 아님).
+            # avg_loss == 0 이면 100 으로 고정하는 것까지 맞춘다.
+            _delta = close.diff()
+            _avg_gain = _delta.clip(lower=0).rolling(params.rsi2_period).mean()
+            _avg_loss = (-_delta).clip(lower=0).rolling(params.rsi2_period).mean()
+            _rs = _avg_gain / _avg_loss.replace(0, np.nan)
+            df["rsi2"] = (100 - (100 / (1 + _rs))).where(_avg_loss != 0, 100.0)
             indicators[sym] = df
 
         # ── 4. 시뮬레이션 ──
@@ -266,10 +288,41 @@ class BacktestRunner:
                 pos["high_water"] = max(pos.get("high_water", entry), current)
 
                 exit_reason = None
-                if params.use_atr_trailing:
-                    # ── ①번 개선: ATR 트레일링 + 부분익절 (고정 TP 대신) ──
-                    init_risk = entry - entry * (1 + params.stop_loss_pct)  # 초기 리스크(양수, 주당$)
-                    atr = float(df.loc[day, "atr"]) if pd.notna(df.loc[day, "atr"]) else 0.0
+
+                # ── 라이브 5-Layer 정합: L2 하드스탑 → L4 RSI(2) → L3 시간청산 ──
+                entry_atr = float(pos.get("entry_atr") or 0)
+                # R 배수 = (현재가 − 진입가) / 진입시점 ATR (라이브 exit_manager 와 동일)
+                r_mult = (current - entry) / entry_atr if entry_atr > 0 else 0.0
+
+                # L2: 하드 스톱 (entry − mult×entry_ATR, ATR 없으면 −5% 폴백)
+                if params.use_hard_stop:
+                    hard_stop = (entry - params.atr_hard_stop_mult * entry_atr
+                                 if entry_atr > 0 else entry * 0.95)
+                    if current <= hard_stop:
+                        exit_reason = "hard_stop"
+
+                # L4: RSI(2) 과매수 — 최소 R 도달 후에만 (승자 과조기절단 방지)
+                if exit_reason is None and params.use_rsi2_exit:
+                    rsi2_gate = (r_mult >= params.rsi2_exit_min_r if entry_atr > 0
+                                 else pnl_pct >= 0.03)
+                    if rsi2_gate:
+                        _r2 = df.loc[day, "rsi2"]
+                        if pd.notna(_r2) and float(_r2) > params.rsi2_exit_threshold:
+                            exit_reason = "rsi2_overbought"
+
+                # L3: 시간 청산
+                if (exit_reason is None and params.use_time_stop
+                        and (day - pos["entry_date"]).days >= params.time_stop_days):
+                    exit_reason = "time_stop"
+
+                if exit_reason is not None:
+                    pass  # 상위 레이어에서 확정 — 아래 트레일링/고정 로직 건너뜀
+                elif params.use_atr_trailing:
+                    # ── L1: ATR 트레일링 + 브레이크이븐 + 부분익절 ──
+                    # 라이브는 손절을 DB 에 누적 상향(래칫)하고 max(trail, old) 로 판정한다.
+                    # 트레일 폭도 당일 ATR 이 아니라 진입시점 ATR 기준.
+                    init_risk = (params.atr_hard_stop_mult * entry_atr if entry_atr > 0
+                                 else entry - entry * (1 + params.stop_loss_pct))
                     gain = current - entry
 
                     # 부분익절: +partial_exit_r × 초기리스크 도달 시 1회 (일부 청산)
@@ -288,16 +341,34 @@ class BacktestRunner:
                                 "hold_days": (day - pos["entry_date"]).days,
                             })
 
-                    # 청산 판정: 하드 스톱 / ATR 트레일링(활성화 후) / 추세이탈
-                    if pnl_pct <= params.stop_loss_pct:
+                    if entry_atr > 0:
+                        # 트레일링 활성화 (+activation_r × ATR 도달)
+                        if r_mult >= params.atr_activation_r:
+                            pos["trailing_active"] = True
+
+                        # 브레이크이븐: +trigger_R 도달 시 손절을 본전(+버퍼)으로 상향.
+                        # trail_sl 이 본전에 못 미치는 구간의 반전 손실을 막는다.
+                        if params.use_breakeven and r_mult >= params.breakeven_trigger_r:
+                            be_stop = entry * (1 + params.breakeven_buffer_pct)
+                            if be_stop > pos["stop_loss"]:
+                                pos["stop_loss"] = be_stop
+
+                        # 트레일 손절 — 래칫(올리기만)
+                        if pos["trailing_active"]:
+                            trail_sl = pos["high_water"] - params.atr_trailing_mult * entry_atr
+                            if trail_sl > pos["stop_loss"]:
+                                pos["stop_loss"] = trail_sl
+                            if current <= pos["stop_loss"]:
+                                exit_reason = "atr_trailing_stop"
+
+                    # 고정 %손절 — 라이브 exit_manager 처럼 L1 뒤의 '최종 폴백'으로 유지한다.
+                    # (2026-08-18 1차 수정에서 하드스탑과 중복이라 판단해 제거했으나, 라이브는
+                    #  지우지 않고 우선순위만 낮춘 구조였다. 제거 시 stop_loss_pct 가 측정 불가가
+                    #  되어 변이 35/41/43 이 전부 Δ0.0 으로 나왔음 → 복원.)
+                    if exit_reason is None and pnl_pct <= params.stop_loss_pct:
                         exit_reason = "stop_loss"
-                    elif not df.loc[day, "trend"]:
+                    if exit_reason is None and not df.loc[day, "trend"]:
                         exit_reason = "trend_break"
-                    elif (init_risk > 0 and atr > 0
-                          and gain >= params.atr_activation_r * init_risk):
-                        trail_stop = pos["high_water"] - params.atr_trailing_mult * atr
-                        if current <= trail_stop:
-                            exit_reason = "atr_trailing"
                 else:
                     # ── 기존(baseline): 고정 stop/take_profit/trend ──
                     if pnl_pct <= params.stop_loss_pct:
@@ -416,11 +487,24 @@ class BacktestRunner:
                             cost = qty * close
 
                         cash -= cost
+                        _entry_atr = (float(df.loc[day, "atr"])
+                                      if pd.notna(df.loc[day, "atr"]) else 0.0)
                         positions.append({
                             "symbol": sym,
                             "qty": qty,
                             "entry_price": close,
                             "entry_date": day,
+                            # 라이브는 진입시점 ATR 을 고정 저장해 하드스탑·R배수 산정에 쓴다
+                            "entry_atr": _entry_atr,
+                            # 정적 하드스탑(절대 안 움직임) + 래칫 손절(올리기만) 을 분리 보관.
+                            # 라이브 swing_positions.hard_stop / stop_loss 컬럼과 같은 역할.
+                            "hard_stop": (close - params.atr_hard_stop_mult * _entry_atr
+                                          if (params.use_hard_stop and _entry_atr > 0)
+                                          else close * (1 + params.stop_loss_pct)),
+                            "stop_loss": (close - params.atr_hard_stop_mult * _entry_atr
+                                          if (params.use_hard_stop and _entry_atr > 0)
+                                          else close * (1 + params.stop_loss_pct)),
+                            "trailing_active": False,
                         })
                         trades_log.append({
                             "date": day.strftime("%Y-%m-%d"),
@@ -436,11 +520,19 @@ class BacktestRunner:
                         entries_today += 1
 
             # ── 일말 자산 평가 ──
+            # 해당 일자에 시세가 없는 종목(휴장/결측/상장폐지)은 마지막 확인가로 이월한다.
+            # 이월하지 않으면 보유 포지션 평가액이 그날만 0 으로 사라져 자산이 급감했다가
+            # 다음날 복구되는 유령 손실이 생긴다. 최종일에 걸리면 final_value 가 그대로
+            # 깎여 수익률·MDD·Sharpe 가 전부 왜곡됨 (2026-08-18 발견, §22.AO-6).
             pos_value = 0
             for pos in positions:
                 sym = pos["symbol"]
                 if sym in indicators and day in indicators[sym].index:
-                    pos_value += float(indicators[sym].loc[day, "Close"]) * pos["qty"]
+                    px = float(indicators[sym].loc[day, "Close"])
+                    pos["last_price"] = px
+                else:
+                    px = float(pos.get("last_price") or pos["entry_price"])
+                pos_value += px * pos["qty"]
 
             total_value = cash + pos_value
             peak_value = max(peak_value, total_value)

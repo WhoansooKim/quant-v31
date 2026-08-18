@@ -36,48 +36,128 @@ from engine_v4.harness.knowledge import log_action
 logger = logging.getLogger(__name__)
 
 
+# config key -> BacktestParams 수치 필드. 러너가 실제로 시뮬레이션하는 것만 넣는다.
+# (rsi2_exit_threshold / time_stop_days / composite_score_min / factor_weight_* /
+#  atr_hard_stop_multiplier 는 러너에 로직 자체가 없어 매핑해도 무의미 — §22.AO-3)
+_FIELD_MAP = {
+    "position_pct": "position_pct",
+    "max_positions": "max_positions",
+    "take_profit_pct": "take_profit_pct",
+    "stop_loss_pct": "stop_loss_pct",
+    "return_rank_min": "return_rank_min",
+    "volume_ratio_min": "volume_ratio_min",
+    "max_daily_entries": "max_daily_entries",
+    "price_range_min": "price_range_min",
+    "price_range_max": "price_range_max",
+    # ── 확장분: 라이브 출구정책(①번 손익비 개선) ──
+    "atr_trailing_multiplier": "atr_trailing_mult",
+    "atr_trailing_activation_r": "atr_activation_r",
+    "partial_exit_r": "partial_exit_r",
+    "partial_exit_pct": "partial_exit_pct",
+    # ── 확장분: Tier1 시장필터 / 진입 규칙 ──
+    "market_filter_sma_days": "market_sma_days",
+    "breakout_margin": "breakout_margin",
+    "abs_mom_period": "abs_mom_period",
+    "abs_mom_min": "abs_mom_min",
+    # ── 확장분: 5-Layer Exit 정합 (§22.AO-4) ──
+    "atr_hard_stop_multiplier": "atr_hard_stop_mult",
+    "time_stop_days": "time_stop_days",
+    "rsi2_exit_threshold": "rsi2_exit_threshold",
+    "rsi2_exit_min_r": "rsi2_exit_min_r",
+    "breakeven_trigger_r": "breakeven_trigger_r",
+    "breakeven_buffer_pct": "breakeven_buffer_pct",
+}
+
+_INT_ATTRS = {"max_positions", "max_daily_entries", "market_sma_days",
+              "abs_mom_period", "atr_period", "time_stop_days", "rsi2_period"}
+
+# config key -> BacktestParams 불리언 필드
+_FLAG_MAP = {
+    "market_filter_enabled": "use_market_filter",
+    "abs_momentum_enabled": "use_abs_momentum",
+    "require_breakout": "require_breakout",
+    "breakeven_enabled": "use_breakeven",
+}
+
+
+def _as_bool(v: Any) -> bool:
+    return str(v).strip().lower() in ("true", "1", "yes", "on")
+
+
 def _make_params(base: dict, diff: dict, start: date, end: date,
                   initial_capital: float = 1000.0) -> BacktestParams:
     """Construct BacktestParams from baseline + diff. Only known fields applied."""
     merged = {**base, **diff}
     p = BacktestParams(start_date=start, end_date=end, initial_capital=initial_capital)
-    # Map config keys -> BacktestParams attrs
-    field_map = {
-        "position_pct": "position_pct",
-        "max_positions": "max_positions",
-        "take_profit_pct": "take_profit_pct",
-        "stop_loss_pct": "stop_loss_pct",
-        "return_rank_min": "return_rank_min",
-        "volume_ratio_min": "volume_ratio_min",
-        "max_daily_entries": "max_daily_entries",
-        "price_range_min": "price_range_min",
-        "price_range_max": "price_range_max",
-    }
-    for cfg_key, attr in field_map.items():
+
+    for cfg_key, attr in _FIELD_MAP.items():
         if cfg_key in merged:
             try:
                 val = float(merged[cfg_key])
-                if attr in ("max_positions", "max_daily_entries"):
+                if attr in _INT_ATTRS:
                     val = int(val)
                 setattr(p, attr, val)
             except (TypeError, ValueError):
                 pass
+
+    for cfg_key, attr in _FLAG_MAP.items():
+        if cfg_key in merged:
+            setattr(p, attr, _as_bool(merged[cfg_key]))
+
+    # 5-Layer Exit 는 개별 on/off config 가 없다 — 라이브에선 항상 켜져 있고 각 config 값이
+    # 그 폭/임계를 정한다. 값이 잡혀 있으면 켠 것으로 본다.
+    if float(merged.get("atr_trailing_multiplier") or 0) > 0:
+        p.use_atr_trailing = True
+    if float(merged.get("atr_hard_stop_multiplier") or 0) > 0:
+        p.use_hard_stop = True
+    if float(merged.get("time_stop_days") or 0) > 0:
+        p.use_time_stop = True
+    if float(merged.get("rsi2_exit_threshold") or 0) > 0:
+        p.use_rsi2_exit = True
+
     return p
 
 
 def _baseline_config(pg: PostgresStore) -> dict:
-    keys = ["position_pct", "max_positions", "take_profit_pct", "stop_loss_pct",
-            "return_rank_min", "volume_ratio_min", "max_daily_entries",
-            "price_range_min", "price_range_max"]
-    out = {}
+    """라이브 전략을 그대로 재현하는 baseline.
+
+    2026-08-18 이전에는 9키만 읽어 ATR 트레일링·부분익절(①번)·Tier1 시장필터·
+    ③번 절대모멘텀이 전부 빠진 '7월 이전 전략'을 기준선으로 삼고 있었다.
+    변이를 엉뚱한 기준과 비교하던 셈이라 라이브 config 전체를 싣는다(§22.AO-3).
+    """
+    keys = list(_FIELD_MAP.keys()) + list(_FLAG_MAP.keys())
+    out: dict[str, Any] = {}
     for k in keys:
         v = pg.get_config_value(k, None)
-        if v is not None:
-            try:
-                out[k] = float(v)
-            except (TypeError, ValueError):
-                out[k] = v
+        if v is None:
+            continue
+        if k in _FLAG_MAP:
+            out[k] = v          # 불리언은 문자열 그대로 (_as_bool 이 해석)
+            continue
+        try:
+            out[k] = float(v)
+        except (TypeError, ValueError):
+            out[k] = v
     return out
+
+
+def _live_capital(pg: PostgresStore, default: float = 1000.0) -> float:
+    """백테스트 자본을 라이브 계좌와 맞춘다.
+
+    이전에는 $1,000 하드코딩이라 라이브($2,000 = 초기 1,000 + 7/28 입금 1,000)의 절반이었다.
+    정수 주식수(qty = int(금액/주가)) 때문에 자본이 작을수록 저가주만 담기는 편향이 생겨
+    position_pct 를 낮추는 변이가 구조적으로 불리해졌다(§22.AO-5, variant 37/42).
+    """
+    try:
+        base = float(pg.get_config_value("initial_capital", str(default)) or default)
+    except (TypeError, ValueError):
+        base = default
+    adj = 0.0
+    try:
+        adj = float(pg.get_total_capital_adjustments())
+    except Exception as e:  # 조회 실패해도 백테스트는 계속
+        logger.warning(f"capital events 조회 실패 — 초기자본만 사용: {e}")
+    return max(base + adj, 1.0)
 
 
 def _compute_sqn(trades_log: list, capital: float) -> float | None:
@@ -103,14 +183,15 @@ class BacktestTimeout(Exception):
 
 def _run_period(runner: BacktestRunner, base: dict, diff: dict,
                  start: date, end: date,
-                 timeout_sec: float | None = None) -> tuple[BacktestResult, float | None]:
+                 timeout_sec: float | None = None,
+                 capital: float = 1000.0) -> tuple[BacktestResult, float | None]:
     """Run one backtest period and compute SQN.
 
     timeout_sec 를 주면 별도 워커 스레드에서 실행하고 초과 시 BacktestTimeout.
     yfinance 다운로드가 응답 없이 멈추는 사례(2026-08-18, 35분 CPU 0%)를 막는다.
     파이썬은 스레드를 강제 종료할 수 없어 초과된 워커는 유기(daemon)하고 진행한다.
     """
-    params = _make_params(base, diff, start, end)
+    params = _make_params(base, diff, start, end, capital)
 
     if not timeout_sec or timeout_sec <= 0:
         result = runner.run(params)
@@ -261,6 +342,8 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
     ]
     period_timeout = float(pg.get_config_value(
         "harness_backtest_period_timeout_sec", "900"))
+    capital = _live_capital(pg)
+    logger.info(f"Variant {variant_id} backtest capital = ${capital:,.0f} (라이브 정합)")
 
     baseline_results: dict[str, tuple[BacktestResult, float | None]] = {}
     variant_results: dict[str, tuple[BacktestResult, float | None]] = {}
@@ -269,12 +352,12 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
 
     for label, start, end in periods:
         try:
-            br, b_sqn = _run_period(runner, base, {}, start, end, period_timeout)
-            vr, v_sqn = _run_period(runner, base, diff, start, end, period_timeout)
+            br, b_sqn = _run_period(runner, base, {}, start, end, period_timeout, capital)
+            vr, v_sqn = _run_period(runner, base, diff, start, end, period_timeout, capital)
             baseline_results[label] = (br, b_sqn)
             variant_results[label] = (vr, v_sqn)
             # Persist variant backtest result
-            v_params = _make_params(base, diff, start, end)
+            v_params = _make_params(base, diff, start, end, capital)
             run_ids[label] = _save_backtest(pg, vr, v_params, f"variant_{variant_id}_{label}")
         except BacktestTimeout as e:
             # 기각이 아니라 미판정 — pending 으로 되돌려 다음 회차에 재시도
@@ -312,11 +395,20 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
     sqn_delta_min = float(pg.get_config_value("harness_sqn_delta_min", "0.3"))
     sharpe_delta_min = float(pg.get_config_value("harness_sharpe_delta_min", "0.2"))
     min_trades = int(pg.get_config_value("harness_min_backtest_trades", "30"))
+    mdd_tolerance = float(pg.get_config_value("harness_mdd_tolerance", "0.5"))
 
     # Pass criteria
     passes_sqn = sqn_delta is not None and sqn_delta >= sqn_delta_min
     passes_sharpe = sharpe_delta is not None and sharpe_delta >= sharpe_delta_min
     enough_trades = v_result.total_trades >= min_trades
+
+    # 낙폭 게이트 — SQN/Sharpe 는 MDD 를 보지 않는다. 실제로 2026-08-18 검증에서
+    # position_pct 를 키운 변이들이 Sharpe 개선만으로 통과했는데, 낙폭은 baseline 대비
+    # 3~4배(−5.09% → −17.46%)였고 하락장(2022/2020)에서는 수익까지 열세였다(§22.AO-7).
+    b_mdd = abs(b_result.max_drawdown) if b_result else 0.0
+    v_mdd = abs(v_result.max_drawdown)
+    mdd_limit = b_mdd * (1 + mdd_tolerance) if b_mdd > 0 else None
+    mdd_ok = mdd_limit is None or v_mdd <= mdd_limit
 
     # Consistency check — variant shouldn't be terrible in any period
     consistent = True
@@ -326,7 +418,9 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
             consistent = False
             break
 
-    new_status = "validated" if (passes_sqn or passes_sharpe) and enough_trades and consistent else "rejected"
+    new_status = ("validated"
+                  if (passes_sqn or passes_sharpe) and enough_trades and consistent and mdd_ok
+                  else "rejected")
     rejection_reason = None
     if new_status == "rejected":
         reasons = []
@@ -336,6 +430,9 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
             reasons.append(f"sqn_delta={sqn_delta}, sharpe_delta={sharpe_delta}")
         if not consistent:
             reasons.append("inconsistent_across_periods")
+        if not mdd_ok:
+            reasons.append(
+                f"mdd={v_mdd:.1%}>{mdd_limit:.1%} (baseline {b_mdd:.1%} × {1 + mdd_tolerance:g})")
         rejection_reason = "; ".join(reasons)
 
     # Update variant
@@ -376,6 +473,9 @@ def validate_variant(pg: PostgresStore, variant_id: int) -> dict[str, Any]:
         "sqn_delta": sqn_delta,
         "sharpe_delta": sharpe_delta,
         "variant_trades": v_result.total_trades,
+        "baseline_mdd": round(b_mdd, 4),
+        "variant_mdd": round(v_mdd, 4),
+        "mdd_ok": mdd_ok,
         "consistent": consistent,
         "rejection_reason": rejection_reason,
         "elapsed_sec": round(elapsed, 1),
