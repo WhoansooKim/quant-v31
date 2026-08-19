@@ -262,7 +262,7 @@ class SwingScheduler:
         # 16) 일 10:00 KST — Phase 3B 주간 자율 리서치 (arxiv/SSRN/Reddit/Quantocracy)
         self.scheduler.add_job(
             self._job_formula_lab,
-            CronTrigger(day_of_week="sun", hour=14, minute=0, timezone=KST),
+            CronTrigger(day_of_week="sat", hour=11, minute=30, timezone=KST),
             id="formula_lab",
             name="3J 수식 신호 자동 검증",
             replace_existing=True,
@@ -270,7 +270,7 @@ class SwingScheduler:
 
         self.scheduler.add_job(
             self._job_self_check,
-            CronTrigger(day_of_week="sun", hour=13, minute=0, timezone=KST),
+            CronTrigger(day_of_week="sat", hour=11, minute=0, timezone=KST),
             id="self_check",
             name="3K 자가진단 — 계측 버그 불변식 검사",
             replace_existing=True,
@@ -278,7 +278,7 @@ class SwingScheduler:
 
         self.scheduler.add_job(
             self._job_factor_ic,
-            CronTrigger(day_of_week="sun", hour=12, minute=0, timezone=KST),
+            CronTrigger(day_of_week="sat", hour=10, minute=30, timezone=KST),
             id="factor_ic",
             name="주간 팩터 IC 측정 (①A/B ②교집합 ③PEAD 검증)",
             replace_existing=True,
@@ -286,7 +286,7 @@ class SwingScheduler:
 
         self.scheduler.add_job(
             self._job_pead_collect,
-            CronTrigger(day_of_week="sun", hour=11, minute=0, timezone=KST),
+            CronTrigger(day_of_week="sat", hour=8, minute=30, timezone=KST),
             id="pead_collect",
             name="PEAD — 실적 서프라이즈 주간 수집",
             replace_existing=True,
@@ -294,7 +294,7 @@ class SwingScheduler:
 
         self.scheduler.add_job(
             self._job_weekly_research,
-            CronTrigger(day_of_week="sun", hour=10, minute=0, timezone=KST),
+            CronTrigger(day_of_week="sat", hour=8, minute=0, timezone=KST),
             id="weekly_research",
             name="Phase 3B — Weekly Autonomous Research",
             replace_existing=True,

@@ -3040,8 +3040,23 @@ volret_corr = -ts_corr(pct_change(volume), ret, 6)
 IC 통과 ≠ 채택. 승격은 후보 등록일 뿐 실전 편입은 별도 판단이 필요하다.
 
 **운영**
-- 스케줄러 `formula_lab` 일요일 14:00 KST → 총 **29 잡**
-- 주간 하네스 사이클: 10:00 research → 11:00 pead → 12:00 IC+가중치튜닝 → 13:00 자가진단 → 14:00 수식검증
+- 스케줄러 `formula_lab` **토요일 11:30 KST** → 총 **29 잡**
+- **주간 하네스 사이클 (토요일 오전, 2026-08-19 일요일→토요일 변경)**
+
+| 시각(KST) | 잡 | 역할 |
+|---|---|---|
+| 06:05 | post_market_analysis | 일일 사후분석(기존) |
+| 07:00 | daily_pipeline | 수집+스캔(기존) |
+| **08:00** | **weekly_research** | 논문·커뮤니티 수집 |
+| **08:30** | **pead_collect** | 실적 서프라이즈 갱신 |
+| 09:00 | lstm_retrain | LSTM 재학습(기존) |
+| 10:00 | refresh_universe | 유니버스 갱신(기존) |
+| **10:30** | **factor_ic + 3I** | IC 측정 → 가중치 자동 튜닝 |
+| **11:00** | **3K self_check** | 계측 버그 불변식 검사 |
+| **11:30** | **3J formula_lab** | 수식 신호 검증·승격 |
+
+⚠️ `refresh_universe`(10:00) **이후에** factor_ic·formula_lab 이 돌도록 배치 — 최신 유니버스를 쓴다.
+기존 토요일 잡(lstm_retrain 09:00 / refresh_universe 10:00)과 시각이 겹치지 않게 재배치했다.
 - API: `GET /harness/formulas` · `POST /harness/formulas`(등록, 화이트리스트 검증) ·
   `POST /harness/formulas/validate-all`
 - config: `formula_lab_enabled` · `formula_horizon`(10) · `formula_split_date`(2022-01-01) ·
