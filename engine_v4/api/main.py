@@ -3142,6 +3142,54 @@ async def harness_get_variant(variant_id: int):
     return v
 
 
+@app.get("/harness/formulas")
+async def harness_formulas(status: str | None = None, limit: int = 50):
+    """3J 수식 신호 목록 (§22.AO-22)."""
+    q = "SELECT * FROM swing_signal_formulas"
+    params: list = []
+    if status:
+        q += " WHERE status = %s"
+        params.append(status)
+    q += " ORDER BY ic_min DESC NULLS LAST, created_at DESC LIMIT %s"
+    params.append(limit)
+    with pg.get_conn() as conn:
+        rows = conn.execute(q, tuple(params)).fetchall()
+    return {"count": len(rows), "formulas": [dict(r) for r in rows]}
+
+
+@app.post("/harness/formulas")
+async def harness_add_formula(name: str, expression: str, source: str = ""):
+    """수식 등록. 화이트리스트 검증을 통과해야 저장된다."""
+    from engine_v4.harness.signal_dsl import FormulaError, validate
+    try:
+        validate(expression)
+    except FormulaError as e:
+        raise HTTPException(400, f"수식 거부: {e}")
+    with pg.get_conn() as conn:
+        row = conn.execute(
+            "INSERT INTO swing_signal_formulas (name, expression, source) VALUES (%s,%s,%s) "
+            "ON CONFLICT (expression) DO NOTHING RETURNING formula_id", (name, expression, source)
+        ).fetchone()
+        conn.commit()
+    return {"formula_id": row["formula_id"] if row else None,
+            "status": "created" if row else "duplicate"}
+
+
+@app.post("/harness/formulas/validate-all")
+async def harness_validate_formulas(background_tasks: BackgroundTasks, max_per_run: int = 10):
+    """pending 수식 일괄 검증 (background)."""
+    from engine_v4.harness.formula_lab import validate_all_pending
+
+    def _run():
+        try:
+            logger.info(f"Formula validate-all: {validate_all_pending(pg, max_per_run)}")
+        except Exception as e:
+            logger.exception(f"formula validate-all failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "max_per_run": max_per_run}
+
+
 @app.get("/harness/self-check")
 async def harness_self_check_history(limit: int = 30):
     """3K 자가진단 이력 (§22.AO-21)."""

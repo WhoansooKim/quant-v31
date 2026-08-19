@@ -2997,6 +2997,60 @@ technical 은 추세장에서 최대, macro 는 고변동장에서 최대 — �
 **다음**: 3J 신호 표현식 엔진(논문 → 수식 → 자동 IC 검증 → 승격). 화이트리스트 연산자만 허용해
 임의 코드 실행 없이 논문 신호를 자동 검증하는 구조.
 
+### 22.AO-22 3J 신호 표현식 엔진 — 논문 신호를 안전하게 자동 검증
+
+**설계 원칙 — 임의 코드 실행 경로를 만들지 않는다.**
+LLM 이 파이썬을 자유롭게 쓰게 하면 실거래 자금을 다루는 시스템에 위험하다. 대신
+**화이트리스트 연산자만 허용하는 제한 수식 언어**를 쓰고, 파서가 `ast` 를 검증해 허용 노드 외
+전부 거부한다. `eval()` 을 쓰지 않고 검증된 AST 를 직접 순회 평가한다.
+
+2026-08-19 ④에서 손으로 구현한 Alpha191 신호들이 정확히 이 형태였다:
+```
+dev24       = -(close / ts_mean(close, 24) - 1)
+obv20       = ts_delta(cumsum(sign(ret) * volume), 20)
+volret_corr = -ts_corr(pct_change(volume), ret, 6)
+```
+
+**허용 범위** (`engine_v4/harness/signal_dsl.py`)
+- 데이터: `open/high/low/close/volume/ret/vwap/amount`
+- 시계열: `ts_mean/ts_std/ts_sum/ts_min/ts_max/ts_delta/ts_corr/ts_rank/delay/pct_change/cumsum/ema`
+- 원소: `sign/abs/log/sqrt/clip/min/max` + 사칙연산·거듭제곱
+- 그 외 **전부 거부** (속성접근·컴프리헨션·람다·삼항·키워드인자 포함)
+
+**🔒 보안 검증 — 공격 10종 전부 거부**
+`__import__('os').system(...)` · `open('/etc/passwd').read()` · `close.__class__.__bases__` ·
+`eval()` · `exec()` · `globals()` · 리스트컴프리헨션 · 람다 · 삼항 · `close.to_csv('/tmp/leak.csv')`
+→ 전부 `FormulaError`. API `POST /harness/formulas` 에서도 동일하게 거부됨을 실측 확인.
+
+**자동 검증 파이프라인** (`engine_v4/harness/formula_lab.py`)
+`daily_prices` 전량(200종목×2016~2026, 50만행)으로 평가 → 주간 횡단면 순위상관 IC →
+**시계열 분할(학습 ~2022 / 검증 2022~)** → **양쪽 구간 모두 `formula_ic_min`(0.02) 이상일 때만 승격.**
+
+**🔬 회귀 테스트 — 수동 결론을 재현하는가**
+| 신호 | 수동(§22.AO-16) 학습/검증 | 3J 자동 학습/검증 | 판정 |
+|---|---|---|---|
+| dev24 (071) | +0.020 / −0.009 | **+0.0202 / −0.0085** | 기각 ✅ |
+| mr_multi (046) | +0.017 / −0.005 | **+0.0172 / −0.0053** | 기각 ✅ |
+| obv20 (084) | −0.009 / +0.012 | **−0.0086 / +0.0123** | 기각 ✅ |
+| **atr12 (161)** | +0.033 / +0.036 | **+0.0342 / +0.0369** | **승격 ✅** |
+| volret_corr (001) | −0.003 / −0.001 | **−0.0034 / −0.0008** | 기각 ✅ |
+| vwap_dev (신규 후보) | — | −0.0165 / +0.0054 | 기각 |
+**소수점 넷째 자리까지 일치.** 6건 중 1건만 승격 — 손으로 한 판단과 동일.
+⚠️ 승격된 atr12 도 §22.AO-16 에서 **국면 의존적 고베타 노출**로 판명됐다(2022 약세장 IC −0.055).
+IC 통과 ≠ 채택. 승격은 후보 등록일 뿐 실전 편입은 별도 판단이 필요하다.
+
+**운영**
+- 스케줄러 `formula_lab` 일요일 14:00 KST → 총 **29 잡**
+- 주간 하네스 사이클: 10:00 research → 11:00 pead → 12:00 IC+가중치튜닝 → 13:00 자가진단 → 14:00 수식검증
+- API: `GET /harness/formulas` · `POST /harness/formulas`(등록, 화이트리스트 검증) ·
+  `POST /harness/formulas/validate-all`
+- config: `formula_lab_enabled` · `formula_horizon`(10) · `formula_split_date`(2022-01-01) ·
+  `formula_ic_min`(0.02) · `formula_start_date`(2016-01-01)
+
+⚠️ **한계**: 수식으로 표현 안 되는 신호(옵션 그릭스, 시점별 재무, 뉴스 임베딩, ①LLM 프롬프트 설계)는
+여전히 사람이 구현해야 한다. 논문 **본문에서 수식을 추출하는 단계**도 아직 사람/LLM 세션의 몫이다
+— 3J 는 "추출된 수식을 안전하게 검증·승격"하는 뒷단이다.
+
 ---
 
 ## 23. Git History

@@ -261,6 +261,14 @@ class SwingScheduler:
 
         # 16) 일 10:00 KST — Phase 3B 주간 자율 리서치 (arxiv/SSRN/Reddit/Quantocracy)
         self.scheduler.add_job(
+            self._job_formula_lab,
+            CronTrigger(day_of_week="sun", hour=14, minute=0, timezone=KST),
+            id="formula_lab",
+            name="3J 수식 신호 자동 검증",
+            replace_existing=True,
+        )
+
+        self.scheduler.add_job(
             self._job_self_check,
             CronTrigger(day_of_week="sun", hour=13, minute=0, timezone=KST),
             id="self_check",
@@ -1390,6 +1398,28 @@ class SwingScheduler:
             logger.info(f"Monthly variant backtest: {bt_summary}")
         except Exception as e:
             logger.exception(f"monthly_variant_gen failed: {e}")
+
+    def _job_formula_lab(self):
+        """3J 수식 신호 자동 검증 (§22.AO-22).
+
+        논문에서 추출한 수식을 daily_prices 전량으로 평가해 시계열 분할 IC 로 검증하고,
+        **양쪽 구간 모두 기준을 넘을 때만** 승격한다. 2026-08-19 ④에서 손으로 한 절차
+        (10종 중 9종 기각)를 자동화한 것.
+        """
+        try:
+            from engine_v4.harness.formula_lab import validate_all_pending, format_report
+            summary = validate_all_pending(self.pg)
+            if not summary.get("checked"):
+                return
+            logger.info(f"Formula lab: {summary['checked']}건 검증")
+            self.pg.insert_pipeline_log("formula_lab", "completed", 0,
+                                        {"checked": summary["checked"],
+                                         "validated": summary.get("validated")})
+            if self.notifier and summary.get("validated"):
+                self.notifier.send_sync(format_report(summary))
+        except Exception as e:
+            logger.exception(f"formula_lab failed: {e}")
+            self.pg.insert_pipeline_log("formula_lab", "failed", 0, {"error": str(e)})
 
     def _job_self_check(self):
         """3K 자가진단 — 계측 버그 불변식 검사 (§22.AO-21).
