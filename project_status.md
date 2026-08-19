@@ -2814,6 +2814,58 @@ technical(+0.36) 대비 미미하다. 논문 수치를 그대로 믿지 않고 �
 
 현재 상태: ①③ 모두 **표본 0/30 → "측정중"**. 신규 시그널이 스코어링될 때마다 쌓인다.
 
+### 22.AO-18 🔴 가중치 교정이 무효였음 + ①③ 포트폴리오 경로 실제 적용
+
+**사용자 지적**: *"워치리스트는 참고용 화면일 뿐 내 포트폴리오가 아니다. Trade Signals 쪽에 적용해달라."*
+경로를 추적한 결과 지적이 정확했고, **추가로 더 큰 문제를 발견했다.**
+
+**경로 확인 — 워치리스트와 포트폴리오는 완전 분리**
+| | 종목 |
+|---|---|
+| 워치리스트 | AAPL, MSFT, TSLA, IONQ, GOOGL, META, NVDA, TSM, AMZN … |
+| **실제 오픈 포지션** | **WFC, TGT, XOM, OXY, SCHW, VZ, HPQ** |
+겹치는 종목 **0개**. 포지션 85건 전부 `signal_id` 보유 → 수익은 오직
+`scan → swing_signals → auto_approve → swing_positions` 경로에서만 발생.
+③PEAD 의 최초 구현을 `watchlist_strategy.py` Layer3 에 넣은 것은 **판단 착오**였다(수익률 무관).
+
+**🔴 더 큰 문제 — 팩터 가중치 교정(§22.AO-8)이 애초에 무효였다**
+`regime_adaptive_weights=true` 라서 코드는 하드코딩된 `REGIME_WEIGHTS` 를 쓰고
+**config 의 `factor_weight_*` 를 통째로 무시**한다. 즉 "적용 완료"라고 보고한 가중치 변경은
+한 번도 작동한 적이 없었다. 실제 운영 중이던 값:
+| 레짐 | technical | sentiment | **flow** | quality | **value** | macro |
+|---|---|---|---|---|---|---|
+| TRENDING | 0.20 | 0.18 | **0.05** | 0.28 | **0.12** | 0.17 |
+| MIXED | 0.18 | 0.20 | **0.05** | 0.28 | **0.12** | 0.17 |
+→ IC 가 **−0.30(flow) / −0.26(value)** 로 측정된 팩터가 합계 17% 가중으로 계속 들어가고 있었고,
+최강 팩터 technical(+0.36)은 0.15~0.20 에 그쳤다.
+
+**교정 후 (실측 IC 기반 재배분, 합계 1.00)**
+| 레짐 | technical | sentiment | flow | quality | value | macro | **pead** |
+|---|---|---|---|---|---|---|---|
+| TRENDING | **0.42** | 0.10 | **0** | 0.20 | **0** | 0.18 | **0.10** |
+| SIDEWAYS | 0.32 | 0.10 | 0 | 0.25 | 0 | 0.23 | 0.10 |
+| HIGH_VOL | 0.28 | 0.10 | 0 | 0.25 | 0 | 0.27 | 0.10 |
+| MIXED | 0.38 | 0.10 | 0 | 0.22 | 0 | 0.20 | 0.10 |
+technical 은 추세장에서 최대, macro 는 고변동장에서 최대 — 레짐 적응 구조는 유지.
+
+**①③ 실제 반영 전환**
+- `llm_momentum_active=true` — composite 의 sentiment 자리를 모멘텀 조건화 점수가 대체.
+  naive sentiment 는 IC ≈ 0 으로 측정됐으므로 **하방 위험이 가중치 0.10 으로 제한**된다.
+  A/B 로깅은 계속되어 `sentiment_score` 와 나란히 저장 → 검증 지속 가능
+- `pead_active=true` + REGIME_WEIGHTS 에 `pead: 0.10` 신설. 데이터 없으면 50(중립)이라 무영향
+- 검증: HPE composite 51.4 → **54.3** (SIDEWAYS 가중치 적용 확인)
+
+**현재 포트폴리오 경로에 실제 작동하는 것**
+| 항목 | 상태 |
+|---|---|
+| ② 교집합 게이트 | ✅ 매수 승인 결정 (하루 3회 auto_approve) |
+| 팩터 가중치 교정 | ✅ **이제야** 실제 반영 (REGIME_WEIGHTS 수정) |
+| ① LLM 모멘텀 | ✅ composite 의 sentiment 자리 대체 |
+| ③ PEAD | ✅ composite 10% 편입 (유니버스 200종목 백필 진행) |
+
+⚠️ ①③ 은 **검증 전 적용**이다. 하방은 각 0.10 가중으로 제한되며, 주간 IC 판정(§22.AO-17)이
+계속 돌아 사후 확인된다. 되돌리기: `llm_momentum_active=false` / `pead_active=false`.
+
 ---
 
 ## 23. Git History

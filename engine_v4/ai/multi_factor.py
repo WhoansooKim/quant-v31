@@ -99,11 +99,17 @@ class MultiFactorScorer:
     # 2026-06-17 IC 재보정: forward-5d return IC 실측 (N=47, daily_prices, 청산정책 비오염)
     #   quality +0.216 / sentiment +0.058 / technical -0.054 / macro -0.042 / flow -0.356 / value -0.363
     #   → quality 대폭 ↑, flow·value 최소화(단기 역예측). 6/3 추정튜닝은 거래IC(청산오염)라 부호 오류 → 폐기.
+    # 2026-08-19 실측 IC 반영 (§22.AO-18). 이전 값은 flow(0.05)·value(0.12)를 양수 가중으로
+    # 넣고 있었으나 실측 IC 가 각각 −0.30 / −0.26 으로 **일관되게 음수**였다(§22.AO-15).
+    # technical 은 +0.36 으로 최강인데 0.15~0.20 에 그쳤다. 측정값에 맞춰 재배분한다.
+    #   flow/value → 0, technical 대폭 상향, pead 신설(③).
+    # ⚠️ config 의 factor_weight_* 는 regime_adaptive_weights=true 일 때 **무시된다**.
+    #    실제 운영 가중치는 이 표다.
     REGIME_WEIGHTS = {
-        "TRENDING":  {"technical": 0.20, "sentiment": 0.18, "flow": 0.05, "quality": 0.28, "value": 0.12, "macro": 0.17},
-        "SIDEWAYS":  {"technical": 0.15, "sentiment": 0.18, "flow": 0.05, "quality": 0.30, "value": 0.12, "macro": 0.20},
-        "HIGH_VOL":  {"technical": 0.15, "sentiment": 0.20, "flow": 0.05, "quality": 0.25, "value": 0.10, "macro": 0.25},
-        "MIXED":     {"technical": 0.18, "sentiment": 0.20, "flow": 0.05, "quality": 0.28, "value": 0.12, "macro": 0.17},
+        "TRENDING":  {"technical": 0.42, "sentiment": 0.10, "flow": 0.0, "quality": 0.20, "value": 0.0, "macro": 0.18, "pead": 0.10},
+        "SIDEWAYS":  {"technical": 0.32, "sentiment": 0.10, "flow": 0.0, "quality": 0.25, "value": 0.0, "macro": 0.23, "pead": 0.10},
+        "HIGH_VOL":  {"technical": 0.28, "sentiment": 0.10, "flow": 0.0, "quality": 0.25, "value": 0.0, "macro": 0.27, "pead": 0.10},
+        "MIXED":     {"technical": 0.38, "sentiment": 0.10, "flow": 0.0, "quality": 0.22, "value": 0.0, "macro": 0.20, "pead": 0.10},
     }
 
     def __init__(self, pg: PostgresStore, finnhub: FinnhubClient,
@@ -177,6 +183,7 @@ class MultiFactorScorer:
                 "quality": float(self.pg.get_config_value("factor_weight_quality", "0.19")),
                 "value": float(self.pg.get_config_value("factor_weight_value", "0.18")),
                 "macro": macro_w,
+                "pead": float(self.pg.get_config_value("factor_weight_pead", "0.10")),
             }
 
         # Factor Momentum: 최근 성과 기반 가중치 틸트
@@ -231,13 +238,18 @@ class MultiFactorScorer:
         sentiment_used = (mom_result["score"] if (mom_active and mom_result.get("source")
                           not in ("off", "disabled", "no_finnhub", "llm_error", "parse_error"))
                           else sent_result["score"])
+        # ③ PEAD 편입 (§22.AO-18). pead_active=false 면 중립 50 으로 들어가 영향 없음.
+        pead_active = self.pg.get_config_value("pead_active", "false") == "true"
+        pead_used = float(pead_result.get("score", 50.0)) if pead_active else 50.0
+
         composite = (
             tech_result["score"] * weights["technical"] +
             sentiment_used * weights["sentiment"] +
             flow_result["score"] * weights["flow"] +
             quality_result["score"] * weights["quality"] +
             value_result["score"] * weights["value"] +
-            macro_result["score"] * weights.get("macro", 0.10)
+            macro_result["score"] * weights.get("macro", 0.10) +
+            pead_used * weights.get("pead", 0.0)
         )
 
         elapsed = time.time() - start
