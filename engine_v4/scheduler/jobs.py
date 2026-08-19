@@ -1516,6 +1516,16 @@ class SwingScheduler:
             from engine_v4.harness.researcher import run_research
             summary = run_research(self.pg, self.notifier)
             logger.info(f"Weekly research done: {summary}")
+
+            # 3J 앞단 (§22.AO-23) — 수집한 논문 초록에서 수식 추출 → swing_signal_formulas(pending).
+            # 이 단계가 없으면 formula_lab 은 늘 pending 0 이라 아무것도 검증하지 못한다.
+            try:
+                from engine_v4.harness.formula_extractor import extract_pending
+                mx = int(float(self.pg.get_config_value("formula_extract_max", "8")))
+                ex = extract_pending(self.pg, max_items=mx)
+                logger.info(f"Formula extraction: {ex}")
+            except Exception as e:
+                logger.exception(f"formula_extract failed: {e}")
         except Exception as e:
             logger.exception(f"weekly_research failed: {e}")
             self.pg.insert_pipeline_log("weekly_research", "failed", 0, {"error": str(e)})
