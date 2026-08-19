@@ -29,7 +29,58 @@ FACTORS = [
     "flow_score",
     "macro_score",
     "return_20d_rank",      # ② 교집합의 핵심 화면
+    "pead_score",           # ③ PEAD
 ]
+
+# ─── 검증 기준 (§22.AO-17) ───────────────────────────────
+# 사람이 IC 표를 매주 해석하게 두면 결국 놓친다. 기준을 코드에 박아두고 판정을 자동화한다.
+MIN_N_VERDICT = 30          # 이 표본 미만이면 '측정중'
+PRIMARY_HORIZON = 10        # 판정 기준 horizon (IC 신호가 가장 뚜렷했던 구간)
+LLM_EDGE_MIN = 0.05         # ① llm_momentum 이 sentiment 를 이겨야 하는 최소 폭
+PEAD_IC_MIN = 0.05          # ③ pead 최소 IC
+STABLE_HORIZONS = 2         # 3개 horizon 중 몇 개에서 양수여야 '안정'으로 보는가
+
+
+def verdicts(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """①③ 검증 판정. 기준 미달/표본부족을 명시적으로 구분한다."""
+    hz = result.get("horizons", {})
+
+    def ic_of(h, f):
+        blk = hz.get(h) or {}
+        v = (blk.get("factors") or {}).get(f)
+        return (v["ic"], v["n"]) if v else (None, 0)
+
+    out: dict[str, dict[str, Any]] = {}
+
+    # ① LLM 모멘텀 vs naive 감성 (A/B)
+    mom_ic, mom_n = ic_of(PRIMARY_HORIZON, "llm_momentum_score")
+    sent_ic, _ = ic_of(PRIMARY_HORIZON, "sentiment_score")
+    pos = sum(1 for h in HORIZONS if (ic_of(h, "llm_momentum_score")[0] or 0) > 0)
+    if mom_ic is None or mom_n < MIN_N_VERDICT:
+        out["①LLM모멘텀"] = {"status": "측정중", "detail": f"표본 {mom_n}/{MIN_N_VERDICT}"}
+    else:
+        edge = mom_ic - (sent_ic if sent_ic is not None else 0.0)
+        ok = edge >= LLM_EDGE_MIN and mom_ic > 0 and pos >= STABLE_HORIZONS
+        out["①LLM모멘텀"] = {
+            "status": "✅ 검증됨" if ok else "❌ 기준미달",
+            "detail": (f"IC {mom_ic:+.3f} vs 감성 {sent_ic if sent_ic is None else f'{sent_ic:+.3f}'} "
+                       f"(차이 {edge:+.3f}, 기준 {LLM_EDGE_MIN:+.2f}) · 양수 {pos}/3 · n={mom_n}"),
+            "actionable": ok,
+        }
+
+    # ③ PEAD
+    p_ic, p_n = ic_of(PRIMARY_HORIZON, "pead_score")
+    p_pos = sum(1 for h in HORIZONS if (ic_of(h, "pead_score")[0] or 0) > 0)
+    if p_ic is None or p_n < MIN_N_VERDICT:
+        out["③PEAD"] = {"status": "측정중", "detail": f"표본 {p_n}/{MIN_N_VERDICT}"}
+    else:
+        ok = p_ic >= PEAD_IC_MIN and p_pos >= STABLE_HORIZONS
+        out["③PEAD"] = {
+            "status": "✅ 검증됨" if ok else "❌ 기준미달",
+            "detail": f"IC {p_ic:+.3f} (기준 {PEAD_IC_MIN:+.2f}) · 양수 {p_pos}/3 · n={p_n}",
+            "actionable": ok,
+        }
+    return out
 
 _SQL = """
 SELECT s.symbol, s.time::date AS d, s.entry_price,
@@ -132,8 +183,19 @@ def compute_and_store(pg, as_of: date | None = None) -> dict[str, Any]:
 
 
 def format_report(result: dict[str, Any]) -> str:
-    """텔레그램용 HTML 요약."""
-    lines = [f"<b>📐 주간 팩터 IC ({result['as_of']})</b>"]
+    """텔레그램용 HTML 요약. 판정을 맨 앞에 둔다 — IC 표를 매주 해석하게 두지 않는다."""
+    v = verdicts(result)
+    lines = [f"<b>📐 주간 팩터 IC ({result['as_of']})</b>", ""]
+    lines.append("<b>검증 판정</b>")
+    for name, d in v.items():
+        lines.append(f"  {name}: <b>{d['status']}</b>")
+        lines.append(f"     {d['detail']}")
+    if any(d.get("actionable") for d in v.values()):
+        lines.append("")
+        lines.append("🔔 <b>기준 충족 — 적용 검토 필요</b>")
+        lines.append("   ① 적용: llm_momentum_active=true")
+        lines.append("   ③ 적용: composite 에 pead 편입 검토")
+    lines.append("")
     for h, blk in result.get("horizons", {}).items():
         if "skipped" in blk:
             lines.append(f"\n<b>{h}일</b>: 표본부족 ({blk['skipped']})")

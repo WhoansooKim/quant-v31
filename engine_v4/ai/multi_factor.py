@@ -214,6 +214,16 @@ class MultiFactorScorer:
             except Exception as e:
                 logger.warning(f"LLM momentum score failed for {symbol}: {e}")
 
+        # 8) PEAD (§22.AO-14) — composite 에는 반영하지 않고 기록만 한다.
+        #    시그널에 남겨야 주간 IC 측정(§22.AO-15)이 ③의 유효성을 검증할 수 있다.
+        pead_result = {"score": 50.0, "signal": "OFF"}
+        if self.pg.get_config_value("pead_enabled", "true") == "true":
+            try:
+                from engine_v4.ai.pead import PeadScorer
+                pead_result = PeadScorer(self.pg, self.finnhub).score(symbol)
+            except Exception as e:
+                logger.warning(f"PEAD score failed for {symbol}: {e}")
+
         # Composite (6-factor weighted).
         # llm_momentum_active=true 면 sentiment 자리를 모멘텀 조건화 점수로 교체한다
         # (naive 감성은 IC ≈ 0 으로 실측 — §22.AO-8).
@@ -241,6 +251,7 @@ class MultiFactorScorer:
             "macro": macro_result,
             "llm_momentum": mom_result,
             "llm_momentum_active": mom_active,
+            "pead": pead_result,
             "regime": regime,
             "weights": weights,
             "regime_adaptive": regime_adaptive,
@@ -1182,6 +1193,7 @@ class MultiFactorScorer:
                                composite: float, detail: dict) -> None:
         """swing_signals에 6팩터 점수 업데이트 (+ LLM 모멘텀 A/B 컬럼)."""
         mom = detail.get("llm_momentum") or {}
+        pead = detail.get("pead") or {}
         with self.pg.get_conn() as conn:
             conn.execute("""
                 UPDATE swing_signals
@@ -1195,11 +1207,14 @@ class MultiFactorScorer:
                     llm_momentum_score = %s,
                     llm_momentum_confidence = %s,
                     llm_momentum_reason = %s,
+                    pead_score = %s,
+                    pead_signal = %s,
                     factor_detail = %s,
                     factor_scored_at = now()
                 WHERE signal_id = %s
             """, (technical, sentiment, flow, quality, value, macro, composite,
                   mom.get("score"), mom.get("confidence"), mom.get("reason"),
+                  pead.get("score"), pead.get("signal"),
                   json.dumps(detail, ensure_ascii=False, default=str),
                   signal_id))
             conn.commit()
