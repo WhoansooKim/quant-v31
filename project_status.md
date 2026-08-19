@@ -2545,6 +2545,51 @@ double-selection LASSO 로 검증, 펀더멘털 151개 통제 후에도 **독립
 ①의 "집중 포트폴리오에서 최강"이 같은 방향 → **엣지를 높이고 확신에 비례해 집중**하는 조합.
 ⚠️ ①② 는 백테스트 측정 불가 영역(§22.AO-7) → **시그널 리플레이 축적 + paper A/B** 로만 검증 가능.
 
+### 22.AO-11 ① LLM 모멘텀 조건화 — 설계·구축 (2026-08-19)
+
+**문제**: 현행 프롬프트는 *"헤드라인 감성을 0-100 으로 평가하라"* 는 naive 질의였고,
+실측 IC 가 5일 +0.020 / 10일 −0.034 로 **사실상 0**(§22.AO-8). 논문도 naive LLM 질의는
+월 0.35% 로 0 과 구분 불가라 보고.
+
+**설계**: 감성의 절대수준이 아니라 **주가 움직임과 뉴스의 정합성**을 묻는다.
+기전 = *뉴스가 뒷받침하는 모멘텀은 지속되고, 뒷받침 없는 모멘텀은 되돌린다.*
+
+**⚠️ 로컬 3B 모델의 한계와 2단 분해 (실측 기반 설계 변경)**
+처음에는 "모멘텀 맥락 + 0-100 점수 + confidence" 를 한 번에 요구했으나 **연속 실패**:
+1. 1차: *"헤드라인이 무관하다"* 고 답하면서 점수는 30(반박) — 무신호를 반박으로 오해
+2. 2차(프롬프트 강화): 4종목 **전부 70 으로 앵커링** — 소형 모델의 숫자 앵커링
+3. 3차(2단 분해, 관련성 NO 기준 먼저 제시): 리스티클이 하나라도 섞이면 **전체를 NO** 판정
+   → BMY(FDA 승인 기사 보유)조차 NO
+4. **최종**: 관련성 질문을 **"하나라도 있는가"** 로 반전 → 판별 작동
+
+최종 구조 — **모델에는 분류만 시키고 점수 매핑은 코드가 결정론적으로** 한다:
+| 단계 | 질문 | 출력 |
+|---|---|---|
+| ① 관련성 | "AT LEAST ONE 헤드라인이 {symbol} 고유 뉴스(실적/가이던스/규제/계약/등급)인가?" | YES / NO |
+| ② 방향 | "이 뉴스가 상승 지속 근거를 주는가, 하락을 경고하는가?" | SUPPORT / CONTRADICT / MIXED |
+
+매핑: SUPPORT→(75, conf 75) / CONTRADICT→(25, conf 75) / MIXED→(50, conf 30).
+①이 NO 면 **중립 50·확신 0** 으로 종료 — *지지 뉴스의 부재를 반박으로 오해하지 않기 위한 장치*.
+`llm_momentum_min_confidence`(40) 미만이면 50 으로 되돌려 무신호 잡음 차단.
+
+**검증 설계 — A/B 병행 로깅 (핵심)**
+`llm_momentum_active=false` 로 **판정에는 반영하지 않고 기록만** 한다. 같은 시그널에 대해
+기존 `sentiment_score` 와 신규 `llm_momentum_score` 가 **동시에 저장**되므로, 표본이 쌓이면
+`scripts/signal_replay_ic.py` 로 **두 점수의 IC 를 직접 비교**할 수 있다. 리스크 0 으로 증거 수집.
+→ IC 우위가 확인되면 `llm_momentum_active=true` 로 전환(sentiment 자리를 대체).
+
+**실측 (2026-08-19, 10종목)**: 3종목이 관련 있음 판정(BMY/AFL/ANET → 전부 SUPPORT),
+7종목은 중립 50. Finnhub 무료 티어 뉴스의 상당수가 애그리게이터 리스티클이라 이 비율은 타당.
+⚠️ 관련 판정분이 전부 SUPPORT 라 **SUPPORT 편향 가능성** 있음 — 표본 축적 후 확인 필요.
+
+**DB/Config**
+- `swing_signals`: `llm_momentum_score`, `llm_momentum_confidence`, `llm_momentum_reason` 추가
+- config: `llm_momentum_enabled`(true), `llm_momentum_ab_logging`(true),
+  `llm_momentum_active`(**false** = 관찰모드), `llm_momentum_min_confidence`(40),
+  `llm_momentum_suppress_below`(40, active 전환 시 매수억제 임계)
+
+**다음**: ② 신호 교집합 → ③ PEAD 12분기 → ④ 마이크로구조 17종 순으로 구축.
+
 ---
 
 ## 23. Git History

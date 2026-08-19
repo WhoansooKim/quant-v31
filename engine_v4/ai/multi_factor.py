@@ -36,6 +36,51 @@ Rate the news sentiment from 0-100 where:
 Respond in JSON only: {{"sentiment_score": <0-100>, "summary": "<1 sentence>"}}"""
 
 
+# §22.AO-10 ① LLM 모멘텀 조건화 (arXiv 2510.26228).
+# 감성의 절대수준을 묻지 않는다 — 주가 움직임과 뉴스의 '정합성'을 묻는다.
+# 기전: 뉴스가 뒷받침하는 모멘텀은 지속되고, 뒷받침 없는 모멘텀은 되돌린다.
+# naive 감성 질의는 IC ≈ 0 으로 실측됐고(§22.AO-8), 논문도 월 0.35%로 0과 구분 불가라 보고.
+# §22.AO-10 ① LLM 모멘텀 조건화 (arXiv 2510.26228).
+# 감성의 절대수준을 묻지 않는다 — 주가 움직임과 뉴스의 '정합성'을 묻는다.
+# 기전: 뉴스가 뒷받침하는 모멘텀은 지속되고, 뒷받침 없는 모멘텀은 되돌린다.
+#
+# ⚠️ 로컬 모델이 3B 라 "2단계 조건부 판단 + 0-100 점수"를 한 번에 시키면 실패한다(실측:
+#    무관하다고 답하면서 30점, 다음엔 전부 70점으로 앵커링). 그래서 **숫자를 묻지 않고**
+#    좁은 범주 질문 2개로 분해하고, 점수 매핑은 코드가 결정론적으로 한다.
+
+RELEVANCE_PROMPT = """Headlines:
+{headlines}
+
+Question: Does AT LEAST ONE headline report company-specific news about {symbol} —
+such as earnings, guidance, regulatory/FDA decisions, contracts, product launches,
+analyst rating changes, or management changes?
+
+Answer YES if even one headline reports such news about {symbol}.
+Answer NO only if EVERY headline is about other companies or is generic market commentary.
+
+Answer with one word only: YES or NO"""
+
+DIRECTION_PROMPT = """{symbol} has risen recently and is a momentum candidate.
+
+Company news about {symbol}:
+{headlines}
+
+Question: Does this news give a reason for {symbol} to keep RISING, or does it warn of a DROP?
+
+SUPPORT = concrete positive developments (earnings beat, raised guidance, upgrades, new contracts)
+CONTRADICT = negative developments (downgrade, weak guidance, losses, investigations, insider selling)
+MIXED = both present, or too vague to tell
+
+Answer with one word only: SUPPORT, CONTRADICT, or MIXED"""
+
+# 범주 → 점수/확신 매핑 (코드가 결정, 모델은 분류만)
+_DIRECTION_MAP = {
+    "SUPPORT": (75.0, 75.0),
+    "CONTRADICT": (25.0, 75.0),
+    "MIXED": (50.0, 30.0),
+}
+
+
 class MultiFactorScorer:
     """멀티팩터 스코어링 엔진 (6-Factor Regime-Adaptive + Macro Overlay).
 
@@ -158,10 +203,27 @@ class MultiFactorScorer:
         # 6) Macro Score (크로스 에셋 매크로 오버레이)
         macro_result = self._calc_macro()
 
-        # Composite (6-factor weighted)
+        # 7) LLM 모멘텀 조건화 (§22.AO-10 ①) — A/B 병행 로깅.
+        #    llm_momentum_active=false 인 동안에는 composite 에 반영하지 않고 기록만 한다.
+        #    같은 시그널에 대해 기존 sentiment 점수와 함께 저장되므로, 표본이 쌓이면
+        #    시그널 리플레이(scripts/signal_replay_ic.py)로 두 점수의 IC 를 직접 비교할 수 있다.
+        mom_result = {"score": 50.0, "confidence": 0.0, "source": "off"}
+        if self.pg.get_config_value("llm_momentum_ab_logging", "true") == "true":
+            try:
+                mom_result = self._llm_momentum_score(symbol, sig)
+            except Exception as e:
+                logger.warning(f"LLM momentum score failed for {symbol}: {e}")
+
+        # Composite (6-factor weighted).
+        # llm_momentum_active=true 면 sentiment 자리를 모멘텀 조건화 점수로 교체한다
+        # (naive 감성은 IC ≈ 0 으로 실측 — §22.AO-8).
+        mom_active = self.pg.get_config_value("llm_momentum_active", "false") == "true"
+        sentiment_used = (mom_result["score"] if (mom_active and mom_result.get("source")
+                          not in ("off", "disabled", "no_finnhub", "llm_error", "parse_error"))
+                          else sent_result["score"])
         composite = (
             tech_result["score"] * weights["technical"] +
-            sent_result["score"] * weights["sentiment"] +
+            sentiment_used * weights["sentiment"] +
             flow_result["score"] * weights["flow"] +
             quality_result["score"] * weights["quality"] +
             value_result["score"] * weights["value"] +
@@ -177,6 +239,8 @@ class MultiFactorScorer:
             "quality": quality_result,
             "value": value_result,
             "macro": macro_result,
+            "llm_momentum": mom_result,
+            "llm_momentum_active": mom_active,
             "regime": regime,
             "weights": weights,
             "regime_adaptive": regime_adaptive,
@@ -473,6 +537,112 @@ class MultiFactorScorer:
                 "news_count": len(news),
                 "summary": str(e)[:100],
             }
+
+    # ─── LLM 모멘텀 조건화 (§22.AO-10 ①) ─────────────────
+
+    def _momentum_context(self, sig: dict) -> str:
+        """LLM 에 넘길 모멘텀 맥락. naive 질의와의 결정적 차이."""
+        rank = sig.get("return_20d_rank")
+        parts = []
+        if rank is not None:
+            pct = float(rank) * 100
+            parts.append(f"- 20-day return rank: {pct:.0f}th percentile "
+                         f"({'top' if pct >= 70 else 'middle' if pct >= 40 else 'bottom'} of universe)")
+        parts.append(f"- Trend (50MA>200MA and price above): "
+                     f"{'YES' if sig.get('trend_aligned') else 'NO'}")
+        parts.append(f"- Broke 5-day high: {'YES' if sig.get('breakout_5d') else 'NO'}")
+        parts.append(f"- Volume surge vs 20-day average: "
+                     f"{'YES' if sig.get('volume_surge') else 'NO'}")
+        entry = sig.get("entry_price")
+        if entry:
+            parts.append(f"- Current price: ${float(entry):.2f}")
+        return "\n".join(parts)
+
+    def _llm_momentum_score(self, symbol: str, sig: dict) -> dict:
+        """뉴스가 최근 주가 움직임의 '지속'을 지지하는지 평가 (0-100).
+
+        2단 분해: ① 종목 고유 뉴스인가(YES/NO) → ② 방향(SUPPORT/CONTRADICT/MIXED).
+        모델에는 분류만 시키고 점수 매핑은 코드가 한다 — 소형 모델의 숫자 앵커링 회피.
+        ①이 NO 면 '정보 없음'이라 중립 50·확신 0 으로 끝낸다. 지지 뉴스의 부재를
+        반박으로 오해하지 않기 위한 장치.
+        """
+        neutral = {"score": 50.0, "confidence": 0.0, "reason": "",
+                   "source": "disabled", "news_count": 0}
+        if self.pg.get_config_value("llm_momentum_enabled", "true") != "true":
+            return neutral
+        if not self.finnhub.is_available:
+            return {**neutral, "source": "no_finnhub"}
+
+        news = self.finnhub.get_company_news(symbol, days=7)
+        if not news:
+            return {**neutral, "source": "no_news", "reason": "no recent news"}
+
+        headlines = "\n".join(f"- {n['headline']}" for n in news[:8])
+        src = "claude" if self._claude else f"llm/{self._ollama_model}"
+
+        # ① 종목 고유 뉴스인가
+        rel = self._llm_word(RELEVANCE_PROMPT.format(symbol=symbol, headlines=headlines),
+                             {"YES", "NO"})
+        if rel is None:
+            return {**neutral, "source": "llm_error", "news_count": len(news)}
+        if rel == "NO":
+            return {"score": 50.0, "confidence": 0.0, "relevant": False,
+                    "direction": None, "reason": "no company-specific news",
+                    "source": src, "news_count": len(news), "damped": False}
+
+        # ② 방향 분류
+        direction = self._llm_word(DIRECTION_PROMPT.format(symbol=symbol, headlines=headlines),
+                                   set(_DIRECTION_MAP))
+        if direction is None:
+            return {**neutral, "source": "llm_error", "relevant": True,
+                    "news_count": len(news)}
+
+        score, conf = _DIRECTION_MAP[direction]
+        min_conf = float(self.pg.get_config_value("llm_momentum_min_confidence", "40"))
+        effective = score if conf >= min_conf else 50.0
+        return {
+            "score": effective,
+            "raw_score": score,
+            "confidence": conf,
+            "relevant": True,
+            "direction": direction,
+            "reason": f"company news -> {direction}",
+            "source": src,
+            "news_count": len(news),
+            "damped": effective != score,
+        }
+
+    def _llm_word(self, prompt: str, allowed: set[str]) -> str | None:
+        """한 단어 분류만 받는다. 허용 집합 밖이면 None(=판단 보류)."""
+        text = ""
+        try:
+            if self._claude:
+                resp = self._claude.messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=10,
+                    messages=[{"role": "user", "content": prompt}])
+                text = resp.content[0].text
+            elif self._ollama_available:
+                import requests
+                r = requests.post(
+                    f"{self._ollama_url}/api/generate",
+                    json={"model": self._ollama_model, "prompt": prompt, "stream": False,
+                          "options": {"num_predict": 8, "temperature": 0.0}},
+                    timeout=300)
+                text = r.json().get("response", "")
+            else:
+                return None
+        except Exception as e:
+            logger.warning(f"LLM word query failed: {e}")
+            return None
+
+        up = text.strip().upper()
+        # 가장 먼저 등장하는 허용 토큰을 채택 (모델이 앞뒤로 말을 붙여도 견딤)
+        best, pos = None, len(up) + 1
+        for w in allowed:
+            i = up.find(w)
+            if i >= 0 and i < pos:
+                best, pos = w, i
+        return best
 
     # ─── Flow Score (0-100) ──────────────────────────────
 
@@ -1010,7 +1180,8 @@ class MultiFactorScorer:
                                flow: float, quality: float, value: float,
                                macro: float = 50.0,
                                composite: float, detail: dict) -> None:
-        """swing_signals에 6팩터 점수 업데이트."""
+        """swing_signals에 6팩터 점수 업데이트 (+ LLM 모멘텀 A/B 컬럼)."""
+        mom = detail.get("llm_momentum") or {}
         with self.pg.get_conn() as conn:
             conn.execute("""
                 UPDATE swing_signals
@@ -1021,10 +1192,14 @@ class MultiFactorScorer:
                     value_score = %s,
                     macro_score = %s,
                     composite_score = %s,
+                    llm_momentum_score = %s,
+                    llm_momentum_confidence = %s,
+                    llm_momentum_reason = %s,
                     factor_detail = %s,
                     factor_scored_at = now()
                 WHERE signal_id = %s
             """, (technical, sentiment, flow, quality, value, macro, composite,
+                  mom.get("score"), mom.get("confidence"), mom.get("reason"),
                   json.dumps(detail, ensure_ascii=False, default=str),
                   signal_id))
             conn.commit()
