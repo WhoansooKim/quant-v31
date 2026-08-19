@@ -3142,6 +3142,24 @@ async def harness_get_variant(variant_id: int):
     return v
 
 
+@app.get("/harness/self-check")
+async def harness_self_check_history(limit: int = 30):
+    """3K 자가진단 이력 (§22.AO-21)."""
+    with pg.get_conn() as conn:
+        rows = conn.execute("""
+            SELECT id, checked_at, check_name, status, severity, detail
+            FROM swing_self_check ORDER BY checked_at DESC, id DESC LIMIT %s
+        """, (limit,)).fetchall()
+    return {"count": len(rows), "checks": [dict(r) for r in rows]}
+
+
+@app.post("/harness/self-check/run")
+async def harness_self_check_run():
+    """3K 자가진단 즉시 실행."""
+    from engine_v4.harness.self_check import run_all
+    return run_all(pg)
+
+
 @app.post("/harness/variants/generate")
 async def harness_generate_variants(background_tasks: BackgroundTasks,
                                       max_variants: int = 5):

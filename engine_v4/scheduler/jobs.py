@@ -261,6 +261,14 @@ class SwingScheduler:
 
         # 16) 일 10:00 KST — Phase 3B 주간 자율 리서치 (arxiv/SSRN/Reddit/Quantocracy)
         self.scheduler.add_job(
+            self._job_self_check,
+            CronTrigger(day_of_week="sun", hour=13, minute=0, timezone=KST),
+            id="self_check",
+            name="3K 자가진단 — 계측 버그 불변식 검사",
+            replace_existing=True,
+        )
+
+        self.scheduler.add_job(
             self._job_factor_ic,
             CronTrigger(day_of_week="sun", hour=12, minute=0, timezone=KST),
             id="factor_ic",
@@ -1382,6 +1390,29 @@ class SwingScheduler:
             logger.info(f"Monthly variant backtest: {bt_summary}")
         except Exception as e:
             logger.exception(f"monthly_variant_gen failed: {e}")
+
+    def _job_self_check(self):
+        """3K 자가진단 — 계측 버그 불변식 검사 (§22.AO-21).
+
+        2026-08-18~19 에 발견한 버그 4종(유령손실·MDD −505%·가중치 하드코딩·Δ0.0 무력키)은
+        전부 불변식 위반이었다. 한 번 알아낸 것은 두 번 다시 놓치지 않는다.
+        """
+        try:
+            from engine_v4.harness.self_check import run_all, format_report
+            summary = run_all(self.pg)
+            if not summary.get("enabled", True):
+                return
+            logger.info(f"Self-check: 실패 {summary['failed']} / 치명 {summary['critical']}")
+            self.pg.insert_pipeline_log(
+                "self_check", "completed" if not summary["critical"] else "failed", 0,
+                {"failed": summary["failed"], "critical": summary["critical"]})
+            # 위반이 있을 때만 알린다 — 매주 PASS 알림은 소음이 되어 무시된다
+            if (summary["failed"] and self.notifier
+                    and self.pg.get_config_value("self_check_notify", "true") == "true"):
+                self.notifier.send_sync(format_report(summary))
+        except Exception as e:
+            logger.exception(f"self_check failed: {e}")
+            self.pg.insert_pipeline_log("self_check", "failed", 0, {"error": str(e)})
 
     def _job_factor_ic(self):
         """주간 팩터 IC 자동 측정 (§22.AO-15).
