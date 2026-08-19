@@ -261,6 +261,14 @@ class SwingScheduler:
 
         # 16) 일 10:00 KST — Phase 3B 주간 자율 리서치 (arxiv/SSRN/Reddit/Quantocracy)
         self.scheduler.add_job(
+            self._job_factor_ic,
+            CronTrigger(day_of_week="sun", hour=12, minute=0, timezone=KST),
+            id="factor_ic",
+            name="주간 팩터 IC 측정 (①A/B ②교집합 ③PEAD 검증)",
+            replace_existing=True,
+        )
+
+        self.scheduler.add_job(
             self._job_pead_collect,
             CronTrigger(day_of_week="sun", hour=11, minute=0, timezone=KST),
             id="pead_collect",
@@ -1374,6 +1382,28 @@ class SwingScheduler:
             logger.info(f"Monthly variant backtest: {bt_summary}")
         except Exception as e:
             logger.exception(f"monthly_variant_gen failed: {e}")
+
+    def _job_factor_ic(self):
+        """주간 팩터 IC 자동 측정 (§22.AO-15).
+
+        ①LLM 모멘텀 A/B · ②교집합 게이트 · ③PEAD 가 실제로 작동하는지 표본이 쌓이는 대로
+        자동 확인한다. 수동 스크립트에 의존하면 사후 대처가 반복된다.
+        """
+        if self.pg.get_config_value("factor_ic_enabled", "true") != "true":
+            logger.info("factor_ic_enabled=false — skipping factor_ic")
+            return
+        try:
+            from engine_v4.analysis.factor_ic import compute_and_store, format_report
+            result = compute_and_store(self.pg)
+            logger.info(f"Factor IC: {result}")
+            self.pg.insert_pipeline_log("factor_ic", "completed", 0,
+                                        {"as_of": result.get("as_of")})
+            if (self.pg.get_config_value("factor_ic_notify", "true") == "true"
+                    and self.notifier):
+                self.notifier.send_sync(format_report(result))
+        except Exception as e:
+            logger.exception(f"factor_ic failed: {e}")
+            self.pg.insert_pipeline_log("factor_ic", "failed", 0, {"error": str(e)})
 
     def _job_pead_collect(self):
         """③ PEAD — 유니버스 실적 서프라이즈 수집 (§22.AO-14).
