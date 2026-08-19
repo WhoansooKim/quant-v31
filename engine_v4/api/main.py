@@ -3175,6 +3175,35 @@ async def harness_add_formula(name: str, expression: str, source: str = ""):
             "status": "created" if row else "duplicate"}
 
 
+@app.post("/harness/formulas/extract")
+async def harness_extract_formulas(background_tasks: BackgroundTasks, max_items: int = 8):
+    """논문(초록/본문)에서 수식 추출 → pending 적재 (§22.AO-23/24)."""
+    from engine_v4.harness.formula_extractor import extract_pending
+
+    def _run():
+        try:
+            logger.info(f"Formula extract: {extract_pending(pg, max_items=max_items)}")
+        except Exception as e:
+            logger.exception(f"formula extract failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "max_items": max_items}
+
+
+@app.get("/harness/formulas/extraction-log")
+async def harness_extraction_log(limit: int = 30):
+    """논문별 수식 추출 시도 이력."""
+    with pg.get_conn() as conn:
+        rows = conn.execute("""
+            SELECT e.knowledge_id, e.attempted_at, e.proposed, e.accepted, e.rejected,
+                   e.detail->>'source' AS source, left(k.title, 80) AS title
+            FROM swing_formula_extraction e
+            LEFT JOIN swing_knowledge k USING (knowledge_id)
+            ORDER BY e.attempted_at DESC LIMIT %s
+        """, (limit,)).fetchall()
+    return {"count": len(rows), "extractions": [dict(r) for r in rows]}
+
+
 @app.post("/harness/formulas/validate-all")
 async def harness_validate_formulas(background_tasks: BackgroundTasks, max_per_run: int = 10):
     """pending 수식 일괄 검증 (background)."""

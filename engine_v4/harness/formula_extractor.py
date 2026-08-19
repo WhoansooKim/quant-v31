@@ -112,13 +112,26 @@ def extract_from_knowledge(pg, knowledge_id: int, ollama_url: str = "http://loca
                            ollama_model: str = "qwen2.5:3b", claude=None) -> dict[str, Any]:
     with pg.get_conn() as conn:
         row = conn.execute(
-            "SELECT knowledge_id, title, summary FROM swing_knowledge WHERE knowledge_id = %s",
-            (knowledge_id,)).fetchone()
+            "SELECT knowledge_id, title, summary, source_url FROM swing_knowledge "
+            "WHERE knowledge_id = %s", (knowledge_id,)).fetchone()
     if not row:
         return {"knowledge_id": knowledge_id, "error": "not_found"}
 
+    # 본문 우선 (§22.AO-24). 초록에는 수식 정의가 거의 없어 추출 품질이 낮았다.
+    body, body_status = "", "skipped"
+    if pg.get_config_value("formula_fulltext_enabled", "true") == "true":
+        try:
+            from engine_v4.harness.paper_fetch import fetch_relevant
+            body, body_status = fetch_relevant(
+                row.get("source_url") or "",
+                max_chars=int(float(pg.get_config_value("formula_fulltext_chars", "4000"))))
+        except Exception as e:
+            logger.debug(f"knowledge {knowledge_id} 본문 수집 실패: {e}")
+            body_status = "error"
+
+    source_text = body if body else (row["summary"] or "")[:1200]
     prompt = EXTRACT_PROMPT.format(
-        summary=f'{(row["title"] or "")[:200]}. {(row["summary"] or "")[:1200]}',
+        summary=f'{(row["title"] or "")[:200]}. {source_text}',
         names=", ".join(sorted(ALLOWED_NAMES)),
         funcs=", ".join(sorted(ALLOWED_FUNCS)),
     )
@@ -153,6 +166,7 @@ def extract_from_knowledge(pg, knowledge_id: int, ollama_url: str = "http://loca
 
     summary = {"knowledge_id": knowledge_id, "proposed": len(proposed),
                "accepted": len(accepted), "rejected": len(rejected),
+               "source": body_status, "source_chars": len(source_text),
                "accepted_list": accepted, "rejected_list": rejected[:3]}
     with pg.get_conn() as conn:
         conn.execute("""
