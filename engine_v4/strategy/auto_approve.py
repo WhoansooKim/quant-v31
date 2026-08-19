@@ -64,6 +64,12 @@ def run_auto_approve(
     score_min = float(pg.get_config_value("auto_approve_score_min", "60"))
     score_max = float(pg.get_config_value("auto_approve_score_max", "75"))  # IC 보정: crowded ultra-high score 차단
     macro_min = float(pg.get_config_value("auto_approve_macro_min", "30"))
+    # ② 신호 교집합 게이트 (§22.AO-12) — Sobotka(2025) 교집합 알파 3배.
+    # 실측: 모멘텀(rank>=0.70) + technical(>=60) 동시충족이 composite>=61 단독보다 우수
+    # (승률 66.2%→76.4%, 검증구간 평균수익 +1.64%→+3.64%). 화면을 더 얹으면 오히려 희석됨.
+    isec_enabled = pg.get_config_value("intersection_gate_enabled", "false").lower() in ("true", "1", "yes")
+    isec_mom_min = float(pg.get_config_value("intersection_momentum_min", "0.70"))
+    isec_tech_min = float(pg.get_config_value("intersection_technical_min", "60"))
     llm_gate_enabled = pg.get_config_value("llm_gate_enabled", "false").lower() in ("true", "1", "yes")
     llm_min_confidence = float(pg.get_config_value("llm_gate_min_confidence", "0.5"))
     prefer_ollama = pg.get_config_value("llm_gate_prefer_ollama", "false").lower() in ("true", "1", "yes")
@@ -113,6 +119,20 @@ def run_auto_approve(
         if not macro_ok:
             skipped.append({"signal_id": sid, "symbol": sym, "reason": f"macro_score={macro_score:.1f} < {macro_min}"})
             continue
+        if isec_enabled:
+            rank = sig.get("return_20d_rank")
+            tech = sig.get("technical_score")
+            rank_ok = rank is not None and float(rank) >= isec_mom_min
+            tech_ok = tech is not None and float(tech) >= isec_tech_min
+            if not (rank_ok and tech_ok):
+                skipped.append({
+                    "signal_id": sid, "symbol": sym,
+                    "reason": (f"intersection: rank={float(rank):.2f}/{isec_mom_min} "
+                               f"tech={float(tech):.0f}/{isec_tech_min}"
+                               if rank is not None and tech is not None
+                               else "intersection: missing rank/technical"),
+                })
+                continue
         try:
             entry_price = float(sig["entry_price"]) if sig.get("entry_price") else 0
             valid, reason = pos_mgr.validate_entry(sym, entry_price)
