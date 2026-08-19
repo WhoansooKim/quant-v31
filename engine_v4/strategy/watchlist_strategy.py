@@ -189,8 +189,10 @@ class WatchlistStrategy:
     KAMA_FAST = 2
     KAMA_SLOW = 30
 
-    def __init__(self, finnhub_client=None):
+    def __init__(self, finnhub_client=None, pead_scorer=None):
         self.finnhub = finnhub_client
+        # ③ PEAD (§22.AO-14) — 없으면 Layer3 는 기존대로 동작
+        self.pead = pead_scorer
 
     def analyze(self, items: list[dict], price_data, vix_data=None) -> list[dict]:
         """전체 워치리스트 분석.
@@ -362,7 +364,8 @@ class WatchlistStrategy:
         layer2 = self._calc_layer2_ranking(sym, close, qqq_close, high, low, volume)
 
         # ── Layer 3: 진입 타이밍 ──
-        layer3 = self._calc_layer3_entry(close, high, low, volume, rsi2, adx_val, sma200, current_price)
+        layer3 = self._calc_layer3_entry(close, high, low, volume, rsi2, adx_val, sma200,
+                                         current_price, symbol=sym)
 
         # ── Quality Score (Finnhub) ──
         quality_info = self._calc_quality_score(sym)
@@ -568,6 +571,9 @@ class WatchlistStrategy:
                 "momentum_positive": layer3["momentum_positive"],
                 "rsi2_oversold": rsi2 < self.RSI2_ENTRY,
                 "pead_signal": layer3.get("pead_signal", "NONE"),
+                "pead_score": layer3.get("pead_score", 50.0),
+                "pead_surprise_pct": layer3.get("pead_surprise_pct"),
+                "pead_days_since": layer3.get("pead_days_since"),
             },
             "layer4_sizing": {
                 "regime_factor": regime["size_factor"],
@@ -668,14 +674,16 @@ class WatchlistStrategy:
     def _calc_layer3_entry(self, close: np.ndarray, high: np.ndarray,
                            low: np.ndarray, volume: np.ndarray,
                            rsi2: float, adx_val: float,
-                           sma200: float, current_price: float) -> dict:
-        """BB/KC Squeeze detection + momentum + RSI2 timing."""
+                           sma200: float, current_price: float,
+                           symbol: str | None = None) -> dict:
+        """BB/KC Squeeze detection + momentum + RSI2 timing + PEAD."""
         result = {
             "timing_score": 50,
             "bb_squeeze": False,
             "squeeze_fired": False,
             "momentum_positive": False,
             "pead_signal": "NONE",
+            "pead_score": 50.0,
         }
 
         n = len(close)
@@ -763,6 +771,21 @@ class WatchlistStrategy:
         vol_sma = np.mean(volume[-20:]) if len(volume) >= 20 else 1
         if len(volume) > 0 and float(volume[-1]) > vol_sma * 1.5:
             score += 5
+
+        # ── PEAD (§22.AO-14) — 실적 서프라이즈 드리프트 ──
+        # 드리프트는 발표 후 2~4주에 걸쳐 애널리스트 상향이 순차 반영되며 발생하므로
+        # '진입 타이밍' 레이어에 속한다. 창 밖이거나 데이터가 없으면 50 이라 영향 없음.
+        if self.pead is not None and symbol:
+            try:
+                pead = self.pead.score(symbol)
+                result["pead_signal"] = pead.get("signal", "NONE")
+                result["pead_score"] = pead.get("score", 50.0)
+                result["pead_surprise_pct"] = pead.get("surprise_pct")
+                result["pead_days_since"] = pead.get("days_since")
+                # 50 기준 편차를 타이밍 점수에 반영 (±20점 상한)
+                score += max(-20, min(20, (float(pead.get("score", 50.0)) - 50.0) * 0.5))
+            except Exception as e:
+                logger.warning(f"PEAD score failed for {symbol}: {e}")
 
         result["timing_score"] = max(0, min(100, score))
         return result

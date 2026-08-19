@@ -2663,6 +2663,49 @@ config `intersection_gate_enabled`(true) / `intersection_momentum_min`(0.70) / `
 검증 없이 얹지 않는다. **현행 `require_breakout` 유지**하고 별도 안건으로 보류.
 (Tier1 시장필터가 이미 하락국면 진입을 차단하므로 레짐 조건부와 자연스럽게 결합 가능)
 
+### 22.AO-14 ③ PEAD 구축 — Layer 3 placeholder 채움
+
+근거: Kaczmarek & Zaremba, *Beyond the last surprise* (Finance Research Letters 2025-10).
+SUE 를 1분기가 아닌 **다분기 이력**으로 쓰면 Sharpe 가 거의 2배, **대형주에서 최강**,
+드리프트는 애널리스트 상향이 **2~4주** 순차 반영되며 발생 → **스윙 5~15일과 정합**.
+
+**데이터 제약과 대응**
+| API | 제공 | 제약 |
+|---|---|---|
+| `stock/earnings` | **4분기** 서프라이즈 | 발표일 없음(분기말만) |
+| `calendar/earnings` | 발표일 + 서프라이즈 | **최근 1건만**(과거 범위 조회해도 1건) |
+
+논문의 12분기는 무료 티어로 불가 → **`swing_earnings_surprises` 에 누적 저장**해 시간이 지나며
+이력이 쌓이도록 설계. 발표일이 없는 분기는 `분기말 + 35일`로 근사.
+
+**구현** (`engine_v4/ai/pead.py`)
+- `PeadScorer.collect_symbol/collect_universe` — stock/earnings(4분기) + calendar/earnings(발표일) 병합 upsert
+- `PeadScorer.score(symbol)` — 0-100:
+  - 드리프트 창(`pead_drift_days`=30일) 밖이거나 서프라이즈 < `pead_min_surprise_pct`(2.0%) → 중립 50
+  - 서프라이즈를 ±20% 에서 포화시켜 사상, **과거 분기 평균을 `pead_history_weight`(0.4)로 블렌드**
+    (논문 핵심: 이력이 예측력을 높인다)
+  - 시간 감쇠 — 창 후반부일수록 중립으로 수렴(드리프트 소진 반영)
+- Layer 3 배선: `_calc_layer3_entry(..., symbol)` 에서 PEAD 점수 편차를 타이밍 점수에 **±20점 상한**으로 반영
+- 스케줄러 `pead_collect` 일요일 11:00 KST (실적은 분기 단위라 주간이면 충분) → 총 26 잡
+
+**실측 (워치리스트 7종목)**
+| 종목 | 신호 | PEAD | 서프% | 경과일 | 타이밍 |
+|---|---|---|---|---|---|
+| TSM | POSITIVE_DRIFT | 66.7 | +10.92 | 15 | 68.3 |
+| MSFT | POSITIVE_DRIFT | 62.8 | +9.53 | 21 | 66.4 |
+| AMZN | POSITIVE_DRIFT | 59.3 | +6.13 | 20 | **84.7** |
+| GOOGL | NEGATIVE_DRIFT | 51.9 | −4.36 | 28 | 61.0 |
+| AAPL | WEAK | 50.0 | −0.89 | 20 | 45.0 |
+| IONQ | NEGATIVE_DRIFT | 50.0 | −13.32 | 14 | 40.0 |
+| TSLA | NEGATIVE_DRIFT | **35.5** | −36.43 | 28 | **32.8** |
+
+⚠️ **한계**
+- 4분기뿐이라 논문의 12분기 효과는 아직 미달. 누적 수집으로 2년 뒤에야 12분기 확보
+- `pead_history_weight=0.4` 때문에 **최근 악재가 좋은 과거 이력에 가려질 수 있다**
+  (예: IONQ 서프라이즈 −13.32% 인데 점수 50). 논문이 이력을 강조하므로 설계상 의도이나,
+  가중치는 표본 축적 후 재조정 대상
+- 백테스트 불가 영역(과거 시점 서프라이즈 스냅샷 없음) → **시그널 리플레이로만 검증 가능**
+
 ---
 
 ## 23. Git History

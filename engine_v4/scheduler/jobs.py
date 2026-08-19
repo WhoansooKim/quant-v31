@@ -261,6 +261,14 @@ class SwingScheduler:
 
         # 16) 일 10:00 KST — Phase 3B 주간 자율 리서치 (arxiv/SSRN/Reddit/Quantocracy)
         self.scheduler.add_job(
+            self._job_pead_collect,
+            CronTrigger(day_of_week="sun", hour=11, minute=0, timezone=KST),
+            id="pead_collect",
+            name="PEAD — 실적 서프라이즈 주간 수집",
+            replace_existing=True,
+        )
+
+        self.scheduler.add_job(
             self._job_weekly_research,
             CronTrigger(day_of_week="sun", hour=10, minute=0, timezone=KST),
             id="weekly_research",
@@ -1366,6 +1374,31 @@ class SwingScheduler:
             logger.info(f"Monthly variant backtest: {bt_summary}")
         except Exception as e:
             logger.exception(f"monthly_variant_gen failed: {e}")
+
+    def _job_pead_collect(self):
+        """③ PEAD — 유니버스 실적 서프라이즈 수집 (§22.AO-14).
+
+        Finnhub 무료 티어가 4분기만 주므로 주기적으로 수집해 DB 에 누적한다.
+        시간이 지나면 논문이 요구하는 다분기 이력이 쌓인다.
+        """
+        if self.pg.get_config_value("pead_enabled", "true") != "true":
+            logger.info("pead_enabled=false — skipping pead_collect")
+            return
+        try:
+            from engine_v4.ai.pead import PeadScorer
+            # scorer(MultiFactorScorer)가 들고 있는 FinnhubClient 재사용
+            finnhub = getattr(self.scorer, "finnhub", None)
+            if finnhub is None:
+                logger.warning("pead_collect: FinnhubClient 없음 — 건너뜀")
+                return
+            scorer = PeadScorer(self.pg, finnhub)
+            symbols = [u["symbol"] for u in self.pg.get_universe()]
+            summary = scorer.collect_universe(symbols)
+            logger.info(f"PEAD collect: {summary}")
+            self.pg.insert_pipeline_log("pead_collect", "completed", 0, summary)
+        except Exception as e:
+            logger.exception(f"pead_collect failed: {e}")
+            self.pg.insert_pipeline_log("pead_collect", "failed", 0, {"error": str(e)})
 
     def _job_weekly_research(self):
         """Phase 3B — Weekly autonomous research agent."""

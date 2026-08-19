@@ -26,6 +26,7 @@ from engine_v4.harness.knowledge import (
     add_knowledge, get_knowledge, list_knowledge, log_action, search_knowledge,
 )
 from engine_v4.harness.auto_backtest import validate_all_pending, validate_variant
+from engine_v4.ai.pead import PeadScorer
 from engine_v4.harness.auto_deploy import (
     check_rollback_conditions, deploy_validated_variant, rollback_variant,
 )
@@ -1523,7 +1524,9 @@ def _ema_from_arr(arr, period):
 
 
 # ── Watchlist Strategy Instance ──
-_watchlist_strategy = WatchlistStrategy(finnhub_client=finnhub_client)
+_pead_scorer = PeadScorer(pg, finnhub_client)
+_watchlist_strategy = WatchlistStrategy(finnhub_client=finnhub_client,
+                                        pead_scorer=_pead_scorer)
 
 
 @app.post("/watchlist/analyze")
