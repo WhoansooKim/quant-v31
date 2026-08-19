@@ -53,6 +53,12 @@ TUNABLE_PARAMS = {
     "volume_ratio_min": (1.0, 3.0),
     "atr_trailing_multiplier": (1.5, 4.0),
     "atr_hard_stop_multiplier": (1.0, 2.5),
+    # §22.AO-19: 오늘 실측으로 유효성이 확인된 신규 노브들. 하네스가 이것도 탐색해야
+    # "구조적으로 발견 불가"한 사각지대가 줄어든다.
+    "intersection_momentum_min": (0.50, 0.85),
+    "intersection_technical_min": (40, 75),
+    "pead_drift_days": (10, 45),
+    "rsi2_exit_min_r": (0.5, 3.0),
     "time_stop_days": (5, 30),
     "partial_exit_threshold": (0.05, 0.25),
     "partial_exit_pct": (0.25, 0.75),

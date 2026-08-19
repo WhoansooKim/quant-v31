@@ -1398,9 +1398,24 @@ class SwingScheduler:
             logger.info(f"Factor IC: {result}")
             self.pg.insert_pipeline_log("factor_ic", "completed", 0,
                                         {"as_of": result.get("as_of")})
+
+            # 3I 가중치 자동 튜닝 (§22.AO-19) — IC 측정 직후 같은 사이클에서 반영한다.
+            # 측정만 하고 반영을 사람이 하면 결국 사후 대처가 된다.
+            tune_report = ""
+            try:
+                from engine_v4.harness.weight_tuner import tune, format_report as tune_fmt
+                summary = tune(self.pg)
+                logger.info(f"Weight tune: {summary}")
+                tune_report = tune_fmt(summary)
+            except Exception as e:
+                logger.exception(f"weight_tuner failed: {e}")
+
             if (self.pg.get_config_value("factor_ic_notify", "true") == "true"
                     and self.notifier):
-                self.notifier.send_sync(format_report(result))
+                msg = format_report(result)
+                if tune_report:
+                    msg += "\n\n" + tune_report
+                self.notifier.send_sync(msg)
         except Exception as e:
             logger.exception(f"factor_ic failed: {e}")
             self.pg.insert_pipeline_log("factor_ic", "failed", 0, {"error": str(e)})

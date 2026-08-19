@@ -144,6 +144,19 @@ class MultiFactorScorer:
             if self._ollama_available:
                 logger.info(f"MultiFactorScorer: Ollama ({self._ollama_model}) ready")
 
+    def _load_weights(self, regime: str) -> dict:
+        """DB 에서 레짐 가중치를 읽는다. 없으면 하드코딩 폴백."""
+        try:
+            with self.pg.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT factor, weight FROM swing_factor_weights WHERE regime = %s",
+                    (regime,)).fetchall()
+            if rows:
+                return {r["factor"]: float(r["weight"]) for r in rows}
+        except Exception as e:
+            logger.warning(f"factor weights DB read failed ({regime}): {e}")
+        return dict(self.REGIME_WEIGHTS.get(regime, self.REGIME_WEIGHTS["MIXED"]))
+
     def _check_ollama(self) -> bool:
         """Ollama 서버 + 모델 사용 가능 여부 확인."""
         import requests
@@ -172,7 +185,9 @@ class MultiFactorScorer:
         regime_adaptive = self.pg.get_config_value("regime_adaptive_weights", "true") == "true"
         if regime_adaptive:
             regime = self._detect_regime(symbol)
-            weights = self.REGIME_WEIGHTS[regime]
+            # DB 우선 (§22.AO-19). REGIME_WEIGHTS 는 하드코딩이라 하네스가 조정할 수 없었다.
+            # swing_factor_weights 를 진실로 삼아 자동 튜닝이 가능하게 한다.
+            weights = self._load_weights(regime)
         else:
             regime = "MIXED"
             macro_w = float(self.pg.get_config_value("macro_weight", "0.10"))
