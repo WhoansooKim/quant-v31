@@ -14,7 +14,10 @@ set -uo pipefail
 ENV_FILE=/home/quant/quant-v31/.env
 TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')
 CHAT=$(grep -E '^TELEGRAM_CHAT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')
-CUTOFF='2026-08-27'   # §22.AO-26 적용일
+CUTOFF='2026-08-27'        # §22.AO-26 적용일
+VERDICT_DATE='2026-09-10'  # 판정일 = 2주차. 사용자 지시 "2주차까지 보고 판정하자"(2026-08-27).
+                           # 이유: A-1 게이트가 8일이라 1주차(9/3)에는 신규 진입분의 rsi2 청산
+                           # 자격 자체가 생기지 않는다. 그 전 리포트는 전부 '중간 점검'이다.
 
 PSQL() { docker exec quant-postgres psql -U quant -d quantdb -tA -c "$1" 2>/dev/null; }
 
@@ -59,8 +62,14 @@ HOLD=$(PSQL "SELECT COALESCE(ROUND(AVG(hold_days)::numeric,1)::text,'')
 
 NOW=$(TZ=Asia/Seoul date '+%m/%d %H:%M')
 
+TODAY=$(TZ=Asia/Seoul date '+%Y-%m-%d')
+# 경과 주 = 리포트 회차. 적용일 8/27 기준 9/3=1주차, 9/10=2주차(=판정일).
+WEEK=$(( ( $(date -d "$TODAY" +%s) - $(date -d "$CUTOFF" +%s) ) / 604800 ))
+IS_VERDICT=$([ "$TODAY" \< "$VERDICT_DATE" ] && echo 0 || echo 1)
+
 MSG=$(CFG="$CFG" RSI2="$RSI2" CVPOST="$CVPOST" CVPRE="$CVPRE" GAP="$GAP" \
-      REASONS="$REASONS" HOLD="$HOLD" NOW="$NOW" python3 - <<'PY'
+      REASONS="$REASONS" HOLD="$HOLD" NOW="$NOW" \
+      WEEK="$WEEK" IS_VERDICT="$IS_VERDICT" VERDICT_DATE="$VERDICT_DATE" python3 - <<'PY'
 import os
 def f(x):
     try: return float(x)
@@ -70,12 +79,21 @@ def parts(k, n):
     return (v.split("|", n-1) + [""]*n)[:n] if v else [""]*n
 
 now = os.environ["NOW"]; cfg = os.environ.get("CFG", "")
+week = int(os.environ.get("WEEK", "1") or 1)
+is_verdict = os.environ.get("IS_VERDICT", "0") == "1"
+vdate = os.environ.get("VERDICT_DATE", "")
 # 적용 전 기준값 (§22.AO-26 진단 실측)
 B_RSI2_N, B_RSI2_HOLD, B_RSI2_PCT = 37, 3.7, 4.21
 B_HOLD, B_EW, B_DW = 4.9, 0.294, -0.332
 
-L = [f"<b>🔬 §22.AO-26 주간 검증</b> ({now} KST)",
-     "적용 8/27: rsi2 보유일게이트 8d · 시간청산 21d · 소수주식", ""]
+label = f"{week}주차" if week >= 1 else "적용 당일"
+head = f"<b>🔬 §22.AO-26 {label} " + ("판정</b>" if is_verdict else "중간점검</b>")
+L = [f"{head} ({now} KST)",
+     "적용 8/27: rsi2 보유일게이트 8d · 시간청산 21d · 소수주식"]
+if not is_verdict:
+    L.append(f"⏳ 판정은 <b>{vdate}</b>(2주차). 그 전에는 지표만 본다 — "
+             f"A-1 게이트가 8일이라 신규 진입분의 rsi2 청산 자격이 아직 안 생긴다.")
+L.append("")
 
 # 0) config 감시
 L.append(f"<b>설정</b>: {cfg or '조회실패'}")
@@ -96,10 +114,17 @@ if n and n > 0:
     L.append(f"  {int(n)}건 · 보유 {hold:.1f}d · 평균 {pct:+.2f}%" if hold is not None else f"  {int(n)}건")
     if hold is not None and pct is not None:
         ok = hold >= B_RSI2_HOLD * 1.5 and pct >= B_RSI2_PCT
-        L.append("  → " + ("✅ 보유↑ 수익↑ — 의도대로" if ok
-                 else ("🟡 표본 부족/관찰 필요" if n < 10 else "🔴 개선 안 됨 — 게이트 재검토")))
+        if not is_verdict:
+            L.append(f"  → 추이: 보유 {hold - B_RSI2_HOLD:+.1f}d, 수익 {pct - B_RSI2_PCT:+.2f}p (판정 보류)")
+        elif n < 10:
+            L.append(f"  → 🟡 {int(n)}건뿐 — 2주차에도 표본 부족. 3주차까지 연장 권고")
+        else:
+            L.append("  → " + ("✅ 보유↑ 수익↑ — A-1 유효" if ok
+                     else "🔴 개선 안 됨 — rsi2_exit_min_hold_days 재검토"))
 else:
     L.append("  아직 0건 — 게이트가 조기청산을 막고 있다는 뜻(긍정 신호). 표본 대기.")
+    if is_verdict:
+        L.append("  → 🟡 판정일인데 표본 0 — 3주차까지 연장 권고")
 L.append("")
 
 # 2) B 사이징 산포
@@ -111,6 +136,7 @@ if qn and int(qn or 0) > 0:
     L.append(f"  적용 후 {qn}건: CV {qcv or '-'} (${qmin}~${qmax})")
     c = f(qcv)
     if c is not None:
+        # B 는 진입 즉시 효과가 보이므로 1주차에도 판정 가능 (rsi2 와 달리 청산을 안 기다린다)
         L.append("  → " + ("✅ 등가중 복원" if c < 0.10 else "🔴 여전히 주가가중 — 사이징 경로 점검"))
 else:
     L.append("  적용 후 신규 진입 0건 — 대기")
@@ -122,8 +148,12 @@ L.append(f"<b>등가중 vs 달러가중</b> (적용 전 {B_EW:+.3f}% vs {B_DW:+.
 if gn and gn > 0:
     L.append(f"  청산 {int(gn)}건: 등가중 {ew:+.3f}% vs 달러가중 {dw:+.3f}% (실현 ${usd:+.2f})")
     if ew is not None and dw is not None:
-        L.append("  → " + ("✅ 괴리 해소(부호 일치)" if ew * dw > 0 and abs(ew - dw) < 0.3
-                 else "🟡 아직 괴리 — 표본 누적 필요"))
+        closed = ew * dw > 0 and abs(ew - dw) < 0.3
+        if not is_verdict:
+            L.append(f"  → 추이: 괴리 {abs(ew - dw):.3f}p (적용 전 0.626p, 판정 보류)")
+        else:
+            L.append("  → " + ("✅ 괴리 해소(부호 일치)" if closed
+                     else "🟡 아직 괴리 — 표본 누적 필요"))
 else:
     L.append("  적용 후 청산 0건 — 대기")
 L.append("")
@@ -135,8 +165,12 @@ if h is not None:
 r = os.environ.get("REASONS", "")
 if r: L.append(f"<b>청산 사유</b>: {r}")
 L.append("")
-L.append("판단: rsi2 보유일↑·수익↑ + CV<0.10 + 등가중/달러가중 부호일치면 A-1·B 유효.")
-L.append("되돌리려면 rsi2_exit_min_hold_days=0 / fractional_shares_enabled=false.")
+if is_verdict:
+    L.append("<b>판정 기준</b>: rsi2 보유일 5.5d↑ & 수익 +4.21%↑ (표본 10건↑)")
+    L.append("  + 진입 CV&lt;0.10 + 등가중/달러가중 부호 일치 → A-1·B 유효")
+    L.append("되돌리려면 rsi2_exit_min_hold_days=0 / fractional_shares_enabled=false.")
+else:
+    L.append(f"다음 {vdate} 리포트에서 판정한다. 그때 rsi2 표본이 10건 미만이면 3주차로 연장.")
 print("\n".join(L))
 PY
 )

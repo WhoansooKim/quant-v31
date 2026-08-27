@@ -1,7 +1,8 @@
 PENDING_CLAUDE_REPORT
-# §22.AO-26 주간 검증 — 2026-08-27 23:08 KST
-🔬 §22.AO-26 주간 검증 (08/27 23:08 KST)
+# §22.AO-26 주간 검증 — 2026-08-27 23:13 KST
+🔬 §22.AO-26 적용 당일 중간점검 (08/27 23:13 KST)
 적용 8/27: rsi2 보유일게이트 8d · 시간청산 21d · 소수주식
+⏳ 판정은 2026-09-10(2주차). 그 전에는 지표만 본다 — A-1 게이트가 8일이라 신규 진입분의 rsi2 청산 자격이 아직 안 생긴다.
 
 설정: allow_min_one_share=false,atr_hard_stop_multiplier=1.5,fractional_shares_enabled=true,momentum_factor_active=true,rsi2_exit_min_hold_days=8,time_stop_days=21
 
@@ -16,5 +17,4 @@ B 진입금액 산포 (등가중이면 CV→0)
   적용 후 청산 0건 — 대기
 
 
-판단: rsi2 보유일↑·수익↑ + CV<0.10 + 등가중/달러가중 부호일치면 A-1·B 유효.
-되돌리려면 rsi2_exit_min_hold_days=0 / fractional_shares_enabled=false.
+다음 2026-09-10 리포트에서 판정한다. 그때 rsi2 표본이 10건 미만이면 3주차로 연장.
