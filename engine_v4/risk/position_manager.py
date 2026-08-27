@@ -30,31 +30,41 @@ def concentration_capped_qty(
     max_risk_per_trade_pct: float = 0.015,
     max_total_exposure_pct: float = 0.90,
     allow_min_one: bool = True,
-) -> tuple[int, str]:
+    fractional: bool = False,
+) -> tuple[float, str]:
     """집중 리스크 캡을 적용한 최종 수량 계산 (순수 함수 — 라이브/백테스트 공용).
 
-    각 캡을 '허용 상한(ceiling)'으로 계산 → base_qty 가 0주로 내림돼도 1주가 모든 캡
-    이내면 허용(allow_min_one), 1주조차 캡 초과면 0 반환(진입 거부).
+    각 캡을 '허용 상한(ceiling)'으로 계산 → 정수 모드에서 base_qty 가 0주로 내림돼도
+    1주가 모든 캡 이내면 허용(allow_min_one), 1주조차 캡 초과면 0 반환(진입 거부).
+
+    fractional=True 면 캡을 내림하지 않고 소수 주수를 그대로 쓴다. 정수 내림 + 강제 1주는
+    '포지션 크기 ∝ 주가' 왜곡의 원인이므로(§22.AO-26 B), 소수 주식이 가능하면 그쪽이 옳다.
     반환: (qty, cap_reason). qty=0 이면 거부, cap_reason 은 구속한 캡 이름.
     """
     if account_value <= 0 or entry_price <= 0:
-        return 0, "invalid"
+        return 0.0, "invalid"
 
-    ceilings: list[tuple[int, str]] = []
+    def _round(x: float) -> float:
+        return round(x, 4) if fractional else float(int(x))
+
+    ceilings: list[tuple[float, str]] = []
     # 1) 리스크 캡 (스톱거리 기반)
     if stop_loss and 0 < stop_loss < entry_price:
         risk_per_share = entry_price - stop_loss
-        ceilings.append((int((account_value * max_risk_per_trade_pct) / risk_per_share), "risk_cap"))
+        ceilings.append((_round((account_value * max_risk_per_trade_pct) / risk_per_share), "risk_cap"))
     # 2) 명목 캡 (단일 종목 상한)
-    ceilings.append((int((account_value * max_position_pct_cap) / entry_price), "notional_cap"))
+    ceilings.append((_round((account_value * max_position_pct_cap) / entry_price), "notional_cap"))
     # 3) 총노출 캡 (기존 오픈 명목 + 신규)
     room = account_value * max_total_exposure_pct - open_exposure
-    ceilings.append((int(room / entry_price) if room > 0 else 0, "total_exposure_cap"))
+    ceilings.append((_round(room / entry_price) if room > 0 else 0.0, "total_exposure_cap"))
 
     max_allowed, bind_reason = min(ceilings, key=lambda c: c[0])
-    desired = base_qty if base_qty >= 1 else (1 if allow_min_one else 0)
+    if fractional:
+        desired = base_qty
+    else:
+        desired = base_qty if base_qty >= 1 else (1 if allow_min_one else 0)
     qty = min(desired, max_allowed)
-    return max(qty, 0), (bind_reason if qty < desired else "")
+    return max(qty, 0.0), (bind_reason if qty < desired else "")
 
 
 class PositionManager:
@@ -129,7 +139,22 @@ class PositionManager:
 
         adjusted_pct = pct * multiplier
         target_amount = account_value_usd * adjusted_pct
-        base_qty = int(target_amount / entry_price) if entry_price > 0 else 0  # 목표 수량(내림)
+
+        # §22.AO-26 (B): 정수 내림 + 강제 1주 때문에 실제 포지션 크기가 주가에 비례했다.
+        # 목표 $95 인데 PSX($243)는 1주=$243(2.6배), VZ($50)는 1주=$50(0.53배)로 들어가
+        # 5% 등가중이 아니라 사실상 '주가가중' 포트폴리오가 됐다. 규모 5분위 실측에서
+        # 최상위분위(-$56.07)에 손실이 집중됐고, 등가중 +0.294% vs 달러가중 -0.332% 로
+        # 지표와 계좌가 반대 부호였다. 소수 주식을 쓰면 이 왜곡이 원천 제거된다.
+        fractional = self.pg.get_config_value("fractional_shares_enabled", "false") == "true"
+        allow_min_one = self.pg.get_config_value("allow_min_one_share", "true") == "true"
+        min_notional = float(self.pg.get_config_value("min_position_notional_usd", "5"))
+
+        if entry_price <= 0:
+            base_qty: float = 0.0
+        elif fractional:
+            base_qty = round(target_amount / entry_price, 4)
+        else:
+            base_qty = float(int(target_amount / entry_price))  # 목표 수량(내림)
 
         # ── 집중 캡 (공용 순수 함수 위임) ──
         cap_reason = ""
@@ -141,12 +166,17 @@ class PositionManager:
                 max_position_pct_cap=float(self.pg.get_config_value("max_position_pct_cap", "0.20")),
                 max_risk_per_trade_pct=float(self.pg.get_config_value("max_risk_per_trade_pct", "0.015")),
                 max_total_exposure_pct=float(self.pg.get_config_value("max_total_exposure_pct", "0.90")),
+                allow_min_one=allow_min_one,
+                fractional=fractional,
             )
+        elif fractional:
+            qty = base_qty
         else:
-            qty = base_qty if base_qty >= 1 else 1
+            qty = base_qty if base_qty >= 1 else (1 if allow_min_one else 0)
 
-        if qty < 1:
-            # 1주조차 캡 초과 → 진입 거부 (강제 1주 진입 금지)
+        # 최소 단위 미달 → 진입 거부. 정수 모드는 1주, 소수 모드는 명목 $min_notional.
+        too_small = (qty * entry_price < min_notional) if fractional else (qty < 1)
+        if too_small:
             return {
                 "qty": 0,
                 "amount": 0.0,

@@ -12,7 +12,7 @@ echo "── 1) 사이클 잡 실행 이력 ──"
 SELECT step_name, status, created_at AT TIME ZONE 'Asia/Seoul' AS kst, left(details::text,60) AS detail
 FROM swing_pipeline_log
 WHERE step_name IN ('factor_ic','self_check','formula_lab','pead_collect')
-  AND created_at > now() - interval '4 days'
+  AND created_at > now() - interval '8 days'
 ORDER BY created_at DESC LIMIT 10;"
 
 echo "── 2) ①③ 검증 판정 (핵심) ──"
@@ -38,19 +38,19 @@ PY
 echo "── 3) 자가진단 (최근) ──"
 "${PSQL[@]}" "
 SELECT check_name, status, severity, checked_at AT TIME ZONE 'Asia/Seoul' AS kst
-FROM swing_self_check WHERE checked_at > now() - interval '4 days'
+FROM swing_self_check WHERE checked_at > now() - interval '8 days'
 ORDER BY checked_at DESC, check_name LIMIT 8;"
 
 echo "── 4) 가중치 자동 튜닝 변경분 ──"
 "${PSQL[@]}" "
 SELECT regime, factor, old_weight, new_weight, ROUND(ic_used,4) AS ic
-FROM swing_weight_history WHERE changed_at > now() - interval '4 days'
+FROM swing_weight_history WHERE changed_at > now() - interval '8 days'
 ORDER BY changed_at DESC LIMIT 10;"
 
 echo "── 5) 수식 신호 검증 ──"
 "${PSQL[@]}" "
 SELECT status, COUNT(*) FROM swing_signal_formulas
-WHERE validated_at > now() - interval '4 days' GROUP BY 1;"
+WHERE validated_at > now() - interval '8 days' GROUP BY 1;"
 "${PSQL[@]}" "
 SELECT left(name,34) AS name, ic_train, ic_test FROM swing_signal_formulas
 WHERE status='validated' ORDER BY ic_min DESC NULLS LAST LIMIT 3;"

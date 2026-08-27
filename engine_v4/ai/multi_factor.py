@@ -105,11 +105,16 @@ class MultiFactorScorer:
     #   flow/value → 0, technical 대폭 상향, pead 신설(③).
     # ⚠️ config 의 factor_weight_* 는 regime_adaptive_weights=true 일 때 **무시된다**.
     #    실제 운영 가중치는 이 표다.
+    # 2026-08-27 §22.AO-26 (C): momentum 신설. return_20d_rank 는 실측 IC 가 전 팩터 중 최고
+    #   (+0.327@5d / +0.435@10d / +0.167@20d) 인데 가중 composite 에 **독립 팩터로 없었다** —
+    #   dual sort 필터로만 쓰여 하네스가 가중치를 조정할 수 없는 사각지대였다.
+    # ⚠️ 중복 계상 주의: technical 내부에도 momentum_pts(= rank×40, 100점 만점)가 이미 있다.
+    #    그래서 momentum 가중치는 **technical 에서 덜어내** 총 모멘텀 노출이 튀지 않게 한다.
     REGIME_WEIGHTS = {
-        "TRENDING":  {"technical": 0.42, "sentiment": 0.10, "flow": 0.0, "quality": 0.20, "value": 0.0, "macro": 0.18, "pead": 0.10},
-        "SIDEWAYS":  {"technical": 0.32, "sentiment": 0.10, "flow": 0.0, "quality": 0.25, "value": 0.0, "macro": 0.23, "pead": 0.10},
-        "HIGH_VOL":  {"technical": 0.28, "sentiment": 0.10, "flow": 0.0, "quality": 0.25, "value": 0.0, "macro": 0.27, "pead": 0.10},
-        "MIXED":     {"technical": 0.38, "sentiment": 0.10, "flow": 0.0, "quality": 0.22, "value": 0.0, "macro": 0.20, "pead": 0.10},
+        "TRENDING":  {"technical": 0.30, "momentum": 0.12, "sentiment": 0.10, "flow": 0.0, "quality": 0.20, "value": 0.0, "macro": 0.18, "pead": 0.10},
+        "SIDEWAYS":  {"technical": 0.22, "momentum": 0.10, "sentiment": 0.10, "flow": 0.0, "quality": 0.25, "value": 0.0, "macro": 0.23, "pead": 0.10},
+        "HIGH_VOL":  {"technical": 0.18, "momentum": 0.10, "sentiment": 0.10, "flow": 0.0, "quality": 0.25, "value": 0.0, "macro": 0.27, "pead": 0.10},
+        "MIXED":     {"technical": 0.28, "momentum": 0.10, "sentiment": 0.10, "flow": 0.0, "quality": 0.22, "value": 0.0, "macro": 0.20, "pead": 0.10},
     }
 
     def __init__(self, pg: PostgresStore, finnhub: FinnhubClient,
@@ -257,8 +262,15 @@ class MultiFactorScorer:
         pead_active = self.pg.get_config_value("pead_active", "false") == "true"
         pead_used = float(pead_result.get("score", 50.0)) if pead_active else 50.0
 
+        # 9) Momentum (§22.AO-26 C) — return_20d_rank(0~1) 을 0~100 으로 환산.
+        #    momentum_factor_active=false 면 중립 50 으로 들어가 composite 에 영향 없음.
+        mom_factor_result = self._calc_momentum_factor(sig)
+        mom_factor_active = self.pg.get_config_value("momentum_factor_active", "true") == "true"
+        momentum_used = mom_factor_result["score"] if mom_factor_active else 50.0
+
         composite = (
             tech_result["score"] * weights["technical"] +
+            momentum_used * weights.get("momentum", 0.0) +
             sentiment_used * weights["sentiment"] +
             flow_result["score"] * weights["flow"] +
             quality_result["score"] * weights["quality"] +
@@ -276,6 +288,8 @@ class MultiFactorScorer:
             "quality": quality_result,
             "value": value_result,
             "macro": macro_result,
+            "momentum": mom_factor_result,
+            "momentum_factor_active": mom_factor_active,
             "llm_momentum": mom_result,
             "llm_momentum_active": mom_active,
             "pead": pead_result,
@@ -332,6 +346,35 @@ class MultiFactorScorer:
             except Exception as e:
                 logger.error(f"Factor scoring failed for signal {sig['signal_id']}: {e}")
         return results
+
+    # ─── Momentum Score (0-100) ──────────────────────────
+
+    def _calc_momentum_factor(self, sig: dict) -> dict:
+        """return_20d_rank(0~1) 단독 팩터 (§22.AO-26 C).
+
+        실측 IC 가 전 팩터 중 최고인데 가중 composite 에 독립 항이 없어 하네스가
+        조정할 수 없었다. technical 내부의 momentum_pts 와 동일한 과열 감쇠를 적용해
+        두 경로가 같은 rank 해석을 쓰도록 맞춘다. rank 결측 시 중립 50.
+        """
+        raw = sig.get("return_20d_rank")
+        if raw is None:
+            return {"score": 50.0, "rank": None, "source": "missing"}
+
+        rank = float(raw)
+        overext_enabled = self.pg.get_config_value("momentum_overext_enabled", "true") == "true"
+        if overext_enabled and rank > 0:
+            thr = float(self.pg.get_config_value("momentum_overext_threshold", "0.80"))
+            pen = float(self.pg.get_config_value("momentum_overext_penalty", "0.6"))
+            eff_rank = thr + (rank - thr) * pen if rank > thr else rank
+        else:
+            eff_rank = rank
+
+        return {
+            "score": round(max(0.0, min(100.0, eff_rank * 100)), 1),
+            "rank": round(rank, 4),
+            "eff_rank": round(eff_rank, 4),
+            "source": "return_20d_rank",
+        }
 
     # ─── Technical Score (0-100) ─────────────────────────
 

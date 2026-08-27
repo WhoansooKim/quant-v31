@@ -42,6 +42,7 @@ class BacktestParams:
     max_daily_entries: int = 1
     price_range_min: float = 20.0
     price_range_max: float = 80.0
+    fractional_shares: bool = False  # §22.AO-26 B: 소수 주식 (라이브 fractional_shares_enabled 와 정합)
     # ── ①번 손익비 개선: ATR 트레일링 + 부분익절 (기본 off = 기존 고정 TP 동작 보존) ──
     use_atr_trailing: bool = False   # True 시 고정 take_profit 대신 ATR 트레일링으로 승자 추종
     atr_period: int = 14
@@ -67,6 +68,7 @@ class BacktestParams:
     rsi2_period: int = 2
     rsi2_exit_threshold: float = 95.0
     rsi2_exit_min_r: float = 2.0     # 승자 과조기절단 방지 게이팅 (2026-07-01 교정치)
+    rsi2_exit_min_hold_days: int = 0  # §22.AO-26 A-1: 보유일 하한 미달이면 rsi2 청산 보류 (0=off)
     use_time_stop: bool = False      # L3: 보유일 초과 시 청산
     time_stop_days: int = 15
     use_breakeven: bool = False      # +trigger_R 도달 시 손절을 본전(+버퍼)으로 상향
@@ -305,6 +307,10 @@ class BacktestRunner:
                 if exit_reason is None and params.use_rsi2_exit:
                     rsi2_gate = (r_mult >= params.rsi2_exit_min_r if entry_atr > 0
                                  else pnl_pct >= 0.03)
+                    # A-1 보유일 하한 (라이브 exit_manager 와 동일 규칙)
+                    if params.rsi2_exit_min_hold_days > 0 and \
+                            (day - pos["entry_date"]).days < params.rsi2_exit_min_hold_days:
+                        rsi2_gate = False
                     if rsi2_gate:
                         _r2 = df.loc[day, "rsi2"]
                         if pd.notna(_r2) and float(_r2) > params.rsi2_exit_threshold:
@@ -328,8 +334,10 @@ class BacktestRunner:
                     # 부분익절: +partial_exit_r × 초기리스크 도달 시 1회 (일부 청산)
                     if (params.partial_exit_r > 0 and not pos.get("partial_done")
                             and init_risk > 0 and gain >= params.partial_exit_r * init_risk):
-                        pexit_qty = int(pos["qty"] * params.partial_exit_pct)
-                        if pexit_qty >= 1:
+                        pexit_qty = (round(pos["qty"] * params.partial_exit_pct, 4)
+                                     if params.fractional_shares
+                                     else int(pos["qty"] * params.partial_exit_pct))
+                        if pexit_qty > 0:
                             ppnl = (current - entry) * pexit_qty
                             cash += current * pexit_qty
                             pos["qty"] -= pexit_qty
@@ -476,12 +484,16 @@ class BacktestRunner:
                                 mult = params.target_atr_pct / atr_pct
                                 mult = max(params.vol_mult_min, min(params.vol_mult_max, mult))
                                 target_amount *= mult
-                        qty = int(target_amount / close)
+                        # §22.AO-26 B: 정수 내림은 '포지션 크기 ∝ 주가' 왜곡을 만든다.
+                        # 라이브가 소수 주식이면 백테스트도 같아야 변이 검증이 유효하다.
+                        _q = ((lambda x: round(x, 4)) if params.fractional_shares
+                              else (lambda x: float(int(x))))
+                        qty = _q(target_amount / close)
                         if qty <= 0:
                             continue
                         cost = qty * close
                         if cost > cash:
-                            qty = int(cash / close)
+                            qty = _q(cash / close)
                             if qty <= 0:
                                 continue
                             cost = qty * close

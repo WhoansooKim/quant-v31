@@ -161,6 +161,12 @@ class ExitManager:
         # 최소 R(또는 entry_atr 없을 때 최소 수익률) 도달 후에만 rsi2 청산 허용 → 승자가 트레일링으로 달리게.
         rsi2_min_r = self._get_config_float("rsi2_exit_min_r", 1.0)
         rsi2_min_gain = self._get_config_float("rsi2_exit_min_gain", 0.03)
+        # §22.AO-26 (A-1): rsi2 청산 30건 반사실 검증 — 실제 +3.39% vs 20일 보유 +9.53%
+        # (갭 +6.14pp, 평균보유 3.7일). 팩터 IC 는 지평이 길수록 커진다(composite 0.121@5d
+        # → 0.192@20d, technical 0.185 → 0.365). 즉 신호는 20일짜리인데 rsi2 가 4일 만에
+        # 승자를 잘라낸다. R/수익률 게이트만으로는 '빨리 오른 종목'을 못 막으므로
+        # **보유일 하한**을 추가한다. 0 이면 기존 동작(게이트 없음).
+        rsi2_min_hold_days = int(self._get_config_float("rsi2_exit_min_hold_days", 0))
         # 손익비 교정: 브레이크이븐 스톱 — +trigger_R 도달 후 손절을 본전(+버퍼)으로 올려
         # '이겼다 진 거래'(+1R~+2.5R 반전 시 풀손실)를 무손실 청산으로 전환 → 손실측 축소.
         be_enabled = self.pg.get_config_value("breakeven_enabled", "true") == "true"
@@ -185,6 +191,14 @@ class ExitManager:
             qty = float(pos.get("qty") or 1)
             gain_pct = (current_price - entry_price) / entry_price
             entry_atr = float(pos.get("entry_atr") or 0)
+
+            # 보유일 — Layer 4(rsi2 보유일 게이트)와 Layer 3(time stop) 양쪽이 쓰므로 선계산.
+            # entry_time 이 없으면 None → 보유일 기반 판단은 모두 skip(기존 동작 유지).
+            entry_time = pos.get("entry_time")
+            if isinstance(entry_time, str):
+                entry_time = datetime.fromisoformat(entry_time)
+            hold_days = ((datetime.now(entry_time.tzinfo) - entry_time).days
+                         if entry_time else None)
 
             # === Layer 2: Hard Stop-Loss (1.5×ATR below entry) ===
             hard_stop = float(pos.get("hard_stop") or 0)
@@ -211,7 +225,10 @@ class ExitManager:
                 rsi2_gain_ok = (current_price - entry_price) / entry_atr >= rsi2_min_r
             else:
                 rsi2_gain_ok = gain_pct >= rsi2_min_gain
-            if rsi2_gain_ok:
+            # 보유일 하한 미달이면 rsi2 청산 보류 → 승자가 트레일링/시간스톱으로 달리게 한다.
+            rsi2_hold_ok = (rsi2_min_hold_days <= 0 or hold_days is None
+                            or hold_days >= rsi2_min_hold_days)
+            if rsi2_gain_ok and rsi2_hold_ok:
                 rsi2 = self.calc_rsi(symbol, period=2)
                 if rsi2 is not None and rsi2 > rsi2_threshold:
                     actions.append(ExitAction(
@@ -223,21 +240,16 @@ class ExitManager:
                                 f"{rsi2_threshold}, gain={gain_pct:+.1%}")
                     continue
 
-            # === Layer 3: Time Stop (15 거래일) ===
-            entry_time = pos.get("entry_time")
-            if entry_time:
-                if isinstance(entry_time, str):
-                    entry_time = datetime.fromisoformat(entry_time)
-                hold_days = (datetime.now(entry_time.tzinfo) - entry_time).days
-                if hold_days >= time_stop_days:
-                    actions.append(ExitAction(
-                        position_id=pid, symbol=symbol,
-                        current_price=current_price, exit_qty=qty,
-                        exit_reason="time_stop",
-                        gain_pct=gain_pct, layer="L3_TimeStop"))
-                    logger.info(f"L3 TIME STOP: {symbol} held {hold_days} days "
-                                f">= {time_stop_days} (gain={gain_pct:+.1%})")
-                    continue
+            # === Layer 3: Time Stop (time_stop_days 거래일) ===
+            if hold_days is not None and hold_days >= time_stop_days:
+                actions.append(ExitAction(
+                    position_id=pid, symbol=symbol,
+                    current_price=current_price, exit_qty=qty,
+                    exit_reason="time_stop",
+                    gain_pct=gain_pct, layer="L3_TimeStop"))
+                logger.info(f"L3 TIME STOP: {symbol} held {hold_days} days "
+                            f">= {time_stop_days} (gain={gain_pct:+.1%})")
+                continue
 
             # === Layer 1: ATR Trailing Stop (regime-adaptive) ===
             if entry_atr > 0:
@@ -372,9 +384,15 @@ class ExitManager:
                 triggered = gain_pct >= threshold
 
             if triggered:
-                exit_qty = round(qty * exit_pct)
-                if exit_qty < 1:
-                    exit_qty = 1
+                # 소수 주식이면 그대로 비율 분할, 정수 주식이면 기존대로 최소 1주 보장.
+                if self._get_config_bool("fractional_shares_enabled", False):
+                    exit_qty = round(qty * exit_pct, 4)
+                else:
+                    exit_qty = round(qty * exit_pct)
+                    if exit_qty < 1:
+                        exit_qty = 1
+                if exit_qty > qty:
+                    exit_qty = qty
                 remaining_qty = qty - exit_qty
                 if remaining_qty < 0:
                     remaining_qty = 0

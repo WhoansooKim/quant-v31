@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 # IC 로 조정 가능한 팩터. technical 은 하한을 높게 둔다(실측 최강).
 BOUNDS = {
     "technical": (0.20, 0.50),
+    # momentum 은 technical 과 rank 를 공유(중복 계상)하므로 상한을 보수적으로 둔다
+    "momentum":  (0.00, 0.25),
     "quality":   (0.05, 0.30),
     "macro":     (0.05, 0.30),
     "sentiment": (0.00, 0.20),
@@ -37,6 +39,8 @@ BOUNDS = {
 # IC 측정에 쓰는 시그널 컬럼 매핑
 IC_COLUMN = {
     "technical": "technical_score",
+    "momentum":  "return_20d_rank",      # §22.AO-26 C — factor_ic 가 이미 측정 중(n=157@10d)
+
     "quality":   "quality_score",
     "macro":     "macro_score",
     "sentiment": "llm_momentum_score",   # ① 활성 시 실제 쓰이는 점수

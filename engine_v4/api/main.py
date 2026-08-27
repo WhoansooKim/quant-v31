@@ -432,7 +432,8 @@ async def approve_signal(signal_id: int):
         # KIS 주문
         order = kis.sell(
             symbol=result["symbol"],
-            qty=int(result.get("qty", 0) or 0) or 1,
+            # 소수 주식(fractional_shares_enabled) 대응 — int() 하면 0.5주 매도가 0/1주로 왜곡된다
+            qty=float(result.get("qty", 0) or 0),
             price=result["exit_price"],
         )
         result["order_id"] = order.order_id

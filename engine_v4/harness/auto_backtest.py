@@ -64,12 +64,14 @@ _FIELD_MAP = {
     "time_stop_days": "time_stop_days",
     "rsi2_exit_threshold": "rsi2_exit_threshold",
     "rsi2_exit_min_r": "rsi2_exit_min_r",
+    "rsi2_exit_min_hold_days": "rsi2_exit_min_hold_days",
     "breakeven_trigger_r": "breakeven_trigger_r",
     "breakeven_buffer_pct": "breakeven_buffer_pct",
 }
 
 _INT_ATTRS = {"max_positions", "max_daily_entries", "market_sma_days",
-              "abs_mom_period", "atr_period", "time_stop_days", "rsi2_period"}
+              "abs_mom_period", "atr_period", "time_stop_days", "rsi2_period",
+              "rsi2_exit_min_hold_days"}
 
 # config key -> BacktestParams 불리언 필드
 _FLAG_MAP = {
@@ -77,6 +79,7 @@ _FLAG_MAP = {
     "abs_momentum_enabled": "use_abs_momentum",
     "require_breakout": "require_breakout",
     "breakeven_enabled": "use_breakeven",
+    "fractional_shares_enabled": "fractional_shares",
 }
 
 

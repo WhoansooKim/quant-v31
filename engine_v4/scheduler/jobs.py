@@ -789,7 +789,8 @@ class SwingScheduler:
             pid = action.position_id
             symbol = action.symbol
             price = action.current_price
-            qty = int(action.exit_qty) or 1
+            # 소수 주식 대응 — int() 는 0.5주 청산을 0주로 만들고, `or 1` 이 없는 수량을 만든다
+            qty = float(action.exit_qty or 0)
 
             # 포지션 종료
             self.pg.close_position(pid, price, action.exit_reason)
