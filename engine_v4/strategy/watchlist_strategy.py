@@ -100,6 +100,28 @@ def _adx(high, low, close, period=14):
     return float(adx_val[-1])
 
 
+def _to_py(obj):
+    """numpy 스칼라/배열을 파이썬 기본형으로 재귀 변환 (JSON·jsonb 직렬화 안전).
+
+    np.bool_ 는 파이썬 bool 의 서브클래스가 **아니라서** json.dumps 가 거부한다.
+    np.float64 는 float 서브클래스라 통과하지만, 일관성을 위해 함께 변환한다.
+    """
+    if isinstance(obj, dict):
+        return {k: _to_py(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_py(v) for v in obj]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        f = float(obj)
+        return None if (np.isnan(f) or np.isinf(f)) else f
+    if isinstance(obj, np.ndarray):
+        return _to_py(obj.tolist())
+    return obj
+
+
 def _mfi(high, low, close, volume, period=14):
     tp = (high + low + close) / 3
     mf = tp * volume
@@ -222,12 +244,41 @@ class WatchlistStrategy:
                     qqq_close, regime_info
                 )
                 if result:
-                    results.append(result)
+                    # numpy 스칼라(np.bool_/np.float64 등)가 섞여 나가면 소비처에서 터진다.
+                    # 실제로 alert 의 jsonb 저장이 "Object of type bool is not JSON
+                    # serializable" 로 매일 실패하고 있었다(2026-08-29 실측, 7종목 전부).
+                    # 소비처마다 막지 말고 반환 지점에서 한 번에 파이썬 기본형으로 정규화한다.
+                    results.append(_to_py(result))
             except Exception as e:
                 logger.warning(f"Watchlist analysis failed for {sym}: {e}")
                 continue
 
         return results
+
+    def _get_ohlcv(self, data, sym: str, symbols: list) -> tuple:
+        """OHLCV 를 **행 단위로 정렬해** 추출 → (close, high, low, volume).
+
+        _get_col 로 컬럼마다 따로 dropna() 하면, 어느 한 컬럼에만 NaN 이 있는 날 때문에
+        배열 길이가 어긋나 브로드캐스트 에러가 난다. 2026-08-31 실측으로 워치리스트
+        7종목 **전부** 가 `operands could not be broadcast together with shapes
+        (501,) (500,)` 로 실패하고 있었다(_mfi 의 high+low+close). 같은 날짜만 남겨
+        네 배열의 길이·정렬을 보장한다.
+        """
+        import pandas as pd
+        single = (len(symbols) == 1 and sym not in ("QQQ", "^VIX")
+                  and "QQQ" not in symbols and "^VIX" not in symbols)
+        cols = {}
+        for c in ("Close", "High", "Low", "Volume"):
+            try:
+                cols[c] = data[c] if single else data[c][sym]
+            except Exception:
+                return (np.array([]),) * 4
+        try:
+            df = pd.DataFrame(cols).dropna()
+        except Exception:
+            return (np.array([]),) * 4
+        return (df["Close"].values, df["High"].values,
+                df["Low"].values, df["Volume"].values)
 
     def _get_col(self, data, col: str, sym: str, symbols: list) -> np.ndarray:
         """yfinance multi-symbol DataFrame에서 컬럼 추출."""
@@ -330,10 +381,8 @@ class WatchlistStrategy:
     def _analyze_symbol(self, sym: str, item: dict, data,
                         symbols: list, qqq_close: np.ndarray,
                         regime: dict) -> Optional[dict]:
-        close = self._get_col(data, "Close", sym, symbols)
-        high = self._get_col(data, "High", sym, symbols)
-        low = self._get_col(data, "Low", sym, symbols)
-        volume = self._get_col(data, "Volume", sym, symbols)
+        # 컬럼별 dropna() 는 배열 길이를 어긋나게 한다 → 행 단위 정렬 추출 필수
+        close, high, low, volume = self._get_ohlcv(data, sym, symbols)
 
         if len(close) < 60:
             return None

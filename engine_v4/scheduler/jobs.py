@@ -752,9 +752,18 @@ class SwingScheduler:
             if action["action"] == "ENTER":
                 account = self._get_account_value()
                 hedge_pct = float(self.pg.get_config_value("hedge_pct", "0.20"))
-                qty = int((account * hedge_pct) / price) if price > 0 else 0
-                if qty < 1:
-                    logger.warning(f"Hedge ENTER skipped: qty<1 (account ${account:.0f}, {sym} ${price:.2f})")
+                # 라이브 사이징 규칙과 정합 (§22.AO-26 B)
+                frac = self.pg.get_config_value("fractional_shares_enabled", "false") == "true"
+                min_notional = float(self.pg.get_config_value("min_position_notional_usd", "5"))
+                target = account * hedge_pct
+                if price <= 0:
+                    qty = 0.0
+                else:
+                    qty = round(target / price, 4) if frac else float(int(target / price))
+                too_small = (qty * price < min_notional) if frac else (qty < 1)
+                if too_small:
+                    logger.warning(f"Hedge ENTER skipped: qty={qty} too small "
+                                   f"(account ${account:.0f}, {sym} ${price:.2f})")
                     return
                 is_paper = self.pg.get_config_value("trading_mode", "paper") == "paper"
                 pid = self.pg.open_position({

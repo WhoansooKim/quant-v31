@@ -244,12 +244,15 @@ class PositionManager:
         stop_loss = float(signal["stop_loss"]) if signal.get("stop_loss") else None
         sizing = self.calculate_position_size(account_value_usd, entry_price, stop_loss)
 
-        # 집중 캡으로 1주조차 불가 → 진입 거부 (강제 1주 진입 금지)
-        if sizing["qty"] < 1:
+        # 사이징 거부 → 진입 거부. 거부 판정(정수 모드 1주 미만 / 소수 모드 최소 명목 미달)은
+        # calculate_position_size 가 이미 내려서 qty=0 으로 돌려준다.
+        # ⚠️ 여기서 `< 1` 로 다시 판정하면 소수 주식(0.9주 등)이 전부 거부된다 — §22.AO-26 B 회귀.
+        if sizing["qty"] <= 0:
             logger.warning(
-                f"Entry rejected for {symbol}: concentration cap "
-                f"({sizing.get('cap_reason')}) — ${entry_price:.2f} too large "
-                f"for account ${account_value_usd:.2f}")
+                f"Entry rejected for {symbol}: sizing rejected "
+                f"({sizing.get('cap_reason') or 'below_min'}) — "
+                f"qty={sizing['qty']} amount=${sizing.get('amount', 0):.2f} "
+                f"@ ${entry_price:.2f}, account ${account_value_usd:.2f}")
             return None
 
         is_paper = self.pg.get_config_value("trading_mode", "paper") == "paper"

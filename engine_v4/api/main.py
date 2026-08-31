@@ -2011,6 +2011,9 @@ def _run_replay_backtest(req: ReplayBacktestRequest):
     cap_max_pos = float(pg.get_config_value("max_position_pct_cap", "0.20"))
     cap_max_risk = float(pg.get_config_value("max_risk_per_trade_pct", "0.015"))
     cap_max_total = float(pg.get_config_value("max_total_exposure_pct", "0.90"))
+    frac_enabled = pg.get_config_value("fractional_shares_enabled", "false") == "true"
+    allow_min_one = pg.get_config_value("allow_min_one_share", "true") == "true"
+    min_notional = float(pg.get_config_value("min_position_notional_usd", "5"))
 
     for day in dates:
         signals = {s["symbol"]: s for s in daily_signals[day]}
@@ -2094,7 +2097,9 @@ def _run_replay_backtest(req: ReplayBacktestRequest):
             alloc = cash * req.position_pct
             if alloc < 10 or price <= 0:
                 continue
-            base_qty = int(alloc / price)
+            # 라이브 사이징 규칙과 정합 (§22.AO-26 B) — 리플레이가 다른 규칙을 쓰면
+            # 백테스트 결과를 라이브 판단 근거로 못 쓴다.
+            base_qty = round(alloc / price, 4) if frac_enabled else float(int(alloc / price))
 
             # 집중 캡 적용 (라이브와 동일 로직)
             if cap_enabled:
@@ -2104,11 +2109,13 @@ def _run_replay_backtest(req: ReplayBacktestRequest):
                     max_position_pct_cap=cap_max_pos,
                     max_risk_per_trade_pct=cap_max_risk,
                     max_total_exposure_pct=cap_max_total,
+                    allow_min_one=allow_min_one,
+                    fractional=frac_enabled,
                 )
             else:
                 qty = base_qty
 
-            if qty < 1:
+            if (qty * price < min_notional) if frac_enabled else (qty < 1):
                 continue
             cost = price * qty
             if cost > cash:
