@@ -3515,8 +3515,20 @@ tar czf ~/quant_secrets_$(date +%Y%m%d).tar.gz \
   -C /home/quant/.claude/projects/-home-quant-quant-v31 memory
 crontab -l > ~/quant_crontab_$(date +%Y%m%d).txt
 
-# 4. 위 3개 파일(dump, secrets.tar.gz, crontab.txt)을 새 VM 으로 복사(scp 등)
+# 4. 체크섬 (전송 후 대조용)
+cd ~ && sha256sum quantdb_backup_$(date +%Y%m%d).dump quant_secrets_$(date +%Y%m%d).tar.gz \
+  quant_crontab_$(date +%Y%m%d).txt > quant_backup_$(date +%Y%m%d).sha256
+
+# 5. 덤프가 읽히는지 최소 확인 (TOC 나열 — rc=0 이어야 한다)
+docker exec -i quant-postgres pg_restore -l < ~/quantdb_backup_$(date +%Y%m%d).dump | head
+
+# 6. 위 파일들을 새 VM 으로 복사(scp 등)
 ```
+
+**🟢 복원 검증은 실제로 해봐야 안다 (2026-09-04 실시).** 격리 DB(`quantdb_restoretest`)에
+위 §복구 3번 절차로 복원 → `pg_restore` rc=0·오류 0건, public 스키마 **54개 테이블 행수 전량 일치
+(총 5,465,680행)**, 하이퍼테이블 18개 복원, `swing_config` 의 §22.AO-26 7키 값 일치 확인 후 테스트 DB 삭제.
+운영 `quantdb` 무영향. *같은 인스턴스에 임시 DB 로 복원해보면 운영을 건드리지 않고 백업을 검증할 수 있다.*
 
 ### 복구 (새 VM에서)
 ```bash
@@ -3531,9 +3543,15 @@ mkdir -p /home/quant/.claude/projects/-home-quant-quant-v31
 cp -r /tmp/restore/memory /home/quant/.claude/projects/-home-quant-quant-v31/
 
 # 3. DB 복원 (컨테이너 먼저 기동: docker-compose up -d postgres)
-docker exec -i quant-postgres psql -U quant -c "DROP DATABASE IF EXISTS quantdb;"
-docker exec -i quant-postgres psql -U quant -c "CREATE DATABASE quantdb;"
-cat ~/quantdb_backup_YYYYMMDD.dump | docker exec -i quant-postgres pg_restore -U quant -d quantdb
+# ⚠️ TimescaleDB 는 그냥 pg_restore 하면 안 된다. pg_dump 가 hypertable/chunk/continuous_agg 의
+#    순환 FK 를 경고하는데, pre/post_restore 로 감싸지 않으면 복원이 깨질 수 있다.
+#    아래는 2026-09-04 에 격리 DB 로 실제 복원해 검증한 절차(오류 0건, 54테이블 전량 일치).
+docker exec -i quant-postgres psql -U quant -d postgres -c "DROP DATABASE IF EXISTS quantdb;"
+docker exec -i quant-postgres psql -U quant -d postgres -c "CREATE DATABASE quantdb;"
+docker exec -i quant-postgres psql -U quant -d quantdb -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+docker exec -i quant-postgres psql -U quant -d quantdb -tAc "SELECT timescaledb_pre_restore();"
+cat ~/quantdb_backup_YYYYMMDD.dump | docker exec -i quant-postgres pg_restore -U quant -d quantdb --no-owner
+docker exec -i quant-postgres psql -U quant -d quantdb -tAc "SELECT timescaledb_post_restore();"
 
 # 4. cron 복원
 crontab ~/quant_crontab_YYYYMMDD.txt
@@ -3554,3 +3572,6 @@ docker exec quant-postgres psql -U quant -d quantdb -c "SELECT COUNT(*) FROM swi
 - config 개수·값 확인(위 §스냅샷 표와 대조), 오픈 포지션 수 일치, cron 2줄, V3.1(8000) down.
 - Claude 새 세션: 이 파일 + `memory/MEMORY.md` 읽으면 맥락 복원. `[[bear-market-defense-research]]` 에 다음 할 일.
 - ⚠️ **경로 의존**: 스크립트/cron/systemd 가 `/home/quant/quant-v31` 하드코딩 → 새 VM 도 동일 경로 권장.
+- ⚠️ **메모리는 git 밖 자산이라 실제로 소실된 전례가 있다**(2026-09-04, §22.AO-28). Claude Code 를
+  재설치하면 `~/.claude/projects/-home-quant-quant-v31/memory/` 가 통째로 비워진다.
+  코드·DB 는 무사해도 이건 안 돌아온다 — **작업 후 secrets tar 를 다시 뜨는 것이 유일한 방어**.
