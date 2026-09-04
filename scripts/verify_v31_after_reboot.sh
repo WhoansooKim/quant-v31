@@ -28,20 +28,33 @@ CLOCK_OK=$(curl -sI -m 10 https://www.google.com 2>/dev/null | grep -qi '^date:'
 JOBS=$(curl -s -m 15 http://localhost:8001/health 2>/dev/null \
        | python3 -c 'import sys,json;print(json.load(sys.stdin).get("scheduler_jobs","?"))' 2>/dev/null || echo "?")
 # DB 팩터 가중치 (하네스 3I 가 쓰는 진실. 비어 있으면 하드코딩 폴백으로 조용히 되돌아간다)
-WEIGHTS=$(docker exec quant-postgres psql -U quant -d quantdb -tAc \
-          "SELECT COUNT(*) FROM swing_factor_weights" 2>/dev/null || echo "?")
+# 2026-09-04: 행수 하드코딩(28)은 팩터를 신설할 때마다 오탐이 된다 — §22.AO-26 momentum 신설 +
+#   pead 편입으로 28→32 가 되자 정상인데 FAIL 이 떴다. 실제 위험은 '행 유실 → 폴백'이므로
+#   ①그리드 완전성(레짐×팩터 = 전체 행수) ②최소 행수(28) 로 본다. 팩터가 늘어도 오탐 없음.
+WEIGHTS_RAW=$(docker exec quant-postgres psql -U quant -d quantdb -tAc \
+          "SELECT COUNT(*) || ' ' || (COUNT(DISTINCT regime)*COUNT(DISTINCT factor)) FROM swing_factor_weights" 2>/dev/null || echo "? ?")
+WEIGHTS=$(echo "$WEIGHTS_RAW" | awk '{print $1}')
+WEIGHTS_GRID=$(echo "$WEIGHTS_RAW" | awk '{print $2}')
+WEIGHTS_MIN=28
 # 토요일 사이클 등록 여부
 SATJOBS=$(curl -s -m 15 http://localhost:8001/scheduler 2>/dev/null \
           | python3 -c "import sys,json;d=json.load(sys.stdin);js=d.get('jobs',d);print(sum(1 for j in js if str(j.get('id')) in ('factor_ic','self_check','formula_lab','pead_collect','weekly_research')))" 2>/dev/null || echo "?")
 
-# 판정: V3.1 미가동 + V4 정상 + 잡 29 + 가중치 28 + 시계 정상 이면 PASS
+# 판정: V3.1 미가동 + V4 정상 + 잡 29 + 가중치 그리드 완전 + 시계 정상 이면 PASS
 PROBLEMS=""
 [ "$V31_ENG_A" = "inactive" ] && [ "$V31_SCH_A" = "inactive" ] && [ "$P8000" = "DOWN" ] \
   || PROBLEMS="$PROBLEMS V3.1재가동"
 [ "$V4_A" = "active" ] && [ "$P8001" = "UP" ] || PROBLEMS="$PROBLEMS V4다운"
 [ "$JOBS" = "29" ] || PROBLEMS="$PROBLEMS 잡수=$JOBS(기대29)"
 [ "$SATJOBS" = "5" ] || PROBLEMS="$PROBLEMS 토요일사이클=$SATJOBS(기대5)"
-[ "$WEIGHTS" = "28" ] || PROBLEMS="$PROBLEMS 팩터가중치=$WEIGHTS(기대28)"
+case "$WEIGHTS" in
+  ""|*[!0-9]*) PROBLEMS="$PROBLEMS 팩터가중치조회실패=$WEIGHTS" ;;
+  *) if [ "$WEIGHTS" != "$WEIGHTS_GRID" ]; then
+       PROBLEMS="$PROBLEMS 팩터가중치결손=$WEIGHTS(그리드$WEIGHTS_GRID)"
+     elif [ "$WEIGHTS" -lt "$WEIGHTS_MIN" ]; then
+       PROBLEMS="$PROBLEMS 팩터가중치부족=$WEIGHTS(최소$WEIGHTS_MIN)"
+     fi ;;
+esac
 [ "$CLOCK_OK" = "OK" ] || PROBLEMS="$PROBLEMS 시계/네트워크이상"
 if [ -z "$PROBLEMS" ]; then
   VERDICT="✅ PASS — 재부팅 후 전 항목 정상"
@@ -55,7 +68,7 @@ REPORT="[$NOW] $VERDICT ($UPTIME)
   V4   quant-engine-v4 : active=$V4_A enabled=$V4_E (port8001=$P8001)
   Dashboard            : active=$DASH_A enabled=$DASH_E (port5000=$P5000)
   스케줄러 잡          : $JOBS (기대 29) / 토요일 사이클 $SATJOBS (기대 5)
-  팩터 가중치(DB)      : $WEIGHTS 행 (기대 28) — 비면 하드코딩 폴백
+  팩터 가중치(DB)      : $WEIGHTS 행 / 그리드 $WEIGHTS_GRID (최소 $WEIGHTS_MIN) — 결손이면 하드코딩 폴백
   시계/외부망          : $CLOCK_OK"
 
 echo "$REPORT" >> "$LOG"
@@ -72,7 +85,7 @@ V3.1: engine=$V31_ENG_A/$V31_ENG_E · scheduler=$V31_SCH_A/$V31_SCH_E
 포트8000=$P8000 · gRPC50051=$P50051
 V4(8001)=$V4_A · Dashboard(5000)=$DASH_A
 스케줄러 잡=$JOBS/29 · 토요일사이클=$SATJOBS/5
-팩터가중치(DB)=$WEIGHTS/28 · 시계=$CLOCK_OK"
+팩터가중치(DB)=$WEIGHTS/$WEIGHTS_GRID · 시계=$CLOCK_OK"
   curl -s -m 15 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     -d chat_id="${CHAT}" -d parse_mode=HTML --data-urlencode text="${MSG}" >/dev/null 2>&1
 fi

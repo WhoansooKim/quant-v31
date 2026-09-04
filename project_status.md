@@ -3200,6 +3200,90 @@ baseline 5.09% 수준). *게이트를 새로 만들면 기존 통과분에도 �
 
 ---
 
+### 22.AO-26 수익률 진단 3대 원인 교정 + 1주 관찰 체계 (2026-08-27 적용, 판정 2026-09-10)
+
+**진단 근거 (5.6개월 실측)**: 누적 −4.62% vs SPY +13.55% (초과수익 **−18.2pp**), MDD −15.03%,
+청산 88건 승률 50.0%, 실현 −$34.93. 원인을 셋으로 특정했다.
+
+| # | 원인 | 근거 | 조치 |
+|---|---|---|---|
+| **A** | **출구 지평 불일치** | 반사실 65건 — 20일만 보유했다면 평균 +0.56%→**+4.47%**, 달러로 −$38.18→**+$314.07**. 청산사유별 20일 갭: rsi2_overbought n=30 **+6.14pp**(최대 누수), atr_trailing n=7 +5.72pp, hard_stop n=11 +0.17pp(**옳게 자름, 유지**), trend_break n=4 +0.20pp. 팩터 IC 가 지평에 비례(composite 0.121@5d→0.192@20d). 신호는 20일짜리인데 평균보유 4.9일 | `rsi2_exit_min_hold_days`=8 신설 · `time_stop_days` 15→21 · `atr_hard_stop_multiplier` 1.5→2.0 |
+| **B** | **5% 등가중이 아니라 '주가가중'이었다** | 목표 $95인데 정수내림+강제1주로 PSX($243)=2.55배, VZ($50)=0.53배. 규모 5분위에서 최상위분위 −$56.07 vs 하위 2분위 +$55.80 → **등가중 +0.294% vs 달러가중 −0.332%** (지표와 계좌가 반대 부호) | `fractional_shares_enabled`=true 신설 · `allow_min_one_share`=false · `min_position_notional_usd`=5. 청산경로 `int(qty)` 절단 3곳 + 백테스트 러너 정합 |
+| **C** | **최고 IC 팩터가 가중 composite 에 없었다** | `return_20d_rank` 는 실측 IC 전 팩터 중 최고(+0.327@5d/+0.435@10d)인데 dual sort 필터로만 쓰여 **하네스가 튜닝할 수 없는 사각지대** | `momentum` 팩터 신설 + weight_tuner 등록. technical 내부 momentum_pts 중복계상 → 가중치 0.12 를 technical 에서 이관(합 1.0 유지) |
+
+**A-2 되돌림 (커밋 2a67d10)**: 사용자 지시로 `atr_hard_stop_multiplier` 2.0 → **1.5 원복**.
+근거는 A-2 가 A-1 보다 약했다는 것 — hard_stop 은 20일 반사실 갭이 +0.17pp(n=11)로 원래 옳게
+자르고 있었고, 스톱 계열을 합쳐야(n=18) 나오는 +3.10pp 는 대부분 stop_loss 라벨 7건에서 오는데
+둘은 사실 같은 스톱(entry−1.5×ATR)이라 **n 이 작은 쪽의 노이즈일 가능성이 높다**.
+확실한 A-1(rsi2 n=30, 갭 +6.14pp)만 남기고 관찰한다.
+
+**관찰 체계**: `scripts/ao26_weekly_review.sh` — 매주 목 09:05 KST (user crontab), Telegram + 결과파일.
+`VERDICT_DATE=2026-09-10` 으로 자동 분기 — 1주차(09-03)는 **중간점검**(지표 추이만), 2주차부터 판정.
+1주차를 판정하지 않는 이유: A-1 게이트가 8일이라 신규 진입분의 rsi2 청산 자격이 아직 안 생긴다.
+단 **B(사이징)만 예외로 1주차 판정** — 청산을 기다릴 필요 없이 진입 즉시 CV 로 드러난다.
+config 되돌림도 감시 — 하나라도 풀리면 "검증 무효" 경고.
+
+**1주차 중간점검 결과 (2026-09-03)**
+| 지표 | 적용 전 | 적용 후 | 판정 |
+|---|---|---|---|
+| B 진입금액 CV | 0.529 ($47.90~$248.79, n=30) | **0.005** ($80.27~$81.08, n=6) | ✅ **등가중 복원** |
+| A-1 rsi2 청산 | n=37, 보유 3.7d, +4.21% | **0건** | 게이트가 조기청산을 막는 중(긍정). 표본 대기 |
+| 평균 보유일 | 4.9d | **8.0d** (신호지평 20d) | 추이 양호 |
+| 등가중 vs 달러가중 | +0.294% vs −0.332% (괴리 0.626p) | −4.015% vs −3.015% (n=4, 괴리 1.000p) | 표본 부족, 판정 보류 |
+
+→ **2026-09-10 정식 판정**. rsi2 표본 10건 미만이면 3주차로 연장.
+
+---
+
+### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
+
+§22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
+
+| # | 장애 | 원인 | 영향 | 수정 |
+|---|---|---|---|---|
+| **1** | 🔴 **진입 승인 전량 실패** | `position_manager.execute_entry` 에 `if sizing["qty"] < 1:` 하드코딩 가드 잔존. `calculate_position_size`/`concentration_capped_qty` 는 고쳤지만 호출부를 놓쳤다 | 8/27 이후 진입 시그널 2건(316/317 WFC) 전부 rejected. **목표 포지션($80)보다 비싼 종목은 사실상 전부 진입 불가** | 거부 판정은 `calculate_position_size` 가 이미 내리므로(qty=0) 가드를 `<= 0` 으로. 로그도 entry_price 대신 qty/amount 출력. 리플레이 백테스트·헤지 진입도 정합 |
+| **2** | 워치리스트 분석 전종목 실패 | `_get_col` 이 컬럼마다 따로 `dropna()` → 배열 길이 어긋남(AAPL 501 vs 500) → `_mfi` broadcast 에러 | 7종목 전부 실패, analyze() 가 0건 반환 | 행 단위 정렬 추출 `_get_ohlcv` 신설. 0/7 → **7/7** |
+| **3** | 알림 저장 실패 | 결과 dict 의 `np.bool_`/`np.float64` 로 jsonb 저장 실패. **np.bool_ 은 파이썬 bool 의 서브클래스가 아니다** | 8/29~ 알림 미저장 | 반환 지점에서 `_to_py()` 일괄 정규화(소비처마다 막지 않는다). NaN/Inf → None |
+| **4** | 🔴 **가장 강한 매수 신호가 조용히 버려지고 있었다** | `swing_watchlist_alerts.direction` 이 구 전략 기준 BUY/SELL/HOLD 3값만 허용. tqm_5layer 는 STRONG_BUY/BUY/NEUTRAL/SELL/STRONG_SELL 5값 산출 → **TQM 배포 이후 STRONG_*/NEUTRAL 전량 폐기**(저장 분포 SELL 152/BUY 43/HOLD 35 가 증거). insert 예외가 try 에 잡혀 signal_log upsert 까지 함께 건너뜀 | STRONG_BUY 미기록 | `migrate_tqm_direction.sql`. 함정: `VARCHAR(10)` 인데 'STRONG_SELL' 은 11자 → 제약만 넓히면 길이에서 재실패, 컬럼도 **VARCHAR(16)** 확장. signal_log 5/7 → 7/7 |
+
+자가진단 6/6 PASS. 검증: `POST /signals/317/approve` → 200, position 103 qty=0.9262 amount=$80.29.
+
+---
+
+### 22.AO-28 VM 강제 재부팅 복구 점검 + 재부팅 검증 오탐 제거 (2026-09-04)
+
+**배경**: VM 스냅샷 이후 인스턴스 행(hang) → 강제 재부팅 → Claude Code 가 기동하지 않아 **수동 재설치**.
+재설치 여파로 `~/.claude/projects/-home-quant-quant-v31/memory/` 가 **전소**(MEMORY.md 및 전 메모리 소실).
+코드·DB·설정은 무사 — 손실은 '의사결정 맥락'에 한정.
+
+**복구 점검 결과 — 시스템은 정상**
+| 항목 | 상태 |
+|---|---|
+| Docker | quant-postgres / quant-redis healthy |
+| systemd | engine-v4(8001) · dashboard(5000) active·enabled, 09-04 10:54 KST 기동 |
+| /health | db·redis·telegram true, ai_mode=ollama, **scheduler_jobs 29** |
+| 3K 자가진단 | **6/6 PASS** (critical 3건 포함) |
+| 엔진 로그 | 재부팅 이후 에러/예외 0건 |
+| V3.1 레거시 | 8000·50051 DOWN (의도대로) |
+| §22.AO-26 config 7키 | 전부 유지 — 되돌림 없음 |
+| AO-27 수정 실전 확인 | 진입 103~111 전부 $80.27~$81.08 (소수주식 등가중 작동) |
+
+**🔴 재부팅 검증이 오탐으로 FAIL 하고 있었다** (`scripts/verify_v31_after_reboot.sh`)
+팩터 가중치 행수를 **28 로 하드코딩**했는데, §22.AO-26 에서 `momentum` 팩터를 신설하고 `pead` 가
+편입되면서 4레짐 × 8팩터 = **32 가 정상**이 됐다. 09-04 재부팅 검증 2회가 전부 이 이유로 FAIL.
+*게이트를 만들 때 '현재 값'을 상수로 박으면, 정상적인 확장이 곧 오탐이 된다 — 양치기 소년이 되면
+다음 진짜 장애를 놓친다.* (§22.AO-25 의 "게이트는 소급 적용" 과 짝을 이루는 교훈)
+
+수정: 행수 상수 대신 **①그리드 완전성**(`COUNT(*)` == `레짐수 × 팩터수` → 행 유실 탐지)
+**②최소 행수 28**(테이블 전멸 → 하드코딩 폴백 탐지) 로 판정. 팩터가 늘어도 오탐 없음.
+검증: 6개 시나리오(32/32·28/28·40/40 PASS, 30/32 결손·0/0 부족·?/? 조회실패 FAIL) + 실행 시 ✅ PASS 복귀.
+
+**현재 운영 상태 (2026-09-04)**
+오픈 **11** / 청산 **94**, 총자산 **$1,907.42**, 누적 **−4.63%**, MDD −15.03% (paper).
+시그널 330 BAC 는 pending — composite 49.8 로 문턱 61 미달(정상 동작).
+
+---
+
 ## 23. Git History
 
 ```
@@ -3303,13 +3387,23 @@ ebff79e docs: update git history hash in project_status.md
 
 1. **Read this file**: `project_status.md` (전체 시스템 현황)
 2. **Read CLAUDE.md**: 코딩 규칙 (psycopg3, TimescaleDB, Npgsql Raw SQL)
-3. **Current state (2026-08-20)**: V4 운영 중, 오픈 10 / 청산 82 (paper). 자본 $2,000,
-   총자산 $1,917.27, 누적 −4.14%. **유료 API 미사용 — Ollama 무료 경로 확정**(§22.AO-25).
+3. **Current state (2026-09-04)**: V4 운영 중, 오픈 **11** / 청산 **94** (paper). 자본 $2,000,
+   총자산 **$1,907.42**, 누적 **−4.63%**, MDD −15.03%. **유료 API 미사용 — Ollama 무료 경로 확정**(§22.AO-25).
+   - 🔬 **§22.AO-26 관찰 중 — 정식 판정 2026-09-10(목) 09:05 KST**. `scripts/ao26_weekly_review.sh`
+     (목 cron) 가 Telegram + `scripts/ao26_review_result.txt` 로 보고. **config 7키를 임의로 되돌리지 말 것**
+     (`rsi2_exit_min_hold_days`=8 · `time_stop_days`=21 · `fractional_shares_enabled`=true ·
+     `allow_min_one_share`=false · `min_position_notional_usd`=5 · `atr_hard_stop_multiplier`=1.5 ·
+     `momentum_factor_active`=true) — 하나라도 풀리면 검증이 무효가 되고 스크립트가 경고를 낸다.
+     1주차(09-03): B 사이징 ✅ 등가중 복원(CV 0.529→0.005), A-1 은 8일 게이트로 표본 0건 → 대기.
    - **현 설정 백테스트 CAGR: 4.6년 +21.84% / 최근1년 +21.51% / 2022 약세장 +0.78%** (§22.AO-20)
-   - 라이브 누적 −5.26% 는 **대부분 폐기된 집중 정책(3~7월)의 성적** — 정책 정합은 2026-08 부터(§22.AO-9)
+   - 라이브 누적 −4.63% 는 **대부분 폐기된 집중 정책(3~7월)의 성적** — 정책 정합은 2026-08 부터(§22.AO-9)
    - 적용 중: ②교집합 게이트 · 팩터가중치 IC 교정 · ①LLM모멘텀 · ③PEAD (§22.AO-12/18)
+     + §22.AO-26 A/B/C (출구지평 · 소수주식 등가중 · momentum 팩터)
+   - 팩터 가중치 **32행 = 4레짐 × 8팩터**(momentum/pead 편입 후). 28 은 낡은 값 — §22.AO-28 참조
    - **V3.1 비활성화 완료**(2026-06-25). 재부팅 후 자동점검: `scripts/v31_reboot_check.log`
    - Live 전환은 미정 — paper 검증 우선(메모리 [[project-strategy-18pct]])
+   - ⚠️ **2026-09-04 VM 강제 재부팅 + Claude 재설치로 메모리 디렉터리가 전소**했다(§22.AO-28).
+     복원본은 이 파일과 git 이력에서 재구성한 것 — 그 이전의 미기록 맥락은 남아 있지 않다.
 4. **Dashboard**: 12 pages + Login/Register + Collapsible Sidebar + Live Ticker Bar + RBAC
 5. **Engine**: port 8001 (NOT 8000), **25 scheduler jobs**, SSE stream
 6. **Key service**: `SwingService.cs` (NOT PostgresService.cs)
@@ -3318,6 +3412,12 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **회귀는 '고친 함수'가 아니라 '호출부'에서 난다**(2026-08-31 교훈, §22.AO-27).
+  소수 주식으로 사이징을 고쳤는데 `execute_entry` 의 `qty < 1` 가드가 남아 **진입이 4일간 전량 거부**됐다.
+  계약(정수 → 소수)을 바꾸면 **그 값을 소비하는 모든 지점**을 grep 할 것.
+- 🔴 **게이트에 '현재 값'을 상수로 박지 말 것**(2026-09-04 교훈, §22.AO-28).
+  재부팅 검증이 팩터 가중치 28 행을 하드코딩해, 팩터를 정상적으로 늘리자 FAIL 을 뱉었다.
+  불변식(그리드 완전성·하한)으로 검사해야 확장에 오탐이 없다. §22.AO-25 의 "새 게이트는 소급 적용"과 짝.
 - 🔴 **백테스트 결론을 믿기 전에 러너 건전성부터 확인**(2026-08-18 교훈, §22.AO-3).
   회계 항등식 **실현손익 + 미청산평가손익 = 자본증감** 이 맞는지 검산할 것.
   유령손실 버그로 §22.AJ/AL 의 Tier1 판단이 두 번 뒤집혔다.
