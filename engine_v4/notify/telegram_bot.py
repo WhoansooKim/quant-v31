@@ -372,7 +372,7 @@ class TelegramBot:
             ).fetchone()
             recent_sig = conn.execute(
                 """
-                SELECT composite_score, tech_score, sentiment_score, quality_score,
+                SELECT composite_score, technical_score, sentiment_score, quality_score,
                        value_score, macro_score, status, time
                 FROM swing_signals WHERE symbol=%s ORDER BY time DESC LIMIT 1
                 """,
@@ -427,7 +427,7 @@ class TelegramBot:
             sig_t = s["time"].astimezone(KST).strftime("%m/%d %H:%M")
             lines.append(f"\n<b>최근 시그널 팩터</b> ({sig_t})")
             lines.append(f"Composite: {float(s.get('composite_score') or 0):.1f}")
-            lines.append(f"Tech {float(s.get('tech_score') or 0):.0f} · "
+            lines.append(f"Tech {float(s.get('technical_score') or 0):.0f} · "
                          f"Sent {float(s.get('sentiment_score') or 0):.0f} · "
                          f"Qual {float(s.get('quality_score') or 0):.0f} · "
                          f"Val {float(s.get('value_score') or 0):.0f} · "

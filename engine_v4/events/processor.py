@@ -42,15 +42,38 @@ class EventProcessor:
         }
 
     def process_batch(self, events: list[Event]) -> list[dict]:
-        """이벤트 배치 처리."""
-        results = []
+        """이벤트 배치 처리. 최근에 본 것과 같은 이벤트는 건너뛴다.
+
+        2026-09-14 (§22.AO-29): 이벤트 스캔을 스케줄 잡으로 돌리기 시작하면서 필요해졌다.
+        수동 실행일 때는 드러나지 않았지만, EDGAR 는 매 실행마다 같은 RSS 창을 읽으므로
+        **돌릴 때마다 같은 공시가 재삽입**된다(실측: 2회 실행에 C 종목 6건 → 12건).
+        여기서 걸러내면 DB 중복·텔레그램 재알림·SSE 재방송이 한꺼번에 막힌다 —
+        `results` 에 넣지 않는 것만으로 세 경로가 모두 정리된다.
+        """
+        window = int(self.pg.get_config_value("event_dedup_days", "7"))
+        results, skipped = [], 0
         for event in events:
             try:
-                result = self.process(event)
-                results.append(result)
+                if window > 0 and self._recent_duplicate_id(event, window) is not None:
+                    skipped += 1
+                    continue
+                results.append(self.process(event))
             except Exception as e:
                 logger.error(f"Event processing failed: {e}")
+        if skipped:
+            logger.info(f"Event dedup: {skipped} duplicates skipped (window {window}d)")
         return results
+
+    def _recent_duplicate_id(self, event: Event, within_days: int) -> int | None:
+        """같은 (유형·종목·제목) 이벤트가 최근 within_days 안에 있으면 그 event_id."""
+        with self.pg.get_conn() as conn:
+            row = conn.execute("""
+                SELECT event_id FROM swing_events
+                WHERE event_type = %s AND symbol = %s AND title = %s
+                  AND created_at > now() - make_interval(days => %s)
+                ORDER BY event_id DESC LIMIT 1
+            """, (event.event_type, event.symbol, event.title, within_days)).fetchone()
+        return row["event_id"] if row else None
 
     def _decide_action(self, event: Event) -> str | None:
         """규칙 기반 액션 결정."""

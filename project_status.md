@@ -3386,12 +3386,39 @@ pending 에 갇혀 있었다. 게다가 jobs.py 가 예외를 잡아 APScheduler
 - 3K 자가진단이 PASS 라는 것은 '계측 버그가 없다'는 뜻이었지 '데이터가 있다'는 뜻이 아니었다 —
   그래서 `data_freshness` 를 넣었다(매크로·가격·소셜·PEAD·시그널 팩터 입력 7항목).
 
-**■ 점검 중 확인된 것 — 결손이 아니라 '원래 안 도는' 것들 (조치 없음, 기록만)**
-| 대상 | 상태 | 판단 |
+**■ 점검 중 확인된 것 — 3건 중 2건 조치, 1건 기록만**
+| 대상 | 상태 | 조치 |
 |---|---|---|
-| `swing_events` (뉴스/EDGAR) | 2026-07-20 이후 신규 0건 | **스케줄 잡이 없다**(29잡에 이벤트 수집 없음). 수동 `/events/scan` · `/events/edgar-scan` 전용이라 결손 판정 대상에서 제외. *자동 수집을 의도했다면 잡 등록이 필요하다* |
-| `sentiment_scores` | 2026-06-24 이후 정체, 20종목 | **V3.1 레거시** — `grep` 결과 engine_v4 어디에서도 참조하지 않는다. V4 뉴스감성은 `swing_signals.sentiment_score` 에 저장된다(최근 30건 30/30 정상) |
-| `swing_signals.tech_score` | 213건 내내 0 | 사장된 컬럼(현역은 `technical_score`). 다만 `notify/telegram_bot.py:430` 이 아직 이걸 읽어 **텔레그램 요약의 Tech 가 항상 0** 으로 표시된다 — 별건 |
+| `swing_events` (뉴스/EDGAR) | 2026-07-20 이후 신규 0건 | ✅ **스케줄 잡 3종 등록** — 아래 §4 |
+| `swing_signals.tech_score` | 213건 내내 0 (사장된 컬럼, 현역은 `technical_score`) | ✅ `notify/telegram_bot.py` 가 이걸 읽어 **텔레그램 요약의 Tech 가 항상 0** 이었다 → `technical_score` 로 교정 |
+| `sentiment_scores` | 2026-06-24 정체, 20종목 | 기록만 — **V3.1 레거시**로 engine_v4 어디서도 참조하지 않는다. V4 뉴스감성은 `swing_signals.sentiment_score` 에 있고 최근 30건 30/30 정상 |
+
+**■ 4. 이벤트 수집 잡 등록 (29잡 → 32잡) + 중복 제거**
+
+`/events/scan`(Finnhub 뉴스·급등락·내부자)과 `/events/edgar-scan`(SEC 공시)은 **구현은 멀쩡한데
+스케줄 잡이 없어 수동 전용**이었다. 그래서 `swing_events` 가 2026-07-20 이후 비어 있었다.
+실측으로 확인: 수동 실행 시 이벤트 47건 탐지(뉴스 37 info / 내부자 6 warning / 급등락 3 warning),
+EDGAR 9건 — **돌기만 하면 잡히는데 안 돌고 있었다.**
+
+| 잡 | 주기 | 의미 |
+|---|---|---|
+| `events_scan_open` | 월~금 23:00 KST | 개장 30분 후 |
+| `events_scan_close` | 화~토 04:00 KST | 마감 1시간 전 |
+| `edgar_scan` | 화~토 06:30 KST | 마감 후 공시 확정 |
+
+🔴 **등록 전에 잡은 결함 — 돌릴 때마다 같은 이벤트가 재삽입된다.**
+EDGAR 는 매 실행마다 같은 RSS 창을 읽는데 `_save_event` 가 조건 없는 INSERT 였다.
+2회 실행에 C 종목이 6건 → **12건**이 됐다. 수동 실행일 때는 드러나지 않던 것이,
+일간 잡으로 돌리는 순간 DB 중복 + 텔레그램 재알림 + SSE 재방송으로 번진다.
+→ `process_batch` 에서 `(유형·종목·제목)` 이 최근 `event_dedup_days`(기본 7일) 안에 있으면 건너뛴다.
+**`results` 에 넣지 않는 것만으로 세 경로(DB·알림·SSE)가 한꺼번에 정리된다.**
+검증: 같은 EDGAR 재실행 → `found=9 processed=0`, 이벤트 수 256→256, 알림 0, 중복 그룹 0.
+신규 통과 확인 — 신규 1건 통과 / 동일 재실행 0건 / (중복1+신규1) → 신규만 1건.
+
+⚠️ **잡이 늘자 재부팅 검증이 또 걸렸다** — `verify_v31_after_reboot.sh` 가 잡 수 `29` 를 박아둬서
+정상인데 FAIL 이 되는 구조였다(§22.AO-28 의 팩터 가중치 28 과 **똑같은 함정을 두 번째로 밟았다**).
+잡 수는 불변식으로 유도할 수 없으므로 기대치를 DB(`swing_config.expected_scheduler_jobs`)로 옮겼다 —
+잡을 추가·삭제하면 같은 커밋에서 이 값을 고친다. 검증 실행: ✅ PASS (잡 32/32).
 
 ---
 

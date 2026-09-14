@@ -327,6 +327,34 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        # 20) 이벤트 스캔 — 보유 종목 뉴스/급등락/내부자 (§22.AO-29)
+        #     /events/scan 은 구현돼 있었는데 **스케줄 잡이 없어 수동 전용**이었다.
+        #     그래서 swing_events 가 2026-07-20 이후 신규 0건이었다(자가진단은 내내 PASS).
+        #     개장 30분 후 + 마감 1시간 전, 하루 2회.
+        self.scheduler.add_job(
+            self._job_events_scan,
+            CronTrigger(day_of_week="mon-fri", hour=23, minute=0, timezone=KST),
+            id="events_scan_open",
+            name="Event Scan — US session open side",
+            replace_existing=True,
+        )
+        self.scheduler.add_job(
+            self._job_events_scan,
+            CronTrigger(day_of_week="tue-sat", hour=4, minute=0, timezone=KST),
+            id="events_scan_close",
+            name="Event Scan — US session close side",
+            replace_existing=True,
+        )
+
+        # 21) 마감 후 06:30 KST — SEC EDGAR 공시 스캔 (보유 종목)
+        self.scheduler.add_job(
+            self._job_edgar_scan,
+            CronTrigger(day_of_week="tue-sat", hour=6, minute=30, timezone=KST),
+            id="edgar_scan",
+            name="SEC EDGAR Filing Scan",
+            replace_existing=True,
+        )
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()
@@ -1327,6 +1355,54 @@ class SwingScheduler:
                 logger.warning(f"Social collect trigger failed: HTTP {resp.status_code}")
         except Exception as e:
             logger.error(f"Social collect job failed: {e}", exc_info=True)
+
+    def _job_events_scan(self):
+        """보유 종목 이벤트 스캔 (Finnhub 뉴스 + 급등락 + 내부자 거래).
+
+        social_collect 과 같은 방식으로 로컬 API 를 호출한다 — 엔드포인트가 텔레그램 알림과
+        SSE 브로드캐스트까지 묶어 처리하므로, 로직을 복제하지 않는다.
+        info 등급(뉴스)은 알림 대상이 아니고 warning/critical 만 발송된다.
+        """
+        import requests
+        try:
+            if self.pg.get_config_value("events_scan_enabled", "true") != "true":
+                logger.info("Events scan skipped: disabled in config")
+                return
+            resp = requests.post("http://localhost:8001/events/scan", timeout=180)
+            if resp.status_code == 200:
+                d = resp.json()
+                logger.info(f"Events scan: found={d.get('events_found')} processed={d.get('processed')}")
+                self.pg.insert_pipeline_log("events_scan", "completed", 0,
+                                            {"found": d.get("events_found"),
+                                             "processed": d.get("processed")})
+            else:
+                logger.warning(f"Events scan failed: HTTP {resp.status_code}")
+                self.pg.insert_pipeline_log("events_scan", "failed", 0,
+                                            {"http": resp.status_code})
+        except Exception as e:
+            logger.error(f"Events scan job failed: {e}", exc_info=True)
+            self.pg.insert_pipeline_log("events_scan", "failed", 0, {"error": str(e)[:200]})
+
+    def _job_edgar_scan(self):
+        """SEC EDGAR RSS 공시 스캔 (보유 종목). 마감 후 1회."""
+        import requests
+        try:
+            if self.pg.get_config_value("edgar_scan_enabled", "true") != "true":
+                logger.info("EDGAR scan skipped: disabled in config")
+                return
+            resp = requests.post("http://localhost:8001/events/edgar-scan", timeout=180)
+            if resp.status_code == 200:
+                d = resp.json()
+                logger.info(f"EDGAR scan: found={d.get('events_found')} processed={d.get('processed')}")
+                self.pg.insert_pipeline_log("edgar_scan", "completed", 0,
+                                            {"found": d.get("events_found"),
+                                             "processed": d.get("processed")})
+            else:
+                logger.warning(f"EDGAR scan failed: HTTP {resp.status_code}")
+                self.pg.insert_pipeline_log("edgar_scan", "failed", 0, {"http": resp.status_code})
+        except Exception as e:
+            logger.error(f"EDGAR scan job failed: {e}", exc_info=True)
+            self.pg.insert_pipeline_log("edgar_scan", "failed", 0, {"error": str(e)[:200]})
 
     def _job_auto_approve(self, check_label: str = "scheduled"):
         """Strategy A/B — Auto-approve pending ENTRY signals.
