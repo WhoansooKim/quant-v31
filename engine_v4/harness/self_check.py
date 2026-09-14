@@ -11,8 +11,12 @@
 | 가중치 일치 | REGIME_WEIGHTS 하드코딩 (DB 변경이 무시됨) |
 | 팩터 분산 | Δ0.0 무력 키 (변이가 결과를 못 바꿈) |
 | 자산곡선 연속성 | 평가액 급변 |
+| **수집 결손** | **DXY 6개월 결손 (중립 기본값에 흡수돼 경보가 없었다, §22.AO-29)** |
 
 ⚠️ **한계**: 알려진 불변식만 검사한다. 새로운 종류의 버그는 여전히 사람이 발견해야 한다.
+
+※ `data_freshness` 만 성격이 다르다 — 나머지가 "계측이 틀렸는가"를 본다면 이것은
+"입력이 있는가"를 본다. 6/6 PASS 가 "데이터가 있다"는 뜻이 아니었기 때문에 추가했다(§22.AO-29).
 """
 
 from __future__ import annotations
@@ -195,6 +199,103 @@ def check_backtest_identity(pg) -> dict:
         return _record(pg, "backtest_identity", False, {"error": str(e)[:200]}, WARN)
 
 
+def check_data_freshness(pg) -> dict:
+    """수집 결손 감지 — 외부 입력이 조용히 사라졌는지 본다 (§22.AO-29).
+
+    다른 검사들은 전부 "계측이 틀렸는가"를 본다. 이것만 "입력이 있는가"를 본다.
+    DXY 가 142행(2026-03-20~09-13, 약 6개월) 동안 null 이었는데 어떤 검사도 잡지 못했다 —
+    `_score_dollar_trend` 가 값이 없으면 중립 50 을 돌려줘 **실패가 예외가 아니라 기본값으로
+    흡수**됐기 때문이다. 자가진단은 그동안 내내 6/6 PASS 였다.
+
+    검사 컬럼을 하드코딩하지 않고 information_schema 에서 발견한다 —
+    상수로 박으면 지표를 추가할 때마다 사각지대가 생긴다(§22.AO-28 과 같은 이유).
+    """
+    n = int(pg.get_config_value("self_check_freshness_rows", "10"))
+    max_stale = int(pg.get_config_value("self_check_macro_stale_days", "3"))
+    min_cover = float(pg.get_config_value("self_check_price_coverage_min", "0.90"))
+    max_bar_stale = int(pg.get_config_value("self_check_price_stale_days", "4"))
+
+    issues: list[str] = []
+    detail: dict[str, Any] = {}
+
+    with pg.get_conn() as conn:
+        cols = [r["column_name"] for r in conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'swing_macro_snapshots'
+              AND data_type IN ('double precision', 'numeric', 'real')
+            ORDER BY ordinal_position
+        """).fetchall()]
+
+        # ── 1. 매크로 신선도 ──
+        row = conn.execute(
+            "SELECT max(time) AS newest FROM swing_macro_snapshots").fetchone()
+        newest = row["newest"] if row else None
+        if newest is None:
+            issues.append("매크로 스냅샷 없음")
+            detail["macro_newest"] = None
+        else:
+            stale = (date.today() - newest.date()).days
+            detail["macro_newest"] = str(newest.date())
+            detail["macro_stale_days"] = stale
+            if stale > max_stale:
+                issues.append(f"매크로 수집 중단 {stale}일 (허용 {max_stale})")
+
+        # ── 2. 매크로 컬럼별 결손 (최근 n행 기준) ──
+        if cols:
+            sel = ", ".join(f'count("{c}") AS "{c}"' for c in cols)
+            r = conn.execute(
+                f"SELECT count(*) AS rows, {sel} FROM "
+                f"(SELECT * FROM swing_macro_snapshots ORDER BY time DESC LIMIT %s) t",
+                (n,)).fetchone()
+            rows = int(r["rows"] or 0)
+            gone, partial = [], []
+            for c in cols:
+                present = int(r[c] or 0)
+                if rows and present == 0:
+                    gone.append(c)                       # n행 전부 null — 지속 결손
+                elif rows and present <= rows / 2:
+                    partial.append(f"{c}({present}/{rows})")
+            detail["macro_rows_checked"] = rows
+            if gone:
+                detail["macro_missing"] = gone
+                issues.append(f"매크로 지표 {len(gone)}종이 최근 {rows}행 내내 결손: {', '.join(gone)}")
+            if partial:
+                detail["macro_partial"] = partial
+
+        # ── 3. 가격 커버리지 (유니버스 대비) ──
+        # daily_prices 에는 유니버스 밖 심볼(벤치마크·헤지용 SH 등)도 들어 있다.
+        # 전체 distinct 로 세면 비율이 1을 넘어 **결손이 있어도 절대 FAIL 하지 않는다** —
+        # 반드시 유니버스에 속한 심볼만 센다.
+        r = conn.execute("""
+            SELECT (SELECT count(*) FROM swing_universe WHERE is_active) AS universe,
+                   (SELECT count(*) FROM swing_universe u
+                     WHERE u.is_active
+                       AND EXISTS (SELECT 1 FROM daily_prices p
+                                    WHERE p.symbol = u.symbol
+                                      AND p.time > now() - interval '5 days')) AS covered,
+                   (SELECT max(time)::date FROM daily_prices) AS newest_bar
+        """).fetchone()
+        uni, cov = int(r["universe"] or 0), int(r["covered"] or 0)
+        detail["price_universe"] = uni
+        detail["price_covered_5d"] = cov
+        detail["price_newest_bar"] = str(r["newest_bar"]) if r["newest_bar"] else None
+        if uni:
+            ratio = cov / uni
+            detail["price_coverage"] = round(ratio, 3)
+            if ratio < min_cover:
+                issues.append(f"가격 커버리지 {ratio:.1%} (하한 {min_cover:.0%}, {cov}/{uni})")
+        # 최신 바 신선도 — 주말/공휴일을 감안해 넉넉히 잡는다(연휴 최대 4일)
+        if r["newest_bar"]:
+            bar_stale = (date.today() - r["newest_bar"]).days
+            detail["price_stale_days"] = bar_stale
+            if bar_stale > max_bar_stale:
+                issues.append(f"가격 수집 중단 {bar_stale}일 (최신 바 {r['newest_bar']}, 허용 {max_bar_stale})")
+
+    detail["issues"] = issues
+    detail["note"] = "부분 결손(macro_partial)은 경보하지 않는다 — 복구 직후 구간이 여기 잡힌다"
+    return _record(pg, "data_freshness", not issues, detail, CRITICAL)
+
+
 CHECKS = [
     check_snapshot_identity,
     check_metric_range,
@@ -202,6 +303,7 @@ CHECKS = [
     check_weight_consistency,
     check_factor_variance,
     check_backtest_identity,
+    check_data_freshness,
 ]
 
 
