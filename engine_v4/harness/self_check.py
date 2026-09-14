@@ -209,11 +209,20 @@ def check_data_freshness(pg) -> dict:
 
     검사 컬럼을 하드코딩하지 않고 information_schema 에서 발견한다 —
     상수로 박으면 지표를 추가할 때마다 사각지대가 생긴다(§22.AO-28 과 같은 이유).
+
+    검사 대상: ①매크로 신선도 ②매크로 컬럼 결손 ③가격 커버리지 ④가격 바 신선도
+    ⑤소셜 수집 ⑥PEAD 수집 ⑦시그널 팩터 입력 회귀(뉴스감성·PEAD·LLM 등).
+
+    ⚠️ 여전히 안 보는 것: `swing_events`(뉴스/EDGAR)는 **스케줄 잡이 없어** 수동 `/events/scan`
+    전용이므로 결손 판정 대상이 아니다. `sentiment_scores` 는 V3.1 레거시로 V4 가 쓰지 않는다.
     """
     n = int(pg.get_config_value("self_check_freshness_rows", "10"))
     max_stale = int(pg.get_config_value("self_check_macro_stale_days", "3"))
     min_cover = float(pg.get_config_value("self_check_price_coverage_min", "0.90"))
     max_bar_stale = int(pg.get_config_value("self_check_price_stale_days", "4"))
+    max_social_stale = int(pg.get_config_value("self_check_social_stale_days", "3"))
+    max_pead_stale = int(pg.get_config_value("self_check_pead_stale_days", "10"))
+    sig_win = int(pg.get_config_value("self_check_signal_window", "30"))
 
     issues: list[str] = []
     detail: dict[str, Any] = {}
@@ -291,8 +300,76 @@ def check_data_freshness(pg) -> dict:
             if bar_stale > max_bar_stale:
                 issues.append(f"가격 수집 중단 {bar_stale}일 (최신 바 {r['newest_bar']}, 허용 {max_bar_stale})")
 
+        # ── 4. 소셜 수집 (일간 06:50 KST) ──
+        r = conn.execute("""
+            SELECT max(time) AS newest,
+                   count(DISTINCT symbol) FILTER (WHERE time > now() - interval '2 days') AS syms
+            FROM swing_social_sentiment
+        """).fetchone()
+        detail["social_newest"] = str(r["newest"].date()) if r["newest"] else None
+        detail["social_symbols_2d"] = int(r["syms"] or 0)
+        if r["newest"] is None:
+            issues.append("소셜 수집 기록 없음")
+        else:
+            st = (date.today() - r["newest"].date()).days
+            detail["social_stale_days"] = st
+            if st > max_social_stale:
+                issues.append(f"소셜 수집 중단 {st}일 (허용 {max_social_stale})")
+
+        # ── 5. PEAD 수집 (주간 토 08:30 KST — 주기가 길어 허용치도 길다) ──
+        r = conn.execute("""
+            SELECT max(collected_at) AS newest,
+                   count(DISTINCT symbol) FILTER (WHERE collected_at > now() - interval '30 days') AS syms
+            FROM swing_earnings_surprises
+        """).fetchone()
+        detail["pead_newest"] = str(r["newest"].date()) if r["newest"] else None
+        detail["pead_symbols_30d"] = int(r["syms"] or 0)
+        if r["newest"] is None:
+            issues.append("PEAD 수집 기록 없음")
+        else:
+            st = (date.today() - r["newest"].date()).days
+            detail["pead_stale_days"] = st
+            if st > max_pead_stale:
+                issues.append(f"PEAD 수집 중단 {st}일 (허용 {max_pead_stale})")
+
+        # ── 6. 시그널 팩터 입력 회귀 (뉴스감성·PEAD·LLM 등) ──
+        # 결측 자체가 아니라 **'있다가 사라진' 것**만 잡는다.
+        #   - 사장된 컬럼(tech_score: 213건 내내 0)은 조용해야 하고,
+        #   - 새로 도입된 컬럼(pead_score: 14/60 → 30/30, 증가 중)도 경보 대상이 아니다.
+        # 그래서 최근 구간과 직전 구간의 채움률을 비교한다 — 하드코딩 제외 목록은 낡는다.
+        score_cols = [r["column_name"] for r in conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'swing_signals'
+              AND data_type IN ('double precision', 'numeric', 'real', 'integer', 'bigint')
+              AND (column_name LIKE '%%score%%' OR column_name LIKE '%%\\_rank')
+            ORDER BY ordinal_position
+        """).fetchall()]
+        if score_cols:
+            sel = ", ".join(f'count("{c}") AS "{c}"' for c in score_cols)
+            cur = conn.execute(
+                f"SELECT count(*) AS rows, {sel} FROM (SELECT * FROM swing_signals "
+                f"WHERE signal_type='ENTRY' ORDER BY signal_id DESC LIMIT %s) t",
+                (sig_win,)).fetchone()
+            prev = conn.execute(
+                f"SELECT count(*) AS rows, {sel} FROM (SELECT * FROM swing_signals "
+                f"WHERE signal_type='ENTRY' ORDER BY signal_id DESC OFFSET %s LIMIT %s) t",
+                (sig_win, sig_win * 2)).fetchone()
+            cr, pr = int(cur["rows"] or 0), int(prev["rows"] or 0)
+            detail["signal_rows"] = {"recent": cr, "prev": pr}
+            lost = []
+            if cr and pr:
+                for c in score_cols:
+                    c_rate = int(cur[c] or 0) / cr
+                    p_rate = int(prev[c] or 0) / pr
+                    if p_rate >= 0.5 and c_rate < 0.5:     # 채워지다가 끊긴 것만
+                        lost.append(f"{c}({p_rate:.0%}→{c_rate:.0%})")
+            if lost:
+                detail["signal_inputs_lost"] = lost
+                issues.append(f"시그널 팩터 입력 {len(lost)}종이 끊겼다: {', '.join(lost)}")
+
     detail["issues"] = issues
-    detail["note"] = "부분 결손(macro_partial)은 경보하지 않는다 — 복구 직후 구간이 여기 잡힌다"
+    detail["note"] = ("부분 결손(macro_partial)은 경보하지 않는다 — 복구 직후 구간이 여기 잡힌다. "
+                      "시그널 입력은 '있다가 사라진' 것만 본다 — 사장된 컬럼과 신규 도입분을 구분하기 위해서다.")
     return _record(pg, "data_freshness", not issues, detail, CRITICAL)
 
 
