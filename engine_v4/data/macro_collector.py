@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 MACRO_TICKERS = {
     "vix": "^VIX",
     "tnx": "^TNX",         # 10Y Treasury yield (×10 스케일)
-    "dxy": "DX=F",          # US Dollar Index Futures
+    "dxy": "DX-Y.NYB",     # ICE US Dollar Index (2026-09-14: DX=F 가 Yahoo 에서 상장폐지 취급되어 교체)
     "gold": "GC=F",        # Gold futures
     "copper": "HG=F",      # Copper futures
     "btc": "BTC-USD",      # Bitcoin

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 from typing import Any
 
@@ -94,8 +95,12 @@ def validate_formula(pg, formula_id: int, prices: pd.DataFrame | None = None,
     ic_tr, n_tr = _xs_ic(feat[feat["d"] < split], horizon)
     ic_te, n_te = _xs_ic(feat[feat["d"] >= split], horizon)
 
-    if ic_tr is None or ic_te is None:
-        _reject(pg, formula_id, f"표본 부족 (학습 {n_tr}일 / 검증 {n_te}일)")
+    # 2026-09-14: 표본이 있어도 전부 NaN 이면 np.nanmean 이 None 이 아니라 NaN 을 돌려준다
+    #   (신호가 상수라 상관계수 분모가 0인 경우). 그대로 두면 ic_lo=NaN → 비교가 전부 False 라
+    #   '기각'으로 흘러가지만, 이유 문자열과 로그에 NaN 이 섞여 jsonb 저장이 깨졌다(§22.AO-29).
+    #   의미상 '측정 불가'이므로 표본 부족과 같은 경로로 보낸다.
+    if ic_tr is None or ic_te is None or not (math.isfinite(ic_tr) and math.isfinite(ic_te)):
+        _reject(pg, formula_id, f"표본 부족 또는 IC 측정 불가 (학습 {n_tr}일 / 검증 {n_te}일)")
         return {"formula_id": formula_id, "status": "rejected", "reason": "insufficient"}
 
     ic_lo = min(ic_tr, ic_te)

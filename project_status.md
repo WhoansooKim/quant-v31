@@ -3284,6 +3284,70 @@ config 되돌림도 감시 — 하나라도 풀리면 "검증 무효" 경고.
 
 ---
 
+### 22.AO-29 조용한 실패 2건 — DXY 6개월 결손 · formula_lab NaN 중단 (2026-09-14)
+
+둘 다 **경보 없이 기능이 죽어 있던** 사례다. 자가진단(3K)은 계속 6/6 PASS 였다 —
+불변식 검사는 '계측이 틀렸는지'를 보지, '입력이 사라졌는지'는 보지 않는다.
+
+**■ 1. 🔴 DXY 가 6개월간 null — macro_score 의 15% 가 중립에 고정돼 있었다**
+
+`MACRO_TICKERS["dxy"] = "DX=F"` 가 Yahoo 에서 상장폐지 취급된다
+(`['DX=F']: possibly delisted; no price data found`). 실측 확인:
+
+| 티커 | 60일 조회 | 비고 |
+|---|---|---|
+| `DX=F` | **0행** | 현재 사용 중이던 것 |
+| `DX-Y.NYB` | 50행 (99.50) | ICE 달러인덱스 — **채택** |
+| `UUP` | 60행 | ETF 대안 |
+
+`_score_dollar_trend` 는 `dxy_momentum_20d` 가 None 이면 **하드코딩 `{"score": 50, "detail": "no data"}`**
+를 돌려준다. 즉 실패가 예외가 아니라 **중립값으로 흡수**됐다 — 로그도 경보도 없다.
+
+**결손 구간**: `swing_macro_snapshots` 실측 — dxy 유효값은 2026-03-16~03-20 **5일치뿐**이고
+그 뒤 **142행(2026-03-20 ~ 09-13)이 전부 null**. 약 6개월간 macro_score 가중치
+`dollar_trend 0.15` 가 입력 없이 중립으로 돌았다. 레짐 판정이 **85% 의 입력으로만** 내려졌다는 뜻이다.
+(`regime_switcher` 의 `if triggers.get("dxy")` 분기도 내내 죽어 있었으나, 그쪽은 텔레그램 알림 문구라 영향은 표시뿐.)
+
+교정: `"dxy": "DX-Y.NYB"`. 검증 — 수집기 직접 실행 시 **dxy=99.548, dxy_momentum_20d=-0.09**,
+9개 매크로 지표 전부 non-null. `/macro` 의 `dollar_trend` 가 `"no data"` → `"DXY 20d=-0.1%"` 로 복귀.
+
+**■ 2. 🔴 formula_lab 이 NaN 하나에 통째로 중단 — §22.AO-27 과 같은 계열의 재발**
+
+2026-09-12 토요일 3J 수식 검증이 실패했다:
+```
+psycopg.errors.InvalidTextRepresentation: invalid input syntax for type json
+DETAIL: Token "NaN" is invalid.    ... "status": "rejected", "ic_train": NaN
+formula_lab.py:121  log_action(pg, "formula_validate", "completed", details=result)
+```
+`_xs_ic` 는 `float(np.nanmean(ics))` 를 돌려주는데, 표본이 있어도 전부 NaN 이면
+(신호가 상수라 상관계수 분모가 0) **None 이 아니라 NaN** 이 나온다. `is None` 검사를 통과해
+`ic_lo=NaN` → 비교가 전부 False 라 '기각'으로 흘러가지만, 그 NaN 이 그대로 jsonb 저장에 실려 깨졌다.
+
+**영향**: `validate_all_pending` 이 리스트 컴프리헨션이라 첫 NaN 에서 죽는다 →
+**뒤따르는 수식이 통째로 미검증**. 실제로 수식 54 "Regimes in the Order Flow" 가 9/12 이후
+pending 에 갇혀 있었다. 게다가 jobs.py 가 예외를 잡아 APScheduler 에는
+`executed successfully` 로 찍혔다 — **로그만 보면 성공이다.**
+
+교정 2단:
+- `formula_lab`: 비유한 IC 를 '표본 부족'과 같은 경로로 기각(의미상 '측정 불가'가 맞다)
+- `knowledge.log_action`: **저장 직전 한 곳에서** `json_safe()` 로 정규화.
+  NaN/±Inf → None, numpy 스칼라·배열 → 파이썬 기본형, datetime/date → ISO, Decimal → float.
+  *§22.AO-27 에서 `watchlist_strategy` 에만 `_to_py` 를 넣었더니 새 호출부(formula_lab)가
+  똑같이 뚫렸다. 소비처마다 막으면 호출부가 늘 때마다 다시 뚫린다 — 초크포인트에서 막는다.*
+
+검증: json_safe 단위 15케이스 전원 통과(`json.dumps(allow_nan=False)` 기준) ·
+실제 장애 페이로드를 운영 DB 에 넣어 저장 성공 후 테스트 행 삭제 ·
+`validate-all` 재실행으로 수식 54 가 정상 판정(IC −0.0012/+0.0075, 기준 미달 기각)되어 pending 해소.
+
+**■ 교훈**
+- **실패를 중립값으로 흡수하는 코드가 가장 위험하다.** 예외를 던졌다면 6개월이 아니라 그날 알았다.
+  기본값 폴백에는 "몇 번 연속 폴백했는지"를 남기거나 경보를 붙여야 한다.
+- **외부 데이터 소스는 조용히 사라진다.** 티커 상장폐지·심볼 변경은 예고가 없다.
+  재부팅 검증(`verify_v31_after_reboot.sh`)이 서비스·잡·가중치는 보지만 **수집 결손은 안 본다.**
+- 3K 자가진단이 6/6 PASS 라는 것은 '계측 버그가 없다'는 뜻이지 '데이터가 있다'는 뜻이 아니다.
+
+---
+
 ## 23. Git History
 
 ```
@@ -3412,6 +3476,11 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **실패를 중립값으로 흡수하는 코드를 의심하라**(2026-09-14 교훈, §22.AO-29).
+  `_score_dollar_trend` 는 dxy 가 없으면 `{"score": 50, "detail": "no data"}` 를 돌려줬고,
+  그 덕에 **DXY 결손이 6개월(142행) 동안 경보 없이** 지나갔다 — macro_score 의 15% 가 내내 중립이었다.
+  3K 자가진단 6/6 PASS 는 '계측 버그가 없다'는 뜻이지 **'데이터가 있다'는 뜻이 아니다.**
+  외부 티커는 예고 없이 사라진다(`DX=F` → `DX-Y.NYB`).
 - 🔴 **회귀는 '고친 함수'가 아니라 '호출부'에서 난다**(2026-08-31 교훈, §22.AO-27).
   소수 주식으로 사이징을 고쳤는데 `execute_entry` 의 `qty < 1` 가드가 남아 **진입이 4일간 전량 거부**됐다.
   계약(정수 → 소수)을 바꾸면 **그 값을 소비하는 모든 지점**을 grep 할 것.

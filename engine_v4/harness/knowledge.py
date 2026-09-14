@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+import math
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from engine_v4.data.storage import PostgresStore
@@ -44,8 +46,8 @@ def add_knowledge(
             """,
             (
                 source_type, source_url, source_name, title, summary,
-                json.dumps(key_insights or []),
-                json.dumps(strategy_hypothesis or {}),
+                json.dumps(json_safe(key_insights or [])),
+                json.dumps(json_safe(strategy_hypothesis or {})),
                 applicability_score, regime_relevance,
                 tags or [], source_tier, published_at,
             ),
@@ -128,6 +130,52 @@ def mark_tested(pg: PostgresStore, knowledge_id: int, backtest_run_id: int) -> N
         conn.commit()
 
 
+def json_safe(obj: Any) -> Any:
+    """jsonb 로 넣기 전에 파이썬/numpy 값을 JSON 이 받는 형태로 재귀 정규화한다.
+
+    PostgreSQL 의 json/jsonb 는 NaN·Infinity 를 거부한다("Token \"NaN\" is invalid").
+    numpy 스칼라도 json.dumps 가 거부한다(np.bool_ 은 bool 의 서브클래스가 아니다).
+    둘 다 **저장 직전 한 곳**에서 막는다 — 호출부마다 막으면 새 호출부가 생길 때마다 뚫린다
+    (§22.AO-27 에서 watchlist 만 막았다가 §22.AO-29 에 formula_lab 이 같은 이유로 깨졌다).
+
+    비유한 수(NaN/±Inf)는 None 으로 낮춘다. 값을 잃지만, 하네스가 통째로 멈추는 것보다 낫다.
+    """
+    if isinstance(obj, dict):
+        return {str(k): json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, bool):          # bool 은 int 서브클래스라 먼저 걸러야 한다
+        return obj
+    if isinstance(obj, Decimal):
+        f = float(obj)
+        return f if math.isfinite(f) else None
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    # numpy 는 선택적 의존이므로 지연 임포트 (하네스 밖에서도 이 모듈을 쓴다)
+    np = _numpy()
+    if np is not None:
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            f = float(obj)
+            return f if math.isfinite(f) else None
+        if isinstance(obj, np.ndarray):
+            return json_safe(obj.tolist())
+    return obj
+
+
+def _numpy():
+    try:
+        import numpy as np
+        return np
+    except ImportError:
+        return None
+
+
 def log_action(
     pg: PostgresStore,
     action: str,
@@ -147,7 +195,7 @@ def log_action(
             VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s)
             """,
             (
-                action, status, json.dumps(details or {}),
+                action, status, json.dumps(json_safe(details or {})),
                 related_knowledge_id, related_variant_id, error_msg, elapsed_sec,
             ),
         )
