@@ -204,27 +204,38 @@ class DataCollector:
                     continue
 
                 rows = []
+                missing: list[str] = []
                 for sym in batch:
-                    try:
-                        # group_by='ticker' 는 단일배치도 MultiIndex 반환 → 항상 data[sym].
-                        # (단일 심볼 수집 시 df=data 로 하면 Close 접근 실패하던 잠복버그 수정)
-                        if isinstance(data.columns, pd.MultiIndex):
-                            df = data[sym]
-                        else:
-                            df = data
-                        df = df.dropna(subset=["Close"])
-                        for ts, row in df.iterrows():
-                            rows.append({
-                                "time": ts.to_pydatetime(),
-                                "symbol": sym,
-                                "open": float(row["Open"]),
-                                "high": float(row["High"]),
-                                "low": float(row["Low"]),
-                                "close": float(row["Close"]),
-                                "volume": int(row["Volume"]),
-                            })
-                    except Exception:
-                        pass
+                    # 🔴 2026-09-20 (§22.AO-30): 여기 있던 `except Exception: pass` 때문에
+                    #   배치 응답에서 빠진 종목이 **로그 한 줄 없이** 사라졌다. yfinance 는 50개
+                    #   일괄 요청 시 일부 티커를 누락해 돌려주는 일이 잦은데, 그게 전부 삼켜졌다.
+                    #   결과: 유니버스 200 중 22종목(11%)이 수개월간 미수집(SYY 6/23, CL 7/17 …).
+                    #   개별 조회하면 멀쩡히 나오므로 데이터 소스 문제가 아니라 이 삼킴이 원인이었다.
+                    #   → 실패/무행 종목을 모아 배치 뒤 개별 재시도하고, 그래도 없으면 경고로 남긴다.
+                    n_before = len(rows)
+                    rows.extend(self._extract_symbol_rows(data, sym))
+                    if len(rows) == n_before:
+                        missing.append(sym)
+
+                # 배치에서 누락된 종목은 개별 재시도 (일괄 요청의 부분 누락 보정)
+                if missing:
+                    logger.info(f"  Batch {i // batch_size + 1}: {len(missing)} 종목 누락 → 개별 재시도")
+                    still: list[str] = []
+                    for sym in missing:
+                        try:
+                            one = yf.download(sym, period=f"{days}d", group_by="ticker",
+                                              threads=False, progress=False)
+                            got = self._extract_symbol_rows(one, sym)
+                            if got:
+                                rows.extend(got)
+                            else:
+                                still.append(sym)
+                        except Exception as e:
+                            still.append(sym)
+                            logger.warning(f"  재시도 실패 {sym}: {type(e).__name__}: {str(e)[:80]}")
+                        time.sleep(0.3)
+                    if still:
+                        logger.warning(f"  🔴 수집 실패 {len(still)}종목: {', '.join(still[:20])}")
 
                 if rows:
                     self.pg.upsert_daily_prices(rows)
@@ -238,6 +249,40 @@ class DataCollector:
 
         logger.info(f"Collected {total} price rows total")
         return total
+
+    @staticmethod
+    def _extract_symbol_rows(data, sym: str) -> list[dict]:
+        """yfinance 응답에서 한 종목의 OHLCV 행을 뽑는다. 못 뽑으면 빈 리스트.
+
+        group_by='ticker' 는 단일배치도 MultiIndex 를 반환하므로 항상 data[sym] 로 접근한다
+        (단일 심볼 수집 시 df=data 로 하면 Close 접근이 실패하던 잠복버그).
+        예외를 삼키지 않고 **빈 결과로 돌려** 호출부가 누락을 인지하게 한다.
+        """
+        out: list[dict] = []
+        try:
+            if data is None or getattr(data, "empty", True):
+                return out
+            if isinstance(data.columns, pd.MultiIndex):
+                if sym not in data.columns.get_level_values(0):
+                    return out
+                df = data[sym]
+            else:
+                df = data
+            df = df.dropna(subset=["Close"])
+            for ts, row in df.iterrows():
+                out.append({
+                    "time": ts.to_pydatetime(),
+                    "symbol": sym,
+                    "open": float(row["Open"]),
+                    "high": float(row["High"]),
+                    "low": float(row["Low"]),
+                    "close": float(row["Close"]),
+                    "volume": int(row["Volume"]),
+                })
+        except Exception as e:
+            logger.debug(f"  _extract_symbol_rows({sym}) 실패: {type(e).__name__}: {e}")
+            return []
+        return out
 
     def compute_indicators(self, symbols: list[str]) -> int:
         """daily_prices → swing_indicators 계산."""

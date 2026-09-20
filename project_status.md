@@ -3298,6 +3298,67 @@ DELL +64.88% 같은 소수 이상치가 만든 값이고, 중앙값은 오히려
 
 ---
 
+### 22.AO-30 수집기 침묵 삼킴 — 유니버스 11%가 수개월간 미수집 (2026-09-20)
+
+**9/19 토요일 자가진단이 `data_freshness` FAIL 을 냈다** — 새로 넣은 검사(§22.AO-29)가
+실제로 무언가를 잡은 첫 사례다. `가격 커버리지 89.0% (하한 90%, 178/200)`.
+
+**■ 1. 🔴 유니버스 200 중 22종목(11%)이 가격 미수집**
+| 종목 | 마지막 가격 | | 종목 | 마지막 가격 |
+|---|---|---|---|---|
+| SYY | 2026-06-23 | | CL | 2026-07-17 |
+| KR | 2026-07-24 | | HBAN | 2026-07-31 |
+| PGR | 2026-08-28 | | CARR | 2026-08-07 |
+전체: AXON CARR CL CVNA DAL DUK EOG GNRC HBAN JBHT JCI KR MRSH O PGR PLD PWR SHW SYY TDG TT USB.
+신규 편입(9/19)은 GNRC·JBHT 둘뿐이고 **나머지는 원래 있던 종목**이다 — 일시적 현상이 아니다.
+일별 수집 종목 수도 245 → 226 → 204 → 203 으로 계속 줄고 있었다.
+
+**아닌 것부터 지웠다**: yfinance 는 22종목 전부 정상 반환한다(개별 조회 10행, 최신 9/18) →
+데이터 소스 문제 아님. Redis 캐시 유니버스와 DB 유니버스도 **정확히 일치**(200/200, 차집합 0) →
+종목 목록 문제 아님. **데이터는 있는데 수집기가 저장하지 않고 있었다.**
+
+**■ 2. 원인 — `except Exception: pass`**
+`collector.collect_prices` 의 종목별 루프가 실패를 **로그 한 줄 없이** 삼키고 있었다:
+```python
+for sym in batch:
+    try:
+        df = data[sym]          # 배치 응답에 sym 이 없으면 KeyError
+        ...
+    except Exception:
+        pass                    # ← 흔적 없이 사라진다
+```
+yfinance 는 50개 일괄 요청 시 **일부 티커를 누락해 돌려주는 일이 잦은데**, 그게 전부 여기서 사라졌다.
+같은 22종목을 따로 요청하면 한 번에 660행이 들어온다 — 배치 크기가 원인이고, 삼킴이 증상을 숨겼다.
+*§22.AO-29 의 "실패를 중립값으로 흡수하는 코드" 와 같은 병이다. 이쪽은 아예 아무것도 남기지 않았다.*
+
+**■ 3. 교정**
+- 종목별 추출을 `_extract_symbol_rows()` 로 분리 — 예외를 삼키지 않고 **빈 결과로 반환**해
+  호출부가 누락을 인지하게 한다. MultiIndex 에 해당 티커가 없으면 조용히 빈 리스트.
+- 배치에서 0행인 종목을 모아 **개별 재시도**(단일 티커 다운로드, 0.3s 간격).
+- 재시도 후에도 없으면 `🔴 수집 실패 N종목: ...` 로 **경고 로그**를 남긴다.
+- 검증: 22종목 수집 → 660행, **미수집 22 → 0**. 자가진단 `data_freshness` 커버리지 1.0 (200/200), **7/7 PASS**.
+
+**■ 4. 영향**
+그동안 이 22종목은 **신호 자체가 생성될 수 없었다** — 실효 유니버스가 200이 아니라 178이었다.
+수익률 분석(§22.AO-26-C)의 표본도 이 축소된 유니버스 위에서 나온 것이다.
+
+**■ 5. 같은 날 잡은 다른 오진 — AO-26 B 판정은 틀렸다**
+9/17 3주차 판정이 `B 진입금액 CV 0.242 → 🔴 여전히 주가가중` 이라 했으나 **오진**이다.
+`ao26_weekly_review.sh` 가 `swing_positions.entry_price*qty` 로 CV 를 계산하는데,
+`qty` 는 **부분청산 후 남은 수량**이다(8/27 이후 30건 중 **6건**이 부분청산).
+HPQ #118 은 진입 로그가 `$80.53, 4.2%` 인데 잔여 기준으로는 `$40.27` 로 잡혔다.
+→ 원 진입액이 온전히 남는 `swing_trades` 의 BUY 기록으로 교정.
+  **실측: 적용후 CV 0.010($78.32~$81.08, n=30) / 적용전 0.451.** B 는 ✅ **유효**다.
+  재실행 판정: A-1 3건(보유 13.7d, +8.07%) 🟡 표본부족 · B ✅ · 등가중/달러가중 부호일치 ✅.
+
+**■ 6. 현황 (2026-09-20)**
+총자산 **$1,842.06**, 누적 **−7.90%**, MDD −15.03%. 오픈 7 / 청산 119. 현금 $1,365(74%).
+신규 잡 정상 가동: `events_scan` 10회, `edgar_scan` 6회(최종 9/19). 스케줄러 32잡, 자가진단 7/7.
+Docker 데몬이 9/20 10:44 업그레이드(29.8.1)로 재시작 — 컨테이너 `unless-stopped` 로 자동 복구,
+엔진 오류 0건. 부수: Finnhub insider-transactions 가 9/18 23:00 대에 반복 타임아웃(스캔은 완료).
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
@@ -3613,6 +3674,10 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **`except Exception: pass` 는 장애를 영구히 숨긴다**(2026-09-20 교훈, §22.AO-30).
+  수집기 종목별 루프의 이 한 줄 때문에 **유니버스 200 중 22종목(11%)이 수개월간 미수집**이었다.
+  yfinance 는 50개 일괄 요청 시 일부 티커를 누락해 돌려주는데, 그게 전부 삼켜졌다.
+  루프 안에서 예외를 잡을 거면 **최소한 카운트하고 로그로 남기고, 가능하면 개별 재시도**할 것.
 - 🔴 **반사실·백테스트는 평균만 보지 말 것 — 중앙값과 승률을 함께 볼 것**(2026-09-14 교훈, §22.AO-26-C).
   §22.AO-26 A 의 "20일 보유 시 +4.47%" 는 평균이었고, 중앙값으로는 **오히려 나빠졌다**
   (전체 102건에서 21일 보유가 이긴 비율 **45.1%**). 평균 갭은 DELL +64.88% 같은 소수 이상치가 만든다.

@@ -1,25 +1,25 @@
 PENDING_CLAUDE_REPORT
-# §22.AO-26 주간 검증 — 2026-09-10 09:05 KST
-🔬 §22.AO-26 2주차 판정 (09/10 09:05 KST)
+# §22.AO-26 주간 검증 — 2026-09-20 10:47 KST
+🔬 §22.AO-26 3주차 판정 (09/20 10:47 KST)
 적용 8/27: rsi2 보유일게이트 8d · 시간청산 21d · 소수주식
 
 설정: allow_min_one_share=false,atr_hard_stop_multiplier=1.5,fractional_shares_enabled=true,momentum_factor_active=true,rsi2_exit_min_hold_days=8,time_stop_days=21
 
 A-1 rsi2 청산 (기준 n=37, 보유 3.7d, +4.21%)
-  1건 · 보유 15.0d · 평균 +6.32%
-  → 🟡 1건뿐 — 2주차에도 표본 부족. 3주차까지 연장 권고
+  3건 · 보유 13.7d · 평균 +8.07%
+  → 🟡 3건뿐 — 2주차에도 표본 부족. 3주차까지 연장 권고
 
 B 진입금액 산포 (등가중이면 CV→0)
-  적용 전 30건: CV 0.529 ($47.90~$248.79)
-  적용 후 15건: CV 0.005 ($80.26~$81.08)
+  적용 전 30건: CV 0.564 ($46.47~$248.79)
+  적용 후 30건: CV 0.010 ($78.32~$81.08)
   → ✅ 등가중 복원
 
 등가중 vs 달러가중 (적용 전 +0.294% vs -0.332%)
-  청산 11건: 등가중 -2.683% vs 달러가중 -1.252% (실현 $-15.30)
-  → 🟡 아직 괴리 — 표본 누적 필요
+  청산 31건: 등가중 -1.939% vs 달러가중 -2.016% (실현 $-54.51)
+  → ✅ 괴리 해소(부호 일치)
 
-평균 보유일 7.5d (적용 전 4.9d, 신호지평 20d)
-청산 사유: hard_stop:6, atr_trailing_stop:3, rsi2_overbought:1, trend_break:1
+평균 보유일 7.3d (적용 전 4.9d, 신호지평 20d)
+청산 사유: hard_stop:15, atr_trailing_stop:8, rsi2_overbought:3, trend_break:3, time_stop:1, stop_loss:1
 
 판정 기준: rsi2 보유일 5.5d↑ & 수익 +4.21%↑ (표본 10건↑)
   + 진입 CV&lt;0.10 + 등가중/달러가중 부호 일치 → A-1·B 유효

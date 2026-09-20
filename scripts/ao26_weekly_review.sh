@@ -33,16 +33,22 @@ RSI2=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND(AVG(hold_days)::numeric,1)::te
                AND exit_time >= '${CUTOFF}';")
 
 # 2) B: 진입 명목금액 산포 — 등가중이면 변동계수(CV)가 0 에 수렴해야 한다
-#    (적용 전 30건은 \$38~\$249 로 CV 가 컸다 = 사실상 주가가중)
+#    (적용 전은 \$46~\$249 로 CV 0.451 = 사실상 주가가중)
+#
+# 🔴 2026-09-20 교정: 원래 swing_positions.entry_price*qty 를 썼는데, qty 는 **부분청산 후 남은 수량**이다.
+#    8/27 이후 30건 중 6건이 부분청산돼 명목이 절반으로 줄었고(HPQ #118: 진입 \$80.53 → 잔여 \$40.27),
+#    그 탓에 9/17 3주차 판정이 "CV 0.242 → 🔴 여전히 주가가중"이라는 **오진**을 냈다.
+#    사이징은 멀쩡했다. 진입 시점 체결액은 swing_trades 의 BUY 기록에만 온전히 남는다.
+#    원 진입액 기준 실측: 적용후 CV 0.010(\$78.32~\$81.08) / 적용전 0.451.
 CVPOST=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND((STDDEV(c)/NULLIF(AVG(c),0))::numeric,3)::text,'')||'|'||
                COALESCE(ROUND(MIN(c)::numeric,2)::text,'')||'|'||COALESCE(ROUND(MAX(c)::numeric,2)::text,'')
-               FROM (SELECT entry_price*qty AS c FROM swing_positions
-                     WHERE entry_time >= '${CUTOFF}' AND qty > 0) t;")
+               FROM (SELECT qty*price AS c FROM swing_trades
+                     WHERE side='BUY' AND executed_at >= '${CUTOFF}' AND qty > 0) t;")
 CVPRE=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND((STDDEV(c)/NULLIF(AVG(c),0))::numeric,3)::text,'')||'|'||
               COALESCE(ROUND(MIN(c)::numeric,2)::text,'')||'|'||COALESCE(ROUND(MAX(c)::numeric,2)::text,'')
-              FROM (SELECT entry_price*qty AS c FROM swing_positions
-                    WHERE entry_time < '${CUTOFF}' AND qty > 0
-                    ORDER BY entry_time DESC LIMIT 30) t;")
+              FROM (SELECT qty*price AS c FROM swing_trades
+                    WHERE side='BUY' AND executed_at < '${CUTOFF}' AND qty > 0
+                    ORDER BY executed_at DESC LIMIT 30) t;")
 
 # 3) 등가중 vs 달러가중 괴리 — B 가 먹히면 두 값이 붙는다 (적용 전 +0.294% vs -0.332%)
 GAP=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND(AVG(realized_pct*100)::numeric,3)::text,'')||'|'||
