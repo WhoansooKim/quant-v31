@@ -9,10 +9,18 @@ User=quant
 WorkingDirectory=/home/quant/quant-v31
 Environment="PATH=/home/quant/miniconda3/envs/quant-v31/bin:/usr/bin:/bin"
 Environment="PYTHONPATH=/home/quant/quant-v31"
+# --timeout-graceful-shutdown (2026-09-25, §22.AO-32):
+#   이게 없으면 uvicorn 이 열린 연결이 닫힐 때까지 **무한정** 기다린다. 대시보드가 SSE 스트림
+#   (/events/stream)을 상시 물고 있어 SIGTERM 이 먹지 않았고, 재시작마다 kill -9 가 필요했다.
+#   15초 뒤에는 남은 연결을 강제로 닫고 진행한다.
 ExecStart=/home/quant/miniconda3/envs/quant-v31/bin/uvicorn \
-    engine_v4.api.main:app --host 0.0.0.0 --port 8001 --workers 1
+    engine_v4.api.main:app --host 0.0.0.0 --port 8001 --workers 1 \
+    --timeout-graceful-shutdown 15
 Restart=always
 RestartSec=10
+# uvicorn 이 15초 안에 못 끝내면 systemd 가 30초에 SIGKILL — 재시작이 무한정 매달리지 않게 한다
+TimeoutStopSec=30
+KillMode=mixed
 StandardOutput=journal
 StandardError=journal
 

@@ -1020,15 +1020,29 @@ async def event_stream(request: Request):
     q: asyncio.Queue = asyncio.Queue(maxsize=50)
     _sse_subscribers.append(q)
 
+    # 🔴 2026-09-25 (§22.AO-32): 원래 `while True` 로 무한 대기했다. uvicorn 은 종료 시
+    #   **lifespan shutdown 보다 먼저** 열린 연결이 닫히기를 기다리는데, 대시보드가 이 스트림을
+    #   상시 물고 있어 `Waiting for connections to close` 에서 영영 멈췄다(SIGTERM 무효 → kill -9 필요).
+    #   스트림에 수명을 주면 클라이언트(EventSource)가 자동 재연결하므로 기능은 그대로고,
+    #   종료 대기는 최대 이 수명까지로 유한해진다. uvicorn 의 --timeout-graceful-shutdown 이 2차 방어.
+    max_age = int(pg.get_config_value("sse_max_stream_seconds", "120"))
+    deadline = asyncio.get_running_loop().time() + max_age
+
     async def generate():
         try:
             # 연결 확인 heartbeat
             yield f"data: {json.dumps({'type': 'connected'})}\n\n"
+            loop = asyncio.get_running_loop()
             while True:
                 if await request.is_disconnected():
                     break
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    # 수명 만료 — 클라이언트가 재연결하도록 정상 종료
+                    yield f"data: {json.dumps({'type': 'reconnect'})}\n\n"
+                    break
                 try:
-                    msg = await asyncio.wait_for(q.get(), timeout=30)
+                    msg = await asyncio.wait_for(q.get(), timeout=min(30, remaining))
                     yield f"data: {msg}\n\n"
                 except asyncio.TimeoutError:
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
