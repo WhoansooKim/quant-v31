@@ -2469,6 +2469,30 @@ async def collect_macro_data(bg: BackgroundTasks):
     return {"status": "collecting", "message": "Macro data collection started"}
 
 
+@app.post("/exit-check/run")
+async def run_exit_check_now(bg: BackgroundTasks):
+    """5-Layer 출구 점검 즉시 실행 (수동 트리거) — §22.AO-31.
+
+    스케줄(23:30/01:00/03:00/05:30 KST) 밖에서 돌려야 할 때가 있다:
+    VM 일시정지·장애로 세션을 건너뛰면 그 동안 스톱이 집행되지 않으므로, 복구 직후
+    다음 스케줄까지 기다리지 말고 즉시 평가해야 한다(2026-09-22~24 41.9시간 공백 때 실제로 필요했다).
+    그때는 엔드포인트가 없어 엔진 모듈을 import 해 우회해야 했다.
+
+    잡 본체와 완전히 같은 경로(`_job_exit_check`)를 쓴다 — 로직을 복제하지 않는다.
+    `auto_sell_enabled=true` 면 조건 충족 시 **실제 청산까지 실행**된다.
+    """
+    def _run():
+        try:
+            swing_scheduler._job_exit_check()
+        except Exception as e:
+            logger.error(f"Manual exit check failed: {e}", exc_info=True)
+
+    bg.add_task(_run)
+    auto_sell = pg.get_config_value("auto_sell_enabled", "true") == "true"
+    return {"status": "started", "auto_sell_enabled": auto_sell,
+            "note": "결과는 swing_pipeline_log(step_name='exit_check') 에서 확인"}
+
+
 @app.get("/macro/history")
 async def get_macro_history(days: int = 30):
     """매크로 스냅샷 이력."""

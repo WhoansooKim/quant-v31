@@ -3359,6 +3359,53 @@ Docker 데몬이 9/20 10:44 업그레이드(29.8.1)로 재시작 — 컨테이�
 
 ---
 
+### 22.AO-31 VM 일시정지 41.9시간 — 재부팅이 아니라 잡히지 않았다 (2026-09-25)
+
+**2026-09-22 15:51 → 09-24 09:46 KST, 41.9시간** 시스템이 멈춰 있었다. 사용자 신고로 알았다.
+
+**■ 1. 왜 아무 경보도 없었나 — 재부팅이 아니었다**
+`last reboot` 은 9/4 이후 재부팅 없음, uptime 2주 4일, 엔진 서비스도 9/20 부터 연속 `active`.
+시스템 로그와 엔진 로그가 **같은 지점에서 동시에 끊겼다 같이 재개**됐다 → **VM 일시정지(suspend)** 다.
+- `@reboot` cron 은 **재부팅에만** 걸린다. suspend/resume 은 재부팅이 아니라 돌지 않는다.
+- `data_freshness` 자가진단(§22.AO-29)은 **토 11:00 에만** 돌아 공백 중에는 실행되지 않았다.
+- systemd 는 서비스가 살아 있다고 보고했다 — 프로세스가 죽은 게 아니라 **세상이 멈춘** 것이다.
+
+**■ 2. 실제 피해 — 미국장 2세션, 스톱 미집행**
+9/22(화)·9/23(수) 두 세션이 통째로 지나가는 동안 `exit_check` 가 한 번도 돌지 않았다.
+오픈 8종목 중 **HPQ 가 스톱을 이탈**했고, 재개 첫 `exit_check`(9/24 23:30)에서야 청산됐다:
+`HPQ atr_trailing_stop 진입 32.39 → 청산 31.93 (−1.44%, −$0.58)`.
+브레이크이븐 스톱 32.45 에 걸렸어야 했으므로 지연 손실은 약 **$0.19** — 실질 피해는 작았다.
+나머지 6종목은 여유가 충분했다(운이 좋았던 것이지 방어가 작동한 게 아니다).
+
+**■ 3. 데이터 — 9/22 봉은 영구 결손**
+9/23·9/24 는 재개 후 시스템이 스스로 채웠다. **9/22 는 51/200 종목만** 있고 채울 수 없다:
+yfinance 가 `period=7d` / `start-end` / `period=1mo` **세 방식 모두에서** 9/22 를 주지 않는다
+(9/21 다음이 바로 9/23). 제공자 측 결손이다.
+실제 거래일이었던 것은 확실하다 — DB 의 51종목 데이터가 진짜다(SCHW 9/22: O 106.50 L 99.30 C 100.35,
+거래량 16.9M, −6% 급락). **하필 변동성이 큰 날이 빠졌다.** 일봉 지표에 1일 구멍이 남는다.
+
+**■ 4. 조치 ① — `POST /exit-check/run` 엔드포인트 신설**
+공백 복구 시 다음 스케줄(23:30)까지 기다리지 않고 즉시 집행할 수 있어야 한다.
+이번에는 엔드포인트가 없어 **엔진 모듈을 import 해 우회**해야 했다(의존성을 하나씩 붙이다
+`exit_mgr` → `collector` → `strategy` 로 세 번 실패, 그 실패 로그는 삭제했다).
+잡 본체(`_job_exit_check`)를 그대로 호출해 로직을 복제하지 않는다.
+검증: HTTP 200 → 6초 만에 `completed`, positions=7 / auto_executed=0.
+
+**■ 5. 조치 ② — 실행 공백 감지 `scripts/gap_watch.sh` (cron */5)**
+하트비트 파일에 매 실행 시각을 적고, 다음 실행에서 간격이 20분을 넘으면 **그만큼 멈춰 있었다**는 뜻이다
+(멈춘 동안은 이 스크립트도 안 도니까). 재부팅 여부와 무관하게 잡힌다.
+탐지 시: 공백 길이·마지막 잡·마지막 `exit_check`·마지막 가격 봉·오픈 건수를 텔레그램으로 보내고,
+**오픈 포지션이 있으면 `/exit-check/run` 을 즉시 호출**한다(`gap_watch_auto_exit_check=false` 로 끌 수 있다).
+검증 3종: ①최초 실행 → 기준선만 ②정상 5분 간격 → 조용함 ③41.9시간 시뮬레이션 → 탐지 + exit_check HTTP 200.
+
+**■ 교훈**
+- **"서비스가 active" 는 "일이 돌고 있다"가 아니다.** systemd 는 정지된 VM 안에서도 active 를 보고한다.
+- 주기 점검(자가진단 주 1회)은 **공백을 못 잡는다** — 공백 중에는 그 점검도 멈춰 있기 때문이다.
+  살아있음 확인은 **짧은 주기 + 직전 실행과의 간격 비교**여야 한다.
+- 외부 데이터는 사후 복구가 안 될 수 있다. 놓친 날은 그냥 없는 날로 남는다.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
@@ -3674,6 +3721,10 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **"서비스 active" 는 "일이 돌고 있다"가 아니다**(2026-09-25 교훈, §22.AO-31).
+  VM 일시정지 41.9시간 동안 systemd 는 계속 active 를 보고했고 uptime 도 증가했다.
+  `@reboot` cron 은 재부팅에만 걸려 돌지 않았고, 주 1회 자가진단도 공백 중엔 함께 멈춰 있었다.
+  살아있음 확인은 **짧은 주기 + 직전 실행과의 간격 비교**여야 한다 → `scripts/gap_watch.sh` (cron */5).
 - 🔴 **`except Exception: pass` 는 장애를 영구히 숨긴다**(2026-09-20 교훈, §22.AO-30).
   수집기 종목별 루프의 이 한 줄 때문에 **유니버스 200 중 22종목(11%)이 수개월간 미수집**이었다.
   yfinance 는 50개 일괄 요청 시 일부 티커를 누락해 돌려주는데, 그게 전부 삼켜졌다.

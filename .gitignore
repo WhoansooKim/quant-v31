@@ -36,3 +36,5 @@ Miniconda3-latest-Linux-x86_64.sh
 
 # 스크립트 실행 로그(런타임 산출물)
 scripts/*.log
+scripts/.gap_watch.beat
+scripts/gap_watch.cron.log
