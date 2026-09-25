@@ -3406,6 +3406,47 @@ yfinance 가 `period=7d` / `start-end` / `period=1mo` **세 방식 모두에서*
 
 ---
 
+### 22.AO-32 엔진 재시작이 SIGTERM 으로 안 죽는다 — graceful shutdown 무한 대기 (2026-09-25)
+
+CLAUDE.md 는 "Restart without sudo: `kill PID` → systemd 12초 후 auto-restart" 라고 적고 있으나
+**실제로는 SIGTERM 이 먹지 않는다.** uvicorn 이 `Waiting for connections to close` 에서 멈추고
+8001 포트는 닫힌 채 서비스만 `active` 로 남는다. 매 재시작마다 `kill -9` 가 필요했다.
+
+**■ 1. uvicorn 종료 순서가 문제의 구조다**
+①새 연결 차단 → ②**열린 연결이 닫히기를 대기** → ③lifespan shutdown.
+`lifespan` 의 `telegram_bot.stop()` 은 ③이라 **아예 도달하지 못한다**. 즉 코드에 종료 처리를
+아무리 잘 써도 ②에서 막히면 소용이 없다.
+
+**■ 2. 🔴 범인을 두 번 잘못 짚었다**
+- 1차 추정: 텔레그램 롱폴링(getUpdates timeout=30). → **아웃바운드**라 uvicorn 의 연결 대기와 무관.
+- 2차 추정: SSE 스트림(`/events/stream`)이 `while True` 로 무한 대기. 그럴듯했고 실제 결함이라
+  수명 제한을 넣었는데, **그 수정 후에도 SIGTERM 이 여전히 멈췄다.**
+- 실측(`ss -tnp`): 남아 있던 것은 SSE 가 아니라 **대시보드(QuantDashboard pid 1456)의
+  유휴 keep-alive 연결 5개**였다(Send-Q 0, 즉 아무것도 안 보내는 놀고 있는 연결).
+  → **종료를 막는 연결은 한 종류가 아니다.** 코드에서 하나씩 막는 접근으로는 끝이 없다.
+
+**■ 3. 조치 — 2중**
+| 층 | 내용 | 성격 |
+|---|---|---|
+| systemd | uvicorn `--timeout-graceful-shutdown 15` + `TimeoutStopSec=30` + `KillMode=mixed` | **근본 차단** — 무엇이 물고 있든 15초 뒤 강제 종료 |
+| 코드 | SSE 스트림 수명 `sse_max_stream_seconds`(기본 120) 만료 시 `{"type":"reconnect"}` 후 정상 종료 | 위생 — 좀비 구독자 누적 방지 |
+
+SSE 수정 검증: 수명 5초로 낮춰 호출 → `connected → heartbeat → reconnect` 정상 종료 확인.
+EventSource 가 자동 재연결하므로 대시보드 기능에는 영향 없다.
+
+systemd 적용은 sudo 가 필요해 `scripts/install_engine_unit.sh` 로 분리했다 —
+멱등(이미 최신이면 무변경) · 백업 후 교체 · **재시작 소요시간 측정** · 실패 시 원복.
+
+**■ 4. 교훈**
+- **"그럴듯한 원인"에서 멈추지 말 것.** SSE 는 진짜 결함이었지만 이번 증상의 원인은 아니었다.
+  수정 후 재측정하지 않았다면 고쳤다고 착각한 채 넘어갔을 것이다.
+- 종료를 막는 요소는 애플리케이션이 다 통제할 수 없다(여기서는 **다른 프로세스**인 .NET
+  대시보드의 커넥션 풀이었다). 그래서 상한을 두는 쪽이 옳다.
+- ⚠️ CLAUDE.md 의 재시작 안내는 **틀렸다**. `install_engine_unit.sh` 적용 전까지는
+  `kill -9` 가 필요하고, 적용 후에는 `systemctl restart`(sudo) 또는 `kill` 이 15초 안에 끝난다.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.

@@ -1024,7 +1024,13 @@ async def event_stream(request: Request):
     #   **lifespan shutdown 보다 먼저** 열린 연결이 닫히기를 기다리는데, 대시보드가 이 스트림을
     #   상시 물고 있어 `Waiting for connections to close` 에서 영영 멈췄다(SIGTERM 무효 → kill -9 필요).
     #   스트림에 수명을 주면 클라이언트(EventSource)가 자동 재연결하므로 기능은 그대로고,
-    #   종료 대기는 최대 이 수명까지로 유한해진다. uvicorn 의 --timeout-graceful-shutdown 이 2차 방어.
+    #   이 스트림이 종료를 막는 일은 없어진다.
+    #
+    #   ⚠️ 다만 **이것만으로는 부족하다**(2026-09-25 실측). 이 수정 후에도 SIGTERM 이 멈췄고,
+    #   `ss` 로 확인하니 남은 것은 SSE 가 아니라 **대시보드(QuantDashboard)의 유휴 keep-alive
+    #   연결 5개**였다. 즉 종료를 막는 연결은 한 종류가 아니다.
+    #   근본 차단은 uvicorn `--timeout-graceful-shutdown` 이고(systemd 유닛), 이 수명 제한은
+    #   좀비 구독자 누적을 막는 위생 조치로 남긴다.
     max_age = int(pg.get_config_value("sse_max_stream_seconds", "120"))
     deadline = asyncio.get_running_loop().time() + max_age
 
