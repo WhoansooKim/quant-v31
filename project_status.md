@@ -3735,10 +3735,18 @@ ebff79e docs: update git history hash in project_status.md
 
 새 세션 시작 시:
 
+0. **🔴 먼저 `SESSION_PICKUP.md`** — 재부팅 직후 확인 절차 · 미적용 조치 · 진행 중이던 작업이 여기 있다
+   (2026-10-06 시스템 업데이트/재부팅 기준으로 작성).
 1. **Read this file**: `project_status.md` (전체 시스템 현황)
 2. **Read CLAUDE.md**: 코딩 규칙 (psycopg3, TimescaleDB, Npgsql Raw SQL)
-3. **Current state (2026-09-04)**: V4 운영 중, 오픈 **11** / 청산 **94** (paper). 자본 $2,000,
-   총자산 **$1,907.42**, 누적 **−4.63%**, MDD −15.03%. **유료 API 미사용 — Ollama 무료 경로 확정**(§22.AO-25).
+3. **Current state (2026-10-06)**: V4 운영 중, 오픈 **4** / 청산 **128** (paper). 자본 $2,000,
+   총자산 **$1,857.69**, 누적 **−7.12%**, MDD −15.03%. 스케줄러 **32잡**, 자가진단 **7/7 PASS**.
+   - 🔴 **엣지가 음(−)으로 확인됨**(2026-09-20, n=119): 승률 43.7%, 거래당 −0.098%,
+     손익분기 승률 44.9% 미달. SPY +13.18% 대비 초과수익 **−21.08pp**. §22.AO-26-C 참조.
+   - 🔴 **다음 작업은 승인 계층**: 체결 IC −0.01 vs 미체결 IC **+0.49**(p=0.001) — 신호는 예측력이
+     있는데 교집합/LLM 게이트를 통과한 집합에서 사라진다. `SESSION_PICKUP.md` §2-② 에 상세.
+   - 🔴 **`composite_score_min` 은 죽은 키** — 레짐 프리셋이 쓰는데 읽는 코드가 없다.
+     Phase 3F 레짐 적응의 두 레버가 둘 다 무효. `SESSION_PICKUP.md` §2-① 참조. **유료 API 미사용 — Ollama 무료 경로 확정**(§22.AO-25).
    - 🔬 **§22.AO-26 관찰 중 — 정식 판정 2026-09-10(목) 09:05 KST**. `scripts/ao26_weekly_review.sh`
      (목 cron) 가 Telegram + `scripts/ao26_review_result.txt` 로 보고. **config 7키를 임의로 되돌리지 말 것**
      (`rsi2_exit_min_hold_days`=8 · `time_stop_days`=21 · `fractional_shares_enabled`=true ·
@@ -3801,7 +3809,8 @@ ebff79e docs: update git history hash in project_status.md
 - Engine V4 = port **8001**, V3.1 = port 8000 (비활성)
 - `swing_*` prefix tables = V4 (13개), 일반 테이블 = V3.1
 - `SwingService.cs` = V4 서비스, `PostgresService.cs` = V3.1 레거시
-- Restart without sudo: `kill PID` → systemd 12초 후 auto-restart
+- ⚠️ Restart: `kill PID` 는 **먹지 않는다**(§22.AO-32). uvicorn 이 열린 연결 대기에서 멈춘다.
+  `scripts/install_engine_unit.sh` 적용 전까지는 `kill -9 PID` 필요. 적용 후에는 15초 안에 끝난다.
 - conda env: `quant-v31` (Python 3.11, NOT base)
 - PYTHONPATH: `/home/quant/quant-v31`
 - psycopg3: `make_interval(days => %s)` (NOT `interval '%s days'`)
