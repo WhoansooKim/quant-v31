@@ -26,17 +26,43 @@ curl -s -X POST localhost:8001/exit-check/run
 - `gap_watch` 가 재부팅 공백을 탐지해 텔레그램 발송 + `exit-check/run` 자동 호출 → **정상 동작**이다.
 - 토요일 오전에 재개했다면 `data_freshness` 가 가격 커버리지로 FAIL 할 수 있다 → 아래 §2-④ 참조(알려진 오탐).
 
-## 1. 🔴 재부팅 후 즉시 해야 할 일 — systemd 유닛 적용
+## 1. ✅ systemd 유닛 적용 완료 (2026-10-06 17:32) — 단, 1차 방어는 미작동
 
-`§22.AO-32` 수정이 **아직 실가동본에 적용되지 않았다**. sudo 가 필요해 사용자가 직접 실행해야 한다.
+`scripts/install_engine_unit.sh` 실행 완료. **재시작이 자동으로 끝난다(`kill -9` 불필요).**
+→ 이제 `sudo systemctl restart quant-engine-v4` 또는 `kill PID` 로 재시작하면 30초 안에 끝난다.
 
-```bash
-sudo /home/quant/quant-v31/scripts/install_engine_unit.sh
+### 🔴 다만 2차 방어(systemd SIGKILL)가 일을 하고 있다 — 미해결
+실측 로그(17:32:19 → 17:32:49):
 ```
+17:32:19.69  Waiting for connections to close
+17:32:29.97  getUpdates HTTP 200          ← 종료 중인데 텔레그램 폴링이 계속 돈다
+17:32:49.56  systemd: State 'stop-sigterm' timed out. Killing. → SIGKILL
+             Failed with result 'timeout'
+```
+**30초는 정확히 `TimeoutStopSec` 값**이다. `--timeout-graceful-shutdown 15` 는 발동하지 않았다
+(발동 시 찍히는 `Cancel N running task(s), timeout graceful shutdown exceeded` 로그가 없다).
 
-적용 전까지 엔진 재시작은 `kill -9` 가 필요하다 (SIGTERM 이 먹지 않는다).
-적용 후 스크립트가 재시작 소요시간을 찍는다 — **15초 안쪽이면 해결**.
-⚠️ `CLAUDE.md` 의 "kill PID → systemd 12초 후 auto-restart" 안내는 적용 전까지 **사실이 아니다**.
+**원인 (uvicorn 소스 확인, `uvicorn/server.py:271-301`)**
+`timeout_graceful_shutdown` 은 `_wait_tasks_to_complete()`(연결 대기)**만** 덮는다.
+그 뒤 `await self.lifespan.shutdown()`(line 301)은 **어떤 타임아웃도 없다**.
+우리 `lifespan` 은 거기서 `telegram_bot.stop()` → `swing_scheduler.stop()` 를 호출한다.
+- `swing_scheduler.stop()` → `shutdown(wait=False)` — 비차단, 문제 없음.
+- 🔴 `telegram_bot.stop()`(notify/telegram_bot.py:70) → `self._task.cancel()` 후 `await self._task`.
+  그런데 `_poll_loop` 의 `except asyncio.CancelledError: break` 가 **취소를 삼킨다**
+  (CancelledError 를 재전파하지 않고 정상 종료로 바꾼다). 30초 long-poll 과 맞물려 종료가 늘어진다.
+
+**영향**: 매 재시작이 SIGKILL 로 끝난다 → lifespan 정리 미실행, 진행 중 잡이 중간에 끊길 수 있다.
+전부 Postgres 에 있어 데이터 유실 위험은 낮지만, `exit_check` 가 돌던 중이면 부분 기록 가능성이 있다.
+
+**할 일 (우선순위 중)**
+1. `_poll_loop` 의 `except asyncio.CancelledError:` → `raise` 로 재전파 (삼키지 말 것).
+2. `telegram_bot.stop()` 의 `await self._task` 를 `asyncio.wait_for(..., timeout=5)` 로 감싸기.
+3. `lifespan` 종료부 전체를 타임아웃으로 감싸는 것도 고려(uvicorn 이 안 해주므로).
+4. 고친 뒤 `journalctl` 에서 `Failed with result 'timeout'` 이 사라지는지 확인.
+
+*⚠️ 교훈: 1차 추정(텔레그램 폴링)이 맞았는데 "아웃바운드라 무관"이라며 기각했다.
+무관한 것은 **연결 대기 단계**였고, 실제로는 그 다음 **lifespan 단계**를 막고 있었다.
+§22.AO-32 문서의 "진범은 대시보드 keep-alive" 서술도 재검토 대상이다.*
 
 ## 2. 진행 중이던 작업 (우선순위순)
 
