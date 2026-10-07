@@ -220,6 +220,7 @@ def check_data_freshness(pg) -> dict:
     max_stale = int(pg.get_config_value("self_check_macro_stale_days", "3"))
     min_cover = float(pg.get_config_value("self_check_price_coverage_min", "0.90"))
     max_bar_stale = int(pg.get_config_value("self_check_price_stale_days", "4"))
+    grace_days = int(pg.get_config_value("self_check_new_symbol_grace_days", "3"))
     max_social_stale = int(pg.get_config_value("self_check_social_stale_days", "3"))
     max_pead_stale = int(pg.get_config_value("self_check_pead_stale_days", "10"))
     sig_win = int(pg.get_config_value("self_check_signal_window", "30"))
@@ -275,18 +276,40 @@ def check_data_freshness(pg) -> dict:
         # daily_prices 에는 유니버스 밖 심볼(벤치마크·헤지용 SH 등)도 들어 있다.
         # 전체 distinct 로 세면 비율이 1을 넘어 **결손이 있어도 절대 FAIL 하지 않는다** —
         # 반드시 유니버스에 속한 심볼만 센다.
+        #
+        # 🔴 2026-10-07 (§22.AO-39): 신규 편입 종목에 유예기간을 둔다.
+        #   refresh_universe(토 10:00)가 종목을 추가하면 그 시점에는 당연히 가격이 없다.
+        #   근본 원인은 refresh 직후 즉시 수집으로 없앴지만(jobs.py), 그 수집이 실패하면
+        #   11:00 자가진단이 또 오탐을 낸다(실측 2회: 09-19 89.0%, 10-03 85.5%).
+        #   → `added_at` 이 grace 일 이내인 종목은 **커버리지 분모에서 빼되**,
+        #     `price_new_pending` 으로 **반드시 보고한다**. 숨기는 게 아니라 유예하는 것이다.
+        #   유예가 지나도 안 채워지면 그때는 정상 집계되어 FAIL 한다
+        #   (§22.AO-30 의 '22종목 수개월 미수집' 은 여전히 잡힌다).
         r = conn.execute("""
-            SELECT (SELECT count(*) FROM swing_universe WHERE is_active) AS universe,
+            SELECT (SELECT count(*) FROM swing_universe
+                     WHERE is_active
+                       AND added_at <= now() - make_interval(days => %s)) AS universe,
                    (SELECT count(*) FROM swing_universe u
                      WHERE u.is_active
+                       AND u.added_at <= now() - make_interval(days => %s)
                        AND EXISTS (SELECT 1 FROM daily_prices p
                                     WHERE p.symbol = u.symbol
                                       AND p.time > now() - interval '5 days')) AS covered,
+                   (SELECT count(*) FROM swing_universe u
+                     WHERE u.is_active
+                       AND u.added_at > now() - make_interval(days => %s)
+                       AND NOT EXISTS (SELECT 1 FROM daily_prices p
+                                        WHERE p.symbol = u.symbol
+                                          AND p.time > now() - interval '5 days')) AS new_pending,
+                   (SELECT count(*) FROM swing_universe WHERE is_active) AS universe_all,
                    (SELECT max(time)::date FROM daily_prices) AS newest_bar
-        """).fetchone()
+        """, (grace_days, grace_days, grace_days)).fetchone()
         uni, cov = int(r["universe"] or 0), int(r["covered"] or 0)
         detail["price_universe"] = uni
+        detail["price_universe_all"] = int(r["universe_all"] or 0)
         detail["price_covered_5d"] = cov
+        detail["price_new_pending"] = int(r["new_pending"] or 0)   # 유예 중 — 경보 안 하지만 보고한다
+        detail["price_grace_days"] = grace_days
         detail["price_newest_bar"] = str(r["newest_bar"]) if r["newest_bar"] else None
         if uni:
             ratio = cov / uni

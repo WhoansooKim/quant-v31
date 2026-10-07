@@ -910,6 +910,33 @@ class SwingScheduler:
         try:
             universe = self.universe_mgr.refresh_universe()
 
+            # 🔴 2026-10-07 (§22.AO-39): 신규 편입 종목은 가격이 없다 — 즉시 수집한다.
+            #   이 잡은 토 10:00 에 돌지만 가격 수집(daily_pipeline)은 같은 날 **07:00 에 이미 끝났고**
+            #   다음 수집은 월 07:00 이다(일요일엔 안 돈다). 그래서 신규 편입분이 이틀 가까이
+            #   가격 없이 남고, 11:00 자가진단이 그걸 '가격 결손'으로 잡아 매주 오탐이 났다
+            #   (실측 2회: 2026-09-19 89.0% 178/200, 2026-10-03 85.5% 171/200).
+            #   경보를 끄는 게 아니라 **공백 자체를 없앤다** — 여기서 바로 채운다.
+            newly = []
+            try:
+                with self.pg.get_conn() as conn:
+                    newly = [r["symbol"] for r in conn.execute("""
+                        SELECT u.symbol FROM swing_universe u
+                         WHERE u.is_active
+                           AND NOT EXISTS (SELECT 1 FROM daily_prices p
+                                            WHERE p.symbol = u.symbol
+                                              AND p.time > now() - interval '5 days')
+                         ORDER BY u.symbol
+                    """).fetchall()]
+                if newly:
+                    logger.info(f"신규 편입/가격결손 {len(newly)}종목 즉시 수집: {', '.join(newly[:15])}")
+                    rows = self.collector.collect_prices(newly, days=250)
+                    ind = self.collector.compute_indicators(newly)
+                    logger.info(f"신규 편입분 수집 완료: {rows} price rows, {ind} indicator rows")
+            except Exception as e:
+                # 수집이 실패해도 유니버스 갱신 자체는 성공으로 둔다. 다만 조용히 넘기지 않는다
+                # (§22.AO-30: 삼킨 실패가 11% 미수집을 수개월 숨겼다).
+                logger.error(f"신규 편입분 즉시 수집 실패: {e}", exc_info=True)
+
             # Factor momentum 계산
             momentum_data = self._calc_factor_momentum()
             if momentum_data:
@@ -919,6 +946,8 @@ class SwingScheduler:
             elapsed = time.time() - start
             self.pg.insert_pipeline_log("refresh_universe", "completed", elapsed, {
                 "symbols": len(universe),
+                "newly_collected": len(newly),
+                "newly_symbols": newly[:30],
                 "factor_momentum": momentum_data.get("ranked") if momentum_data else None,
             })
             logger.info(f"Universe refreshed: {len(universe)} symbols in {elapsed:.1f}s")
