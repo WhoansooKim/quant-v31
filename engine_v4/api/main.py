@@ -22,7 +22,9 @@ from engine_v4.analysis.counterfactual import (
     get_calibration_data, simulate_counterfactuals,
 )
 from engine_v4.analysis.daily_report import generate_daily_report, run_and_notify
-from engine_v4.strategy.auto_approve import run_auto_approve
+from engine_v4.strategy.auto_approve import (
+    EntryGateConfig, evaluate_basic_gates, latest_macro_score, run_auto_approve,
+)
 from engine_v4.harness.knowledge import (
     add_knowledge, get_knowledge, list_knowledge, log_action, search_knowledge,
 )
@@ -371,8 +373,18 @@ async def get_signal(signal_id: int):
 
 
 @app.post("/signals/{signal_id}/approve")
-async def approve_signal(signal_id: int):
-    """시그널 승인 → 자동 체결."""
+async def approve_signal(signal_id: int, force: bool = False):
+    """시그널 승인 → 자동 체결.
+
+    🔴 2026-10-07 (§22.AO-37): 이 경로는 `validate_entry` 하나만 하고
+    score·macro·교집합 게이트를 **전혀 보지 않았다**. 그런데 실측 체결의 **87%가 이 경로**였고
+    게이트 활성 구간에서 그중 71%가 교집합 탈락분이었다. 측정상 좋은 필터
+    (거른 것 중앙 −2.29% vs 통과 +5.26%, p=0.002)가 체결에 적용되지 않은 것이다 — §22.AO-36.
+    → `auto_approve` 와 **같은 게이트**를 적용한다(로직은 `evaluate_basic_gates` 로 일원화).
+
+    사람의 판단을 막자는 게 아니다. 넘기려면 `force=true` 를 명시해야 하고,
+    그때는 `approved_via='manual_force'` 로 **기록이 남는다** — 우회가 보이게 하는 것이 목적이다.
+    """
     sig = pg.get_signal(signal_id)
     if not sig:
         raise HTTPException(404, "Signal not found")
@@ -380,13 +392,31 @@ async def approve_signal(signal_id: int):
         raise HTTPException(400, f"Signal status is '{sig['status']}', not 'pending'")
 
     # ENTRY 시그널: 승인 전에 validation 먼저 (approve 후 자기 자신이 daily count에 포함되는 버그 방지)
+    gate_fails: list[str] = []
     if sig["signal_type"] == "ENTRY":
         valid, reason = pos_mgr.validate_entry(sig["symbol"], float(sig["entry_price"]))
         if not valid:
             raise HTTPException(400, f"Entry validation failed: {reason}")
 
-    # 승인
-    pg.approve_signal(signal_id)
+        # 기본 게이트 — auto_approve 와 동일 판정
+        gate_cfg = EntryGateConfig.load(pg)
+        macro_score, _ = latest_macro_score(pg)
+        gate_fails = evaluate_basic_gates(sig, gate_cfg, macro_score)
+        if gate_fails and not force:
+            raise HTTPException(400, {
+                "error": "entry_gate_failed",
+                "symbol": sig["symbol"],
+                "reasons": gate_fails,
+                "hint": "그래도 승인하려면 ?force=true — approved_via='manual_force' 로 기록된다",
+            })
+        if gate_fails:
+            logger.warning(
+                "FORCED APPROVE %s (signal %s) — 게이트 탈락 무시: %s",
+                sig["symbol"], signal_id, "; ".join(gate_fails))
+
+    # 승인 (경로 기록 — §22.AO-37)
+    via = "manual_force" if gate_fails else "manual"
+    pg.approve_signal(signal_id, via=via)
 
     # 체결
     account_value = _get_account_value()

@@ -272,13 +272,21 @@ class PostgresStore:
             """, (signal_id,)).fetchone()
         return dict(row) if row else None
 
-    def approve_signal(self, signal_id: int) -> bool:
+    def approve_signal(self, signal_id: int, via: str | None = None) -> bool:
+        """시그널 승인. `via` 로 승인 경로를 남긴다 (§22.AO-37).
+
+        경로를 기록하는 이유: 2026-10-07 분석에서 **체결의 87%가 수동 승인**이었고
+        그 경로는 게이트를 거치지 않았는데, 그 사실을 승인 시각(auto 는 정시에만 돈다)으로
+        **추정**해야 했다. 측정할 수 없으면 관리할 수 없다.
+        값: 'auto' | 'manual' | 'manual_force' (게이트 탈락인데 강제 승인).
+        """
         with self.get_conn() as conn:
             cur = conn.execute("""
                 UPDATE swing_signals
-                SET status = 'approved', approved_at = now()
+                SET status = 'approved', approved_at = now(),
+                    approved_via = COALESCE(%s, approved_via)
                 WHERE signal_id = %s AND status = 'pending'
-            """, (signal_id,))
+            """, (via, signal_id))
             conn.commit()
             return cur.rowcount > 0
 

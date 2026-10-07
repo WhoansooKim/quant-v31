@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from engine_v4.data.storage import PostgresStore, RedisCache
@@ -36,6 +37,81 @@ def _get_account_value_fallback(pg: PostgresStore, default: float = 2200.0) -> f
     if snap and snap.get("total_value_usd"):
         return float(snap["total_value_usd"])
     return default
+
+
+@dataclass
+class EntryGateConfig:
+    """진입 기본 게이트 설정 (§22.AO-37).
+
+    **공용으로 둔 이유**: 2026-10-07 분석에서 진입 경로가 둘인데 기준이 달랐다 —
+    `run_auto_approve` 는 전 게이트를 적용하고 `POST /signals/{id}/approve` 는
+    `validate_entry` 하나만 했다. 실측 체결의 **87%가 후자**였고, 그 결과 좋은 필터
+    (교집합: 거른 것 중앙 −2.29% vs 통과 +5.26%, p=0.002)가 체결에 적용되지 않았다.
+    로직을 복제하면 반드시 갈라지므로(§22.AO-18) 두 경로가 **이 한 곳**을 쓴다.
+    """
+    score_min: float
+    score_max: float
+    macro_min: float
+    isec_enabled: bool
+    isec_mom_min: float
+    isec_tech_min: float
+
+    @classmethod
+    def load(cls, pg: PostgresStore) -> "EntryGateConfig":
+        g = pg.get_config_value
+        return cls(
+            score_min=float(g("auto_approve_score_min", "60")),
+            score_max=float(g("auto_approve_score_max", "75")),
+            macro_min=float(g("auto_approve_macro_min", "30")),
+            isec_enabled=g("intersection_gate_enabled", "false").lower() in ("true", "1", "yes"),
+            isec_mom_min=float(g("intersection_momentum_min", "0.70")),
+            isec_tech_min=float(g("intersection_technical_min", "60")),
+        )
+
+
+def latest_macro_score(pg: PostgresStore, default: float = 50.0) -> tuple[float, str | None]:
+    """최신 매크로 스냅샷의 (score, regime). 실패 시 중립값."""
+    try:
+        with pg.get_conn() as conn:
+            row = conn.execute(
+                "SELECT macro_score, regime FROM swing_macro_snapshots ORDER BY time DESC LIMIT 1"
+            ).fetchone()
+        if row:
+            return float(row.get("macro_score") or default), row.get("regime")
+    except Exception as e:
+        logger.warning(f"Macro snapshot fetch failed: {e}")
+    return default, None
+
+
+def evaluate_basic_gates(sig: dict, cfg: EntryGateConfig, macro_score: float) -> list[str]:
+    """진입 기본 게이트 평가. **빈 리스트면 통과**, 아니면 탈락 사유 목록.
+
+    LLM 게이트는 여기 넣지 않는다 — 병렬 평가 비용이 크고(Ollama ~2min/signal),
+    실측상 기각 이력이 0건(25건 전부 APPROVE)이라 거르는 역할을 하지 않았다(§22.AO-36).
+    """
+    reasons: list[str] = []
+    comp = sig.get("composite_score")
+    if comp is None:
+        return ["no_composite_score"]
+    comp = float(comp)
+    if comp < cfg.score_min:
+        reasons.append(f"composite_score={comp:.1f} < {cfg.score_min}")
+    if comp > cfg.score_max:
+        reasons.append(f"composite_score={comp:.1f} > {cfg.score_max} (crowded top)")
+    if macro_score < cfg.macro_min:
+        reasons.append(f"macro_score={macro_score:.1f} < {cfg.macro_min}")
+    if cfg.isec_enabled:
+        rank = sig.get("return_20d_rank")
+        tech = sig.get("technical_score")
+        rank_ok = rank is not None and float(rank) >= cfg.isec_mom_min
+        tech_ok = tech is not None and float(tech) >= cfg.isec_tech_min
+        if not (rank_ok and tech_ok):
+            reasons.append(
+                f"intersection: rank={float(rank):.2f}/{cfg.isec_mom_min} "
+                f"tech={float(tech):.0f}/{cfg.isec_tech_min}"
+                if rank is not None and tech is not None
+                else "intersection: missing rank/technical")
+    return reasons
 
 
 def run_auto_approve(
@@ -61,15 +137,11 @@ def run_auto_approve(
         logger.info("Auto-approve disabled — skipping")
         return {"enabled": False, "evaluated": 0, "auto_approved": 0}
 
-    score_min = float(pg.get_config_value("auto_approve_score_min", "60"))
-    score_max = float(pg.get_config_value("auto_approve_score_max", "75"))  # IC 보정: crowded ultra-high score 차단
-    macro_min = float(pg.get_config_value("auto_approve_macro_min", "30"))
     # ② 신호 교집합 게이트 (§22.AO-12) — Sobotka(2025) 교집합 알파 3배.
     # 실측: 모멘텀(rank>=0.70) + technical(>=60) 동시충족이 composite>=61 단독보다 우수
     # (승률 66.2%→76.4%, 검증구간 평균수익 +1.64%→+3.64%). 화면을 더 얹으면 오히려 희석됨.
-    isec_enabled = pg.get_config_value("intersection_gate_enabled", "false").lower() in ("true", "1", "yes")
-    isec_mom_min = float(pg.get_config_value("intersection_momentum_min", "0.70"))
-    isec_tech_min = float(pg.get_config_value("intersection_technical_min", "60"))
+    # 설정·판정은 EntryGateConfig / evaluate_basic_gates 로 일원화했다 (§22.AO-37).
+    gate_cfg = EntryGateConfig.load(pg)
     llm_gate_enabled = pg.get_config_value("llm_gate_enabled", "false").lower() in ("true", "1", "yes")
     llm_min_confidence = float(pg.get_config_value("llm_gate_min_confidence", "0.5"))
     prefer_ollama = pg.get_config_value("llm_gate_prefer_ollama", "false").lower() in ("true", "1", "yes")
@@ -78,22 +150,7 @@ def run_auto_approve(
     entries = [s for s in pending if s["signal_type"] == "ENTRY"]
 
     # Macro check (single check, applies to all) — read latest snapshot from DB
-    macro_score = 50.0  # neutral default
-    macro_regime = None
-    try:
-        with pg.get_conn() as conn:
-            row = conn.execute(
-                """
-                SELECT macro_score, regime FROM swing_macro_snapshots
-                ORDER BY time DESC LIMIT 1
-                """
-            ).fetchone()
-        if row:
-            macro_score = float(row.get("macro_score") or 50.0)
-            macro_regime = row.get("regime")
-    except Exception as e:
-        logger.warning(f"Macro snapshot fetch failed: {e}")
-    macro_ok = macro_score >= macro_min
+    macro_score, macro_regime = latest_macro_score(pg)
 
     approved = []
     executed = []
@@ -105,34 +162,11 @@ def run_auto_approve(
     for sig in entries:
         sid = sig["signal_id"]
         sym = sig["symbol"]
-        comp = sig.get("composite_score")
 
-        if comp is None:
-            skipped.append({"signal_id": sid, "symbol": sym, "reason": "no_composite_score"})
+        gate_fails = evaluate_basic_gates(sig, gate_cfg, macro_score)
+        if gate_fails:
+            skipped.append({"signal_id": sid, "symbol": sym, "reason": "; ".join(gate_fails)})
             continue
-        if float(comp) < score_min:
-            skipped.append({"signal_id": sid, "symbol": sym, "reason": f"composite_score={comp:.1f} < {score_min}"})
-            continue
-        if float(comp) > score_max:
-            skipped.append({"signal_id": sid, "symbol": sym, "reason": f"composite_score={comp:.1f} > {score_max} (crowded top)"})
-            continue
-        if not macro_ok:
-            skipped.append({"signal_id": sid, "symbol": sym, "reason": f"macro_score={macro_score:.1f} < {macro_min}"})
-            continue
-        if isec_enabled:
-            rank = sig.get("return_20d_rank")
-            tech = sig.get("technical_score")
-            rank_ok = rank is not None and float(rank) >= isec_mom_min
-            tech_ok = tech is not None and float(tech) >= isec_tech_min
-            if not (rank_ok and tech_ok):
-                skipped.append({
-                    "signal_id": sid, "symbol": sym,
-                    "reason": (f"intersection: rank={float(rank):.2f}/{isec_mom_min} "
-                               f"tech={float(tech):.0f}/{isec_tech_min}"
-                               if rank is not None and tech is not None
-                               else "intersection: missing rank/technical"),
-                })
-                continue
         try:
             entry_price = float(sig["entry_price"]) if sig.get("entry_price") else 0
             valid, reason = pos_mgr.validate_entry(sym, entry_price)
@@ -188,7 +222,7 @@ def run_auto_approve(
 
         # ── Auto-approve ──
         try:
-            pg.approve_signal(sid)
+            pg.approve_signal(sid, via="auto")
             approved.append({"signal_id": sid, "symbol": sym, "composite_score": comp})
 
             # Execute

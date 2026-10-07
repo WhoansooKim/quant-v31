@@ -3657,6 +3657,56 @@ pending 16 → **11**. 변이당 백테스트가 ~250초이므로 그만큼의 �
 
 ---
 
+### 22.AO-37 진입 경로 일원화 — 수동 승인에도 게이트 적용 + 경로 기록 (2026-10-07)
+
+§22.AO-36 권고 1·2 적용. 3·4(대시보드 표시 · skipped_list 저장)는 미적용.
+
+**■ 1. 게이트 로직을 공용화 — 복제하지 않는다**
+`auto_approve.py` 에 `EntryGateConfig` · `latest_macro_score()` · `evaluate_basic_gates()` 를 신설하고
+`run_auto_approve` 의 인라인 블록(약 25줄)을 이것으로 교체했다. 두 경로가 **같은 한 곳**을 쓴다.
+*로직을 복제하면 반드시 갈라진다 — §22.AO-18(가중치 교정이 하드코딩에 막혀 무효)의 교훈.*
+
+`evaluate_basic_gates(sig, cfg, macro_score) -> list[str]` — 빈 리스트면 통과, 아니면 탈락 사유 목록.
+LLM 게이트는 넣지 않았다: Ollama ~2min/signal 로 버튼 응답에 쓸 수 없고,
+실측상 기각 이력이 **0건**(25건 전부 APPROVE)이라 거르는 역할을 하지 않았다(§22.AO-36).
+
+**■ 2. `POST /signals/{id}/approve` 에 게이트 적용 + `force` 명시**
+이 경로는 `validate_entry` 하나만 했고 실측 체결의 **87%가 여기로** 들어왔다.
+이제 score·macro·교집합 게이트를 적용한다. 탈락 시 **400** 과 구조화된 사유를 돌려준다:
+```json
+{"detail": {"error": "entry_gate_failed", "symbol": "...",
+            "reasons": ["composite_score=55.0 < 61.0",
+                        "intersection: rank=0.50/0.7 tech=50/60.0"],
+            "hint": "그래도 승인하려면 ?force=true — approved_via='manual_force' 로 기록된다"}}
+```
+**사람의 판단을 막자는 게 아니다.** `?force=true` 로 넘길 수 있고, 그때는
+`logger.warning("FORCED APPROVE ...")` 와 `approved_via='manual_force'` 로 **기록이 남는다** —
+우회를 금지하는 것이 아니라 **보이게** 하는 것이 목적이다.
+
+**■ 3. 승인 경로 기록 — `swing_signals.approved_via`**
+`scripts/migrate_approved_via.sql`. 값: `auto` | `manual` | `manual_force` | NULL(도입 전 191건).
+`approve_signal(signal_id, via=...)` 로 두 경로가 각자 남긴다.
+*§22.AO-36 에서 경로를 **승인 시각으로 추정**해야 했다(auto 는 22:00/01:30/04:30 정시에만 돈다).
+ 측정할 수 없으면 관리할 수 없다 — 이제 추정이 아니라 실측이 된다.*
+
+**■ 검증**
+- 단위 8케이스 전원 통과: 전 게이트 통과 / 점수 미달·초과 / 모멘텀·technical 미달 /
+  둘 다 미달(2건 반환) / 점수 없음 / rank·tech NULL.
+- 엔드포인트 거부 경로 실측: 임시 시그널(점수 55·rank 0.50·tech 50) → **HTTP 400**,
+  사유 2건 반환, 시그널 `pending` 유지, **포지션 0건**(거래 미발생), 테스트 행 삭제 확인.
+- 재시작 27초 SIGKILL 0건, 자가진단 **7/7 PASS**, `force` 파라미터 OpenAPI 노출 확인.
+- ⚠️ `force=true` **실행 경로는 라이브 검증하지 않았다** — 실제 포지션이 열리므로.
+  분기 자체는 3줄(로그 + `via` 결정)이고 단위 검증 범위 안이다.
+
+**■ ⚠️ 알려진 영향 — 대시보드 워크플로**
+대시보드 `Signals.razor:1002` 는 오류 본문을 그대로 찍는다(`Approve failed: {body}`) →
+게이트 탈락 시 **원문 JSON 이 노출**된다. 사유는 읽히지만 거칠다.
+그리고 **UI 에 force 수단이 없다** — 강제 승인은 현재 `curl -X POST '.../approve?force=true'` 뿐이다.
+체결의 87%가 대시보드 경유였으므로 **일상 워크플로가 바뀐다.**
+→ §22.AO-36 권고 3(대시보드에 게이트 판정 표시 + 강제 승인 버튼)이 사실상 후속 필수 작업이다.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
