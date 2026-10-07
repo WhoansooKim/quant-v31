@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -142,6 +143,11 @@ def _sse_broadcast(data: dict):
 
 
 # ── Lifespan ──
+# 종료 정리에 허용할 최대 시간(초). 종료 중 DB 조회는 그 자체로 매달릴 수 있어
+# swing_config 가 아니라 환경변수로만 조정한다. systemd TimeoutStopSec(30) 보다 충분히 작게.
+LIFESPAN_SHUTDOWN_TIMEOUT = float(os.environ.get("LIFESPAN_SHUTDOWN_TIMEOUT", "10"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Swing Engine V4 starting...")
@@ -153,9 +159,27 @@ async def lifespan(app: FastAPI):
     swing_scheduler.start()
     await telegram_bot.start()
     yield
-    await telegram_bot.stop()
-    swing_scheduler.stop()
-    logger.info("Swing Engine V4 stopped")
+
+    # ── 종료 ──
+    # 🔴 uvicorn 은 lifespan.shutdown() 에 **어떤 타임아웃도 걸지 않는다** (§22.AO-34).
+    #   `--timeout-graceful-shutdown` 은 연결 대기 단계만 덮는다(uvicorn/server.py:289 vs 301).
+    #   따라서 여기서 매달리면 systemd 가 SIGKILL 할 때까지 프로세스가 죽지 않는다.
+    #   실측(2026-10-06): 재시작이 매번 TimeoutStopSec 30초까지 가서
+    #   `Failed with result 'timeout'` 으로 끝났다 → 정리 코드가 아예 실행되지 못했다.
+    #   그래서 상한을 직접 둔다. 정리를 못 해도 **종료는 되게** 하는 쪽이 옳다 —
+    #   상태는 전부 Postgres 에 있으므로 정리 실패로 유실되는 것은 없다.
+    async def _shutdown_sequence():
+        await telegram_bot.stop()
+        swing_scheduler.stop()
+
+    try:
+        await asyncio.wait_for(_shutdown_sequence(), timeout=LIFESPAN_SHUTDOWN_TIMEOUT)
+        logger.info("Swing Engine V4 stopped")
+    except asyncio.TimeoutError:
+        logger.error(
+            f"lifespan 종료가 {LIFESPAN_SHUTDOWN_TIMEOUT}s 를 넘겼다 — 정리를 중단하고 종료한다")
+    except Exception as e:
+        logger.error(f"lifespan 종료 중 예외: {type(e).__name__}: {e}", exc_info=True)
 
 
 app = FastAPI(

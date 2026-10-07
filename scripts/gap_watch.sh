@@ -23,10 +23,37 @@ NOW=$(date +%s)
 PSQL() { docker exec quant-postgres psql -U quant -d quantdb -tA -c "$1" 2>/dev/null; }
 
 PREV=$(cat "$BEAT" 2>/dev/null || echo "")
+
+# 🔴 2026-10-07 (§22.AO-34): 시계 역행 가드.
+#   부팅 직후 RTC 가 과거로 읽히는 일이 실제로 있다 — 2026-10-07 부팅에서 ~1분간 저널이
+#   10-05 14:16 으로 찍혔다(NTP 동기 후 10-07 08:25 로 점프). 그 창에 이 스크립트가 돌면
+#   하트비트에 **과거 시각**이 기록되고, 시계가 교정된 다음 실행에서 42시간 공백으로 **오탐**이 난다.
+#   이번엔 그 1분 창에 cron 이 안 걸려 피했을 뿐이다.
+#   § 22.AO-28 의 '양치기 소년' 과 같은 계열이므로 막는다:
+#     ① 시계가 뒤로 갔으면 공백 판정을 건너뛰고 기준선만 다시 세운다
+#     ② NTP 미동기 상태에서는 아예 판정하지 않는다 (교정 전 시각을 믿을 수 없다)
+SYNCED=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo "unknown")
+if [ "$SYNCED" = "no" ]; then
+  echo "$NOW" > "$BEAT"
+  echo "[$(date '+%F %T')] 시계 미동기(NTPSynchronized=no) — 공백 판정 보류, 기준선만 갱신" >> "$LOG"
+  exit 0
+fi
+
 echo "$NOW" > "$BEAT"
 
 # 첫 실행이면 기준선만 세우고 끝낸다
 [ -n "$PREV" ] || { echo "[$(date '+%F %T')] 하트비트 초기화" >> "$LOG"; exit 0; }
+
+# 숫자가 아니면(파일 손상) 기준선만 다시 세운다
+case "$PREV" in ''|*[!0-9]*)
+  echo "[$(date '+%F %T')] 하트비트 값 이상('$PREV') — 기준선 재설정" >> "$LOG"; exit 0 ;;
+esac
+
+if [ "$NOW" -lt "$PREV" ]; then
+  BACK=$(( (PREV - NOW) / 60 ))
+  echo "[$(date '+%F %T')] 🔴 시계 역행 ${BACK}분 (하트비트 $(date -d "@$PREV" '+%F %T') > 현재) — 공백 판정 건너뜀" >> "$LOG"
+  exit 0
+fi
 
 GAP=$(( (NOW - PREV) / 60 ))
 [ "$GAP" -ge "$THRESH_MIN" ] || exit 0       # 정상 — 조용히 종료

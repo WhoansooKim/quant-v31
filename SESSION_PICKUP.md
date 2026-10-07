@@ -26,43 +26,15 @@ curl -s -X POST localhost:8001/exit-check/run
 - `gap_watch` 가 재부팅 공백을 탐지해 텔레그램 발송 + `exit-check/run` 자동 호출 → **정상 동작**이다.
 - 토요일 오전에 재개했다면 `data_freshness` 가 가격 커버리지로 FAIL 할 수 있다 → 아래 §2-④ 참조(알려진 오탐).
 
-## 1. ✅ systemd 유닛 적용 완료 (2026-10-06 17:32) — 단, 1차 방어는 미작동
+## 1. ✅ 종료 문제 해결 완료 (2026-10-07, §22.AO-34)
 
-`scripts/install_engine_unit.sh` 실행 완료. **재시작이 자동으로 끝난다(`kill -9` 불필요).**
-→ 이제 `sudo systemctl restart quant-engine-v4` 또는 `kill PID` 로 재시작하면 30초 안에 끝난다.
+재시작이 **16초에 정상 종료**된다. SIGKILL 없음, `Failed with result 'timeout'` 없음,
+lifespan 정리(`Scheduler stopped` → `Swing Engine V4 stopped`)까지 완료.
+`sudo systemctl restart quant-engine-v4` 또는 `kill PID` 둘 다 정상 동작한다.
 
-### 🔴 다만 2차 방어(systemd SIGKILL)가 일을 하고 있다 — 미해결
-실측 로그(17:32:19 → 17:32:49):
-```
-17:32:19.69  Waiting for connections to close
-17:32:29.97  getUpdates HTTP 200          ← 종료 중인데 텔레그램 폴링이 계속 돈다
-17:32:49.56  systemd: State 'stop-sigterm' timed out. Killing. → SIGKILL
-             Failed with result 'timeout'
-```
-**30초는 정확히 `TimeoutStopSec` 값**이다. `--timeout-graceful-shutdown 15` 는 발동하지 않았다
-(발동 시 찍히는 `Cancel N running task(s), timeout graceful shutdown exceeded` 로그가 없다).
-
-**원인 (uvicorn 소스 확인, `uvicorn/server.py:271-301`)**
-`timeout_graceful_shutdown` 은 `_wait_tasks_to_complete()`(연결 대기)**만** 덮는다.
-그 뒤 `await self.lifespan.shutdown()`(line 301)은 **어떤 타임아웃도 없다**.
-우리 `lifespan` 은 거기서 `telegram_bot.stop()` → `swing_scheduler.stop()` 를 호출한다.
-- `swing_scheduler.stop()` → `shutdown(wait=False)` — 비차단, 문제 없음.
-- 🔴 `telegram_bot.stop()`(notify/telegram_bot.py:70) → `self._task.cancel()` 후 `await self._task`.
-  그런데 `_poll_loop` 의 `except asyncio.CancelledError: break` 가 **취소를 삼킨다**
-  (CancelledError 를 재전파하지 않고 정상 종료로 바꾼다). 30초 long-poll 과 맞물려 종료가 늘어진다.
-
-**영향**: 매 재시작이 SIGKILL 로 끝난다 → lifespan 정리 미실행, 진행 중 잡이 중간에 끊길 수 있다.
-전부 Postgres 에 있어 데이터 유실 위험은 낮지만, `exit_check` 가 돌던 중이면 부분 기록 가능성이 있다.
-
-**할 일 (우선순위 중)**
-1. `_poll_loop` 의 `except asyncio.CancelledError:` → `raise` 로 재전파 (삼키지 말 것).
-2. `telegram_bot.stop()` 의 `await self._task` 를 `asyncio.wait_for(..., timeout=5)` 로 감싸기.
-3. `lifespan` 종료부 전체를 타임아웃으로 감싸는 것도 고려(uvicorn 이 안 해주므로).
-4. 고친 뒤 `journalctl` 에서 `Failed with result 'timeout'` 이 사라지는지 확인.
-
-*⚠️ 교훈: 1차 추정(텔레그램 폴링)이 맞았는데 "아웃바운드라 무관"이라며 기각했다.
-무관한 것은 **연결 대기 단계**였고, 실제로는 그 다음 **lifespan 단계**를 막고 있었다.
-§22.AO-32 문서의 "진범은 대시보드 keep-alive" 서술도 재검토 대상이다.*
+원인은 `telegram_bot._poll_loop` 가 `except asyncio.CancelledError: break` 로 **취소를 삼킨** 것이었다
+(앞서 세 번 잘못 짚었다 — 상세는 `project_status.md` §22.AO-34).
+수정: CancelledError 재전파 · `stop()` 에 `wait_for(timeout=5)` · lifespan 종료부에 10초 상한.
 
 ## 2. 진행 중이던 작업 (우선순위순)
 
@@ -111,7 +83,12 @@ h=20d 선행수익률 기준 (평균/중앙/승률 셋 다 65~70 이 최고):
 - **할 일**: 신규 편입 종목에 유예기간(예: `added_at` 3일 이내 제외)을 주거나 self_check 를 수집 뒤로 옮긴다.
 - 방치하면 §22.AO-28 의 '양치기 소년' 재발 — 진짜 결손을 놓친다.
 
-### ⑤ 알려진 제약 (조치 불가/보류)
+### ⑤ ✅ gap_watch 시계 역행 가드 — 완료 (2026-10-07, §22.AO-34)
+부팅 직후 RTC 가 ~1분간 과거로 읽히는 것을 실측(저널에 42.1h 공백이 찍혔다).
+그 창에 cron 이 걸리면 42시간 공백 오탐이 났을 것이다. 가드 3종 추가:
+`NTPSynchronized=no` 판정 보류 · 시계 역행 시 건너뜀 · 하트비트 손상값 재설정. 검증 5종 통과.
+
+### ⑥ 알려진 제약 (조치 불가/보류)
 - **2026-09-22 봉 영구 결손**: yfinance 가 3가지 방식 모두에서 그날을 안 준다. 51/200 종목만 있다.
   하필 변동성 큰 날(SCHW −6%, 거래량 16.9M)이라 일봉 지표에 1일 구멍이 남는다.
 - **엣지가 음(−)**: 청산 119건 기준 승률 43.7%, 거래당 −0.098%, 손익분기 승률 44.9% 미달.

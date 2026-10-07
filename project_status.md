@@ -3447,6 +3447,69 @@ systemd 적용은 sudo 가 필요해 `scripts/install_engine_unit.sh` 로 분리
 
 ---
 
+### 22.AO-34 종료 SIGKILL 해소 + 시계 역행 가드 (2026-10-07)
+
+2026-10-06 시스템 업데이트(커널 7.0.0-30 → 7.0.0-38) + 재부팅 후속. 재부팅 자체는 깨끗했다
+(@reboot 검증 ✅ PASS, 잡 32/32, 자가진단 7/7, 서비스 3종 active).
+
+**■ 1. ✅ 재시작이 드디어 정상 종료로 끝난다 — SIGKILL 없음**
+
+| | 수정 전 (10-06) | 수정 후 (10-07) |
+|---|---|---|
+| 소요 | 30초 (= `TimeoutStopSec`) | **16초** |
+| 1차 방어 | 미발동 (해당 로그 없음) | **발동** — `Cancel 1 running task(s), timeout graceful shutdown exceeded` @15초 |
+| 종료 방식 | systemd `SIGKILL`, `Failed with result 'timeout'` | 정상 종료 |
+| lifespan 정리 | **미실행** | `Scheduler stopped` → `Swing Engine V4 stopped` **완료** |
+
+수정 3곳:
+- `telegram_bot._poll_loop`: `except asyncio.CancelledError: break` → **`raise`로 재전파**.
+  취소를 삼켜 정상 종료로 바꾸면 `await self._task` 가 취소 완료를 인지하지 못한다(asyncio 규약 위반).
+- `telegram_bot.stop()`: `await self._task` 를 `wait_for(shield(task), timeout=5)` 로 감쌈.
+  취소에 응답하지 않으면 **버리고 간다** — 기다려주면 종료 자체가 막힌다.
+- `api/main.py` lifespan 종료부: 전체를 `wait_for(..., timeout=LIFESPAN_SHUTDOWN_TIMEOUT)`(기본 10s, env 조정).
+  **uvicorn 은 `lifespan.shutdown()` 에 어떤 타임아웃도 걸지 않는다**(`--timeout-graceful-shutdown` 은
+  연결 대기 단계만 덮는다 — `uvicorn/server.py:289` vs `301`). 그래서 상한은 우리가 둬야 한다.
+  타임아웃은 config 가 아니라 env 로만 조정한다 — 종료 중 DB 조회는 그 자체로 매달릴 수 있다.
+
+⚠️ **원인 규명은 세 번 고쳐 적었다.** ①텔레그램 롱폴링(기각) → ②SSE 무한루프(수정했지만 증상 그대로)
+→ ③대시보드 keep-alive(§22.AO-32 서술) → ④실제로는 **취소 전파 실패**였다.
+이번 로그가 결정적이다 — 1차 방어가 "**1개** running task"를 취소하고 lifespan 이 즉시 완료됐다.
+*수정 후 재측정하지 않으면 매번 고쳤다고 착각한다. 세 번 다 그랬다.*
+(16초 중 15초는 uvicorn 이 대시보드 연결을 기다리는 시간이다. 취소 경로가 정상이 된 이상
+ `--timeout-graceful-shutdown` 을 5초로 낮춰 더 줄일 수 있다 — 필요하면.)
+
+**■ 2. 🔴 부팅 직후 시계가 1분간 과거로 읽혔다 — gap_watch 오탐 위험**
+
+`last reboot`(10/5 14:16)과 uptime(2h20m)이 모순돼 파보니, 저널에 **42.1시간 공백
+(10-05 14:17 → 10-07 08:25)** 이 찍혀 있었다. 실제 부팅은 **10/7 08:24~08:25** 이고,
+부팅 직후 ~1분간 RTC 가 10/5 로 읽혀 로그가 그 시각으로 찍힌 뒤 NTP 동기로 점프한 것이다
+(Docker 가 "Up 44 hours" 로 보이는 것도 같은 이유).
+
+- **데이터 오염 없음**: 시계가 틀린 창이 ~1분이고 그때 수집 잡은 돌지 않았다.
+  10/5 기록은 전부 이전 부팅(9/4~10/7)의 정상 운영분이며 `pipeline_log` 연속성도 정상.
+  현재 시계는 NTP 동기, 구글 시각과 **초 단위 일치**.
+- 🔴 **그런데 `gap_watch.sh` 에 시계 역행 가드가 없었다.** 그 1분 창에 cron 이 걸렸다면
+  하트비트에 과거 시각이 기록되고, 교정 후 다음 실행에서 **42시간 공백으로 오탐**이 났을 것이다.
+  이번엔 cron 이 그 창을 비껴가 피했을 뿐이다. §22.AO-28 '양치기 소년' 과 같은 계열.
+
+가드 3종 추가:
+1. `NTPSynchronized=no` 면 **판정 보류**(기준선만 갱신) — 교정 전 시각은 믿을 수 없다
+2. `NOW < PREV`(시계 역행)면 판정 건너뜀 + 역행 분수를 로그에 남김
+3. 하트비트 값이 숫자가 아니면(파일 손상) 기준선 재설정
+
+검증 5종: ①최초 기준선 ②정상 5분 조용함 ③역행 2880분 건너뜀 ④손상값 재설정
+⑤진짜 42시간 공백 **탐지 + exit_check HTTP 200**.
+
+**■ 3. 참고 — gap_watch 가 이번 재부팅에 안 울린 것은 정상**
+재부팅이 08:24→08:25 로 끝나 공백이 20분 임계값 미만이었다. 하트비트는 최신, cron active.
+
+**■ 현재 상태 (2026-10-07)**
+총자산 **$1,852.49** (누적 **−7.38%**), 오픈 4 / 현금 $1,489.76.
+오픈 4종목(WBD +0.16% · SMCI +5.49% · MRNA +8.40% · HPE +10.31%) **전부 스톱 위, 전부 플러스**.
+커널 7.0.0-38, 추가 재부팅 불필요, 디스크 136G 여유, 공유폴더 재마운트 성공.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
@@ -3770,6 +3833,12 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **`except asyncio.CancelledError:` 에서 `break`/`pass` 하지 말 것 — 반드시 `raise`**(§22.AO-34).
+  취소를 삼키면 `await task` 가 취소 완료를 인지하지 못하고, uvicorn 은 `lifespan.shutdown()` 에
+  타임아웃을 걸지 않으므로 **종료가 systemd SIGKILL 까지 간다**. 수정 후 30초→16초, SIGKILL 소멸.
+- 🔴 **원인을 고친 뒤 반드시 재측정할 것**(§22.AO-34). 이 증상의 원인을 **세 번** 잘못 짚었다
+  (텔레그램 폴링 기각 → SSE → 대시보드 keep-alive → 실제는 취소 전파 실패).
+  재측정하지 않았다면 세 번 다 "고쳤다"고 착각한 채 넘어갔다.
 - 🔴 **"서비스 active" 는 "일이 돌고 있다"가 아니다**(2026-09-25 교훈, §22.AO-31).
   VM 일시정지 41.9시간 동안 systemd 는 계속 active 를 보고했고 uptime 도 증가했다.
   `@reboot` cron 은 재부팅에만 걸려 돌지 않았고, 주 1회 자가진단도 공백 중엔 함께 멈춰 있었다.

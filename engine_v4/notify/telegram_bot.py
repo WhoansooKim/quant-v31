@@ -67,14 +67,29 @@ class TelegramBot:
         self._task = asyncio.create_task(self._poll_loop())
         logger.info("Telegram bot polling started")
 
-    async def stop(self):
+    async def stop(self, timeout: float = 5.0):
+        """폴링 중지. **종료를 막지 않는 것이 최우선**이다 (§22.AO-34).
+
+        uvicorn 은 `lifespan.shutdown()` 에 타임아웃을 걸지 않는다
+        (`--timeout-graceful-shutdown` 은 연결 대기 단계만 덮는다 — uvicorn/server.py:289 vs 301).
+        그래서 여기서 매달리면 systemd 가 SIGKILL 할 때까지 프로세스가 안 죽는다.
+        실측(2026-10-06): 재시작이 매번 30초 TimeoutStopSec 까지 가서
+        `Failed with result 'timeout'` 으로 끝났다.
+        """
         self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        task = self._task
+        if not task or task.done():
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.CancelledError:
+            pass                      # 정상 — 취소가 전파된 것
+        except asyncio.TimeoutError:
+            # 취소에 응답하지 않는다. 기다려주면 종료 자체가 막히므로 버리고 간다.
+            logger.warning(f"Telegram polling did not stop within {timeout}s — 포기하고 진행")
+        except Exception as e:
+            logger.warning(f"Telegram polling stop 중 예외: {type(e).__name__}: {e}")
 
     async def _poll_loop(self):
         """getUpdates long-polling loop."""
@@ -97,7 +112,11 @@ class TelegramBot:
                         self._offset = upd["update_id"] + 1
                         await self._handle_update(upd)
             except asyncio.CancelledError:
-                break
+                # 🔴 2026-10-07 (§22.AO-34): 원래 여기서 `break` 했다. 취소를 삼키고 정상 종료로
+                #   바꾸는 셈이어서 stop() 의 `await self._task` 가 취소 완료를 인지하지 못했다.
+                #   CancelledError 는 **반드시 재전파**해야 한다(asyncio 규약).
+                self._running = False
+                raise
             except Exception as e:
                 logger.warning(f"Polling error: {e}")
                 await asyncio.sleep(backoff)
