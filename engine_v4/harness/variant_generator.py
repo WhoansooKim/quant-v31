@@ -43,10 +43,20 @@ except ImportError:
 
 # Tunable parameters that variants can change. Keep this list curated to
 # prevent LLM from suggesting unsafe values.
-TUNABLE_PARAMS = {
+#
+# ⚠️ 여기 선언된 것이 곧 탐색 대상은 **아니다**. 아래에서 백테스트가 실제로 시뮬레이션하는
+#   키만 걸러 `TUNABLE_PARAMS` 로 쓴다(§22.AO-35). 선언만 해두고 러너에 로직이 없으면
+#   변이가 그 값을 바꿔도 결과가 한 톨도 안 변해, 하네스가 "개선 없음"을 영원히 반복한다.
+_DECLARED_PARAMS = {
     "position_pct": (0.02, 0.25),
     "max_positions": (3, 10),
-    "composite_score_min": (40, 80),
+    # 🔴 2026-10-07 (§22.AO-35): composite_score_min 을 여기서 제거했다.
+    #   ① 라이브: 이 키를 읽는 코드가 없었다(진입은 auto_approve_score_min 을 읽는다).
+    #   ② 백테스트: runner 에 composite 점수 개념이 **아예 없다**(grep 0건).
+    #      auto_backtest._FIELD_MAP 에도 없어 BacktestParams 로 전달되지도 않는다.
+    #   → 변이가 이 값을 바꿔도 백테스트 결과가 **한 톨도 안 변한다**.
+    #   §22.AO-19 에서 "무력 키 계열" 이라 부른 변이들의 정체가 이것이다.
+    #   후보로 되살리려면 먼저 러너에 점수 모델을 넣어야 한다. 그 전까지는 탐색 대상이 아니다.
     "take_profit_pct": (0.10, 0.40),
     "stop_loss_pct": (-0.10, -0.02),
     "return_rank_min": (0.40, 0.85),
@@ -70,6 +80,38 @@ TUNABLE_PARAMS = {
     "factor_weight_quality": (0.05, 0.30),
     "factor_weight_value": (0.05, 0.30),
 }
+
+
+def _backtestable_params() -> dict[str, tuple]:
+    """선언된 노브 중 **백테스트에 실제로 전달되는 것만** 돌려준다 (§22.AO-35).
+
+    왜 자동으로 거르는가: 수동 목록은 낡는다. 실측(2026-10-07)에서 선언 22개 중 **9개(41%)**
+    가 러너에 로직이 없어 무효였다 — factor_weight_*(5) · intersection_*(2) ·
+    partial_exit_threshold · pead_drift_days. `auto_backtest.py` 주석은 이 사실을 일부
+    적어두었지만 그 자체도 낡아 있었다(time_stop_days·atr_hard_stop_multiplier 는 이후 매핑됐는데
+    여전히 '무의미' 목록에 남아 있었다). 그래서 주석이 아니라 **코드로** 묶는다.
+    §22.AO-28 의 "게이트는 상수가 아니라 불변식으로" 와 같은 원리다.
+
+    팩터 가중치는 손실이 아니다 — §22.AO-19 의 `weight_tuner` 가 실측 IC 로 직접 튜닝한다
+    (swing_factor_weights, 4레짐×8팩터). 백테스트 변이보다 나은 경로다.
+    """
+    try:
+        from engine_v4.harness.auto_backtest import _FIELD_MAP, _FLAG_MAP
+    except Exception as e:      # 임포트 실패 시 선언 전체를 쓰되 경고 (탐색을 멈추지는 않는다)
+        logger.warning(f"백테스트 매핑을 읽지 못했다 ({type(e).__name__}) — 선언 전체를 탐색 대상으로 둔다")
+        return dict(_DECLARED_PARAMS)
+
+    mapped = set(_FIELD_MAP) | set(_FLAG_MAP)
+    usable = {k: v for k, v in _DECLARED_PARAMS.items() if k in mapped}
+    dead = sorted(set(_DECLARED_PARAMS) - mapped)
+    if dead:
+        logger.warning(
+            "변이 탐색 제외 %d개 — 러너에 로직이 없어 결과가 변하지 않는다: %s",
+            len(dead), ", ".join(dead))
+    return usable
+
+
+TUNABLE_PARAMS = _backtestable_params()
 
 
 def _gather_performance(pg: PostgresStore) -> dict:

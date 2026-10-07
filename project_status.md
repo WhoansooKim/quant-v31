@@ -3510,6 +3510,79 @@ systemd 적용은 sudo 가 필요해 `scripts/install_engine_unit.sh` 로 분리
 
 ---
 
+### 22.AO-35 죽은 키 연결 + 변이 탐색공간의 41%가 무효였다 (2026-10-07)
+
+`SESSION_PICKUP.md` §2-① 처리. 결과적으로 처음 본 것보다 범위가 훨씬 컸다.
+
+**■ 1. Phase 3F 레짐 적응이 통째로 무효였던 이유 — 키 이름 불일치**
+`REGIME_PRESETS` 는 레짐별 진입 엄격도를 `composite_score_min` 에 썼는데,
+진입 경로(`auto_approve`)가 읽는 것은 `auto_approve_score_min` 이고
+**`composite_score_min` 을 읽는 코드는 하나도 없었다**(grep 0건).
+증거: `auto_approve_score_min` 최종 수정이 **2026-05-14** — 그 뒤 레짐이 여러 번 바뀌었지만
+진입 엄격도는 5개월간 61 로 고정이었다.
+(나머지 한 레버 `atr_trailing_multiplier` 도 브레이크이븐이 먼저 발동해 무효 — §22.AO-26-C.
+ **두 레버가 둘 다 죽어 있었다.**)
+
+**조치**: 프리셋이 `ENTRY_STRICTNESS_KEY = "auto_approve_score_min"` 를 쓰게 고쳤다.
+
+⚠️ **다만 기본값은 꺼둔다** (`regime_entry_strictness_enabled`, 기본 `false`).
+키를 고치면 잠들어 있던 기능이 **깨어나는데**, 지금 켜면 해로울 근거가 있다 —
+밴드별 실측(2026-09-25, h=20d 선행수익률 **중앙값**):
+| 밴드 | 중앙 | 승률 | |
+|---|---|---|---|
+| <60 | **−2.97%** | 41.9% | ← RISK_ON 프리셋 **58** 이 들어가는 구간. 최악이다 |
+| 60-65 | +0.50% | 55.6% | |
+| 65-70 | **+7.60%** | 76.9% | 스윗스팟 |
+| 70-75 | +1.83% | 73.9% | |
+| 75+ | +6.46% | 60.0% | |
+즉 RISK_ON 에서 58 로 **완화**하면 가장 나쁜 구간으로 진입을 넓힌다.
+*현재 NEUTRAL 프리셋(61)과 실제 읽는 값(61)이 우연히 같아, 연결만으로는 지금 동작이 바뀌지 않는다.*
+활성화는 밴드 기반 재설계(`SESSION_PICKUP` §2-③)와 함께 판단할 사항이다.
+
+**■ 2. 🔴 변이 탐색 노브 22개 중 9개(41%)가 백테스트에 반영되지 않았다**
+`composite_score_min` 하나를 빼려고 전수 감사했더니 훨씬 넓었다. 러너에 로직이 없어
+**변이가 바꿔도 결과가 한 톨도 안 변하는** 키:
+`factor_weight_*`(5) · `intersection_momentum_min` · `intersection_technical_min` ·
+`partial_exit_threshold` · `pead_drift_days`.
+→ 하네스가 측정 불가능한 공간을 탐색하며 "개선 없음"을 반복해 왔다
+  (§22.AO-19 가 "무력 키 계열"이라 부른 것의 정체).
+
+`auto_backtest.py` 주석이 이 사실을 일부 적어뒀지만 **그 주석 자체가 낡아 있었다** —
+`time_stop_days`·`atr_hard_stop_multiplier`·`rsi2_exit_threshold` 는 이후 매핑됐는데
+여전히 '무의미' 목록에 남아 있었다.
+
+**조치 — 주석이 아니라 코드로 묶었다**: `variant_generator._backtestable_params()` 가
+`auto_backtest._FIELD_MAP`/`_FLAG_MAP` 을 읽어 **선언 22개 중 실제 전달되는 13개만** 탐색 대상으로
+돌려주고, 제외분을 기동 시 경고로 남긴다. 손으로 관리하는 목록은 또 낡는다
+(§22.AO-28 "게이트는 상수가 아니라 불변식으로" 와 같은 원리).
+`_DECLARED_PARAMS` 는 선언·문서용으로 남기고, 네 군데 사용처(LLM 프롬프트·허용범위 렌더·제안 검증)가
+자동으로 걸러진 집합을 쓴다.
+*팩터 가중치는 손실이 아니다 — §22.AO-19 의 `weight_tuner` 가 실측 IC 로 직접 튜닝한다
+ (swing_factor_weights 4레짐×8팩터). 백테스트 변이보다 나은 경로다.*
+
+**■ 3. 무효 변이 5건 소급 기각** (§22.AO-25 "새 게이트는 기존 통과분에도 소급 적용")
+전 키가 매핑 불가인 pending 변이를 **눈대중이 아니라 전수 판정**으로 골라 기각했다:
+| 판정 | 건수 | 비고 |
+|---|---|---|
+| 🔴 전 키 무효 → 기각 | **5** | v32·v39(composite_score_min) · v45·v51(factor_weight_* 전용) · v56 |
+| 🟡 일부 유효 → 유지 | 2 | v50(1/2) · v52(4/5) — 유효 키는 측정된다 |
+| ✅ 전 키 유효 → 유지 | 9 | |
+pending 16 → **11**. 변이당 백테스트가 ~250초이므로 그만큼의 헛된 실행도 함께 줄었다.
+
+**■ 검증**
+프리셋 키/게이트 양방향(OFF→진입키 제외, ON→RISK_ON 58·RISK_OFF 70) · 플래그 원복 후
+`auto_approve_score_min` 61 유지 · 선언 22 → 탐색 13 · 기동 로그에 제외 9개 경고 ·
+재시작 24초 **SIGKILL 0건** · 자가진단 **7/7 PASS**.
+
+**■ 교훈**
+- **키 이름 불일치는 기능을 조용히 전부 죽인다.** "설정이 있으니 동작한다"고 가정하지 말고
+  **읽는 쪽을 grep** 할 것. 여기서는 5개월간 아무도 몰랐다.
+- **죽은 키 하나를 고치려면 같은 병을 전수 검사할 것.** 1개를 찾으러 들어가 9개를 찾았다.
+- **고친 뒤 '깨어나는 것'을 확인할 것.** 연결만 하면 꺼져 있던 기능이 켜진다 —
+  그게 지금 이로운지는 **별개 질문**이다.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
@@ -3833,6 +3906,10 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **설정 키는 '쓰는 쪽'이 아니라 '읽는 쪽'을 grep 할 것**(2026-10-07 교훈, §22.AO-35).
+  `REGIME_PRESETS` 가 `composite_score_min` 을 5개월간 써왔지만 **읽는 코드가 없었다** →
+  Phase 3F 레짐 적응이 통째로 무효. 같은 병을 전수 검사하니 변이 탐색 노브 22개 중
+  **9개(41%)** 가 백테스트에 반영되지 않고 있었다. 하나를 찾으면 전수 검사할 것.
 - 🔴 **`except asyncio.CancelledError:` 에서 `break`/`pass` 하지 말 것 — 반드시 `raise`**(§22.AO-34).
   취소를 삼키면 `await task` 가 취소 완료를 인지하지 못하고, uvicorn 은 `lifespan.shutdown()` 에
   타임아웃을 걸지 않으므로 **종료가 systemd SIGKILL 까지 간다**. 수정 후 30초→16초, SIGKILL 소멸.

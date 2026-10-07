@@ -38,16 +38,12 @@ lifespan 정리(`Scheduler stopped` → `Swing Engine V4 stopped`)까지 완료.
 
 ## 2. 진행 중이던 작업 (우선순위순)
 
-### ① 🔴 `composite_score_min` 이 죽은 키 — Phase 3F 레짐 적응이 통째로 무효
-- `REGIME_PRESETS`(harness/regime_switcher.py)가 레짐별로 이 키를 쓴다(RISK_ON 58 / NEUTRAL 61 / RISK_OFF 70).
-- 그런데 **이 키를 읽는 코드가 하나도 없다**. 진입이 실제로 읽는 건 `auto_approve_score_min`(= 61, **2026-05-14 이후 고정**).
-- 레짐 적응의 두 레버가 **둘 다** 죽어 있다:
-  - 진입 엄격도 → 읽는 코드 없음 (2026-09-24 확인)
-  - 트레일 폭(`atr_trailing_multiplier`) → 브레이크이븐이 먼저 발동해 한 번도 안 쓰임 (§22.AO-26-C)
-- 파생 문제: `variant_generator.TUNABLE_PARAMS` 에 `composite_score_min: (40,80)` 이 있는데
-  백테스트 `_FIELD_MAP` 에는 **없다** → 변이가 이 값을 바꿔도 백테스트 결과가 안 변한다.
-  §22.AO-19 의 "무력 키 계열" 변이(pending 16건 중 상당수)의 정체가 이것일 가능성이 높다.
-- **할 일**: 키 연결(또는 일원화) + `TUNABLE_PARAMS`/`_FIELD_MAP` 정합.
+### ① ✅ `composite_score_min` 죽은 키 — 완료 (2026-10-07, §22.AO-35)
+프리셋이 `auto_approve_score_min`(실제 읽는 키)을 쓰게 고쳤다. **단 기본은 꺼둠**
+(`regime_entry_strictness_enabled=false`) — RISK_ON 프리셋 58 은 밴드 실측 중앙 −2.97% 인
+최악 구간이라, 켜는 것은 밴드 재설계(③)와 함께 판단할 사항이다.
+부수 발견: 변이 탐색 노브 **22개 중 9개(41%)** 가 백테스트 미반영 → 자동 필터로 13개만 탐색하게
+했고, 전 키가 무효인 pending 변이 5건을 소급 기각(16→11). 상세는 `project_status.md` §22.AO-35.
 
 ### ② 🔴 승인 계층이 신호를 죽인다 — 다음 분석 대상
 밴드별 IC 측정(2026-09-25, 점수 보유 시그널 180건 = 체결 117 + 미체결 63):

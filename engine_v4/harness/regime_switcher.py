@@ -7,19 +7,19 @@ Regime presets (paper mode only — Live changes require user manual approval):
 
   RISK_ON (macro_score > 70):
     position_pct = 0.20, max_positions = 5
-    composite_score_min = 55 (looser entry)
+    auto_approve_score_min = 58 (looser entry) — 기본 비활성, §22.AO-35
     take_profit_pct = 0.25
     atr_trailing_multiplier = 3.0 (wider trail in trending regime)
 
   NEUTRAL (30 <= macro_score <= 70):
     position_pct = 0.14, max_positions = 7
-    composite_score_min = 60
+    auto_approve_score_min = 61
     take_profit_pct = 0.20
     atr_trailing_multiplier = 2.5
 
   RISK_OFF (macro_score < 30):
     position_pct = 0.05, max_positions = 3
-    composite_score_min = 70 (stricter — only high-conviction)
+    auto_approve_score_min = 70 (stricter — only high-conviction)
     take_profit_pct = 0.15 (take profits earlier)
     atr_trailing_multiplier = 2.0 (tighter trail in risky regime)
 
@@ -45,22 +45,42 @@ logger = logging.getLogger(__name__)
 #   - max_positions: 사용자 지정 고정(20). 레짐 스위치가 덮어쓰지 않음.
 #   - take_profit_pct: ①번 손익비 개선(백테스트 검증, 0.50=트레일링 지배) 보호.
 #   - position_pct: 사용자 지정 고정(0.05, 20개 분산). 레짐 무관.
-#   레짐 적응은 진입 엄격도(composite_score_min) + 트레일 폭(atr_trailing_multiplier)만 담당.
+#   레짐 적응은 진입 엄격도(auto_approve_score_min) + 트레일 폭(atr_trailing_multiplier)만 담당.
+#   ⚠️ 2026-10-07 현재 **둘 다 실효가 없다** — 전자는 기본 비활성(§22.AO-35),
+#      후자는 브레이크이븐이 먼저 발동해 미사용(§22.AO-26-C).
 #   위기(RISK_OFF) 방어 = 진입 score 70 + 좁은 트레일 2.0 으로 유지(포지션 크기 축소는 제외).
+# 🔴 2026-10-07 (§22.AO-35): 키 이름이 틀려서 **레짐 적응이 통째로 무효**였다.
+#   여기서 `composite_score_min` 을 썼지만 진입 경로(auto_approve)가 읽는 것은
+#   `auto_approve_score_min` 이고, `composite_score_min` 을 **읽는 코드는 하나도 없었다**.
+#   증거: auto_approve_score_min 의 최종 수정이 2026-05-14 — 그 뒤 레짐이 여러 번 바뀌었는데
+#   진입 엄격도는 5개월간 61 로 고정이었다.
+#   (나머지 한 레버 atr_trailing_multiplier 도 브레이크이븐이 먼저 발동해 무효였다 — §22.AO-26-C.
+#    즉 Phase 3F 의 두 레버가 둘 다 죽어 있었다.)
+#
+# ⚠️ 키를 고치면 잠들어 있던 기능이 **깨어난다**. 그래서 기본값은 끈 상태로 둔다
+#   (`regime_entry_strictness_enabled`, 기본 false → 지금까지와 동일하게 61 고정).
+#   켜기 전에 알아야 할 실측(2026-09-25, h=20d 선행수익률 밴드별 중앙값):
+#     <60  중앙 −2.97% (승률 41.9%)  ← RISK_ON 프리셋 58 이 들어가는 구간. **최악이다.**
+#     60-65 중앙 +0.50%             65-70 중앙 +7.60% (승률 76.9%)  ← 스윗스팟
+#     70-75 중앙 +1.83%             75+   중앙 +6.46%
+#   즉 RISK_ON 에서 58 로 **완화**하면 가장 나쁜 구간으로 진입을 넓히게 된다.
+#   활성화는 별도 판단 사항이며, 밴드 기반 재설계(§SESSION_PICKUP ③)와 함께 봐야 한다.
+ENTRY_STRICTNESS_KEY = "auto_approve_score_min"
+
 REGIME_PRESETS: dict[str, dict[str, str]] = {
     "RISK_ON": {
         # 2026-06-03 IC 보정: 55 → 58 (60일 분석 결과 sweet spot 65-70)
-        "composite_score_min": "58",
+        ENTRY_STRICTNESS_KEY: "58",
         "atr_trailing_multiplier": "3.0",
     },
     "NEUTRAL": {
         # 2026-06-03 IC 보정: 60 → 63
         # 2026-06-04 절충 완화: 63 → 61 (시그널 0건 회복, 1주 관찰)
-        "composite_score_min": "61",
+        ENTRY_STRICTNESS_KEY: "61",
         "atr_trailing_multiplier": "2.5",
     },
     "RISK_OFF": {
-        "composite_score_min": "70",
+        ENTRY_STRICTNESS_KEY: "70",
         "atr_trailing_multiplier": "2.0",
     },
 }
@@ -172,6 +192,11 @@ def check_and_switch(
 
     # Apply preset
     updates = dict(preset)
+    # 진입 엄격도는 기본적으로 레짐이 건드리지 않는다 (§22.AO-35 머리말 참조).
+    # 켜려면 swing_config.regime_entry_strictness_enabled = true.
+    if pg.get_config_value("regime_entry_strictness_enabled", "false").lower() \
+            not in ("true", "1", "yes"):
+        updates.pop(ENTRY_STRICTNESS_KEY, None)
     updates["current_regime"] = new_regime
     _set_config_atomic(pg, updates)
 

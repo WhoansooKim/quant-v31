@@ -37,8 +37,12 @@ logger = logging.getLogger(__name__)
 
 
 # config key -> BacktestParams 수치 필드. 러너가 실제로 시뮬레이션하는 것만 넣는다.
-# (rsi2_exit_threshold / time_stop_days / composite_score_min / factor_weight_* /
-#  atr_hard_stop_multiplier 는 러너에 로직 자체가 없어 매핑해도 무의미 — §22.AO-3)
+# ⚠️ 2026-10-07 (§22.AO-35) 주석 교정: 아래 '무의미' 목록이 낡아 있었다.
+#   rsi2_exit_threshold · time_stop_days · atr_hard_stop_multiplier 는 **이후 매핑됐다**(아래 참조).
+#   현재 러너에 로직이 없어 매핑할 수 없는 것: composite_score_min · factor_weight_* ·
+#   intersection_* · pead_drift_days · partial_exit_threshold.
+#   이 목록을 손으로 관리하지 말 것 — variant_generator._backtestable_params() 가
+#   이 맵을 읽어 탐색 대상을 자동으로 걸러낸다.
 _FIELD_MAP = {
     "position_pct": "position_pct",
     "max_positions": "max_positions",
