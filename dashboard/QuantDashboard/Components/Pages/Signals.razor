@@ -250,6 +250,22 @@
                             <td>
                                 @if (s.Status == "pending")
                                 {
+                                    @* §22.AO-37: 누르기 전에 게이트 판정을 보여준다 *@
+                                    @if (gateStatus.TryGetValue(s.SignalId, out var gv))
+                                    {
+                                        @if (gv.Ok)
+                                        {
+                                            <span class="status-chip status-executed"
+                                                  title="진입 게이트 통과"
+                                                  style="margin-right:0.35rem">게이트 통과</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-chip status-rejected"
+                                                  title="@string.Join(" · ", gv.Reasons)"
+                                                  style="margin-right:0.35rem">게이트 탈락</span>
+                                        }
+                                    }
                                     <button class="btn-sm btn-approve"
                                             @onclick="() => ApproveSignal(s.SignalId)"
                                             disabled="@processing">
@@ -260,6 +276,15 @@
                                             disabled="@processing">
                                         Reject
                                     </button>
+                                    @if (forceCandidate == s.SignalId)
+                                    {
+                                        <button class="btn-sm btn-revert"
+                                                title="게이트 탈락을 무시하고 승인한다. approved_via='manual_force' 로 기록된다"
+                                                @onclick="() => ForceApprove(s.SignalId)"
+                                                disabled="@processing">
+                                            ⚠️ 강제 승인
+                                        </button>
+                                    }
                                 }
                                 else if (s.Status == "approved" || s.Status == "rejected" || s.Status == "executed")
                                 {
@@ -790,6 +815,14 @@
     private string? statusMsg;
     private CancellationTokenSource _cts = new();
 
+    // §22.AO-37 후속: 진입 게이트 판정. 임계값을 여기서 계산하지 않고 엔진
+    // (/signals/gate-status)에 물어본다 — C# 에 복제하면 설정과 갈라진다(§22.AO-35).
+    private Dictionary<long, GateVerdict> gateStatus = new();
+    private long forceCandidate;           // 게이트 탈락인데 강제 승인 대기 중인 시그널
+    private string? forceReasons;
+
+    private record GateVerdict(bool Ok, List<string> Reasons);
+
     // Pagination
     private const int SigPageSize = 10;
     private int sigCurrentPage = 1;
@@ -908,6 +941,7 @@
                 sigTotalCount = result.TotalCount;
             }
             pendingCount = await Db.GetPendingSignalCountAsync();
+            await LoadGateStatus();   // §22.AO-37: 승인 전에 게이트 판정을 보여준다
         }
         catch (Exception ex) { statusMsg = $"Load error: {ex.Message}"; }
     }
@@ -984,22 +1018,72 @@
         }
     }
 
-    private async Task ApproveSignal(long signalId)
+    // 엔진에 게이트 판정을 물어 캐시한다 (§22.AO-37)
+    private async Task LoadGateStatus()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient("Engine");
+            using var doc = System.Text.Json.JsonDocument.Parse(
+                await client.GetStringAsync("/signals/gate-status"));
+            var map = new Dictionary<long, GateVerdict>();
+            foreach (var it in doc.RootElement.GetProperty("items").EnumerateArray())
+            {
+                var reasons = it.GetProperty("reasons").EnumerateArray()
+                                .Select(r => r.GetString() ?? "").ToList();
+                map[it.GetProperty("signal_id").GetInt64()] =
+                    new GateVerdict(it.GetProperty("ok").GetBoolean(), reasons);
+            }
+            gateStatus = map;
+        }
+        catch
+        {
+            gateStatus = new();   // 못 받아오면 칩을 숨긴다 — 추측해서 표시하지 않는다
+        }
+    }
+
+    private async Task ApproveSignal(long signalId) => await DoApprove(signalId, force: false);
+
+    private async Task ForceApprove(long signalId)
+    {
+        forceCandidate = 0;
+        forceReasons = null;
+        await DoApprove(signalId, force: true);
+    }
+
+    private async Task DoApprove(long signalId, bool force)
     {
         processing = true;
         statusMsg = null;
         try
         {
             var client = HttpFactory.CreateClient("Engine");
-            var resp = await client.PostAsync($"/signals/{signalId}/approve", null);
+            var url = force
+                ? $"/signals/{signalId}/approve?force=true"
+                : $"/signals/{signalId}/approve";
+            var resp = await client.PostAsync(url, null);
             if (resp.IsSuccessStatusCode)
             {
-                statusMsg = $"Signal #{signalId} approved and executed!";
+                statusMsg = force
+                    ? $"⚠️ 시그널 #{signalId} 강제 승인·체결 — 게이트 탈락분이며 approved_via='manual_force' 로 기록됩니다"
+                    : $"시그널 #{signalId} 승인·체결 완료";
             }
             else
             {
                 var body = await resp.Content.ReadAsStringAsync();
-                statusMsg = $"Approve failed: {body}";
+                var gate = TryParseGateError(body);
+                if (gate != null)
+                {
+                    // 게이트 탈락 — 사유를 읽기 좋게 보여주고 강제 승인 선택지를 준다
+                    forceCandidate = signalId;
+                    forceReasons = string.Join(" · ", gate);
+                    statusMsg = $"🚦 시그널 #{signalId} 진입 게이트 탈락 — {forceReasons}";
+                }
+                else
+                {
+                    forceCandidate = 0;
+                    statusMsg = $"승인 실패: {body}";
+                }
             }
             await LoadSignals();
         }
@@ -1011,6 +1095,22 @@
         {
             processing = false;
         }
+    }
+
+    /// 400 본문에서 게이트 탈락 사유만 뽑는다. 게이트 오류가 아니면 null.
+    private static List<string>? TryParseGateError(string body)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("detail", out var detail)) return null;
+            if (detail.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+            if (!detail.TryGetProperty("error", out var err)) return null;
+            if (err.GetString() != "entry_gate_failed") return null;
+            return detail.GetProperty("reasons").EnumerateArray()
+                         .Select(r => r.GetString() ?? "").ToList();
+        }
+        catch { return null; }
     }
 
     private async Task RevertToPending(long signalId)

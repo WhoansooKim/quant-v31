@@ -364,6 +364,48 @@ async def list_signals(status: str | None = None, limit: int = 50):
     return {"signals": signals, "count": len(signals)}
 
 
+# ⚠️ 이 라우트는 반드시 `/signals/{signal_id}` **앞에** 있어야 한다 — FastAPI 는 등록 순서로
+#   매칭하므로 뒤에 두면 "gate-status" 가 signal_id 로 파싱돼 422 가 난다(2026-10-07 실측).
+@app.get("/signals/gate-status")
+async def signals_gate_status(status: str = "pending"):
+    """pending 시그널의 진입 게이트 판정 (§22.AO-37 후속).
+
+    대시보드가 **승인 버튼을 누르기 전에** 통과/탈락을 보여주기 위한 것이다.
+    판정은 엔진에서만 한다 — 임계값을 대시보드(C#)에 복제하면 설정과 갈라진다
+    (§22.AO-35 에서 `composite_score_min` 이 5개월간 죽어 있던 것과 같은 함정).
+    """
+    try:
+        sigs = [x for x in pg.get_signals(status=status, limit=200)
+                if x.get("signal_type") == "ENTRY"]
+        cfg = EntryGateConfig.load(pg)
+        macro_score, macro_regime = latest_macro_score(pg)
+        items = []
+        for sig in sigs:
+            reasons = evaluate_basic_gates(sig, cfg, macro_score)
+            items.append({
+                "signal_id": sig["signal_id"],
+                "symbol": sig["symbol"],
+                "ok": not reasons,
+                "reasons": reasons,
+            })
+        return {
+            "macro_score": round(macro_score, 1),
+            "macro_regime": macro_regime,
+            "thresholds": {
+                "score_min": cfg.score_min, "score_max": cfg.score_max,
+                "macro_min": cfg.macro_min,
+                "intersection_enabled": cfg.isec_enabled,
+                "momentum_min": cfg.isec_mom_min, "technical_min": cfg.isec_tech_min,
+            },
+            "passed": sum(1 for i in items if i["ok"]),
+            "failed": sum(1 for i in items if not i["ok"]),
+            "items": items,
+        }
+    except Exception as e:
+        logger.error(f"Gate status failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Gate status failed: {e}")
+
+
 @app.get("/signals/{signal_id}")
 async def get_signal(signal_id: int):
     sig = pg.get_signal(signal_id)

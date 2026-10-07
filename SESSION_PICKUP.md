@@ -55,9 +55,10 @@ LLM 게이트는 기각 이력 **0건**(25건 전부 APPROVE)으로 무혐의.
 **권고 1·2 적용 완료** (2026-10-07, §22.AO-37): 수동 승인에 게이트 적용(`force=true` 로 우회,
 `approved_via='manual_force'` 기록) · 승인 경로 DB 기록(`swing_signals.approved_via`).
 게이트 로직은 `evaluate_basic_gates()` 로 공용화해 두 경로가 한 곳을 쓴다.
-🔴 **후속 필수**: 대시보드가 게이트 탈락 시 원문 JSON 을 노출하고 **UI 에 force 수단이 없다**.
-체결의 87%가 대시보드 경유였으므로 권고 3(게이트 판정 표시 + 강제 승인 버튼)이 사실상 필수다.
-권고 4(`skipped_list` 를 pipeline_log 에 저장)도 미적용.
+**권고 3 적용 완료** (§22.AO-37): `GET /signals/gate-status` 신설 + 대시보드 pending 행에
+`게이트 통과/탈락` 칩(사유 툴팁) · 탈락 시 한글 사유 표시 · 해당 행에 `⚠️ 강제 승인` 버튼.
+판정은 엔진에서만 한다(임계값 C# 복제 금지 — §22.AO-35 함정).
+**권고 4 미적용**: `auto_approve` 의 `skipped_list` 를 `pipeline_log` 에 저장(기각 사유 보존).
 진단 도구: `scripts/gate_audit.py`. 상세: `project_status.md` §22.AO-36.
 
 ### ③ 65~70 점수 밴드만 흑자 — 문턱이 아니라 '밴드'일 가능성
