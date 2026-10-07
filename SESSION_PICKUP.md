@@ -58,7 +58,10 @@ LLM 게이트는 기각 이력 **0건**(25건 전부 APPROVE)으로 무혐의.
 **권고 3 적용 완료** (§22.AO-37): `GET /signals/gate-status` 신설 + 대시보드 pending 행에
 `게이트 통과/탈락` 칩(사유 툴팁) · 탈락 시 한글 사유 표시 · 해당 행에 `⚠️ 강제 승인` 버튼.
 판정은 엔진에서만 한다(임계값 C# 복제 금지 — §22.AO-35 함정).
-**권고 4 미적용**: `auto_approve` 의 `skipped_list` 를 `pipeline_log` 에 저장(기각 사유 보존).
+**권고 4 적용 완료** (§22.AO-38): `skipped_list` + 범주별 집계(`skip_reasons`) + 당시 `thresholds` 를
+`pipeline_log` 에 저장. 이제 "어느 게이트가 무엇을 걸렀나"를 재계산 없이 바로 볼 수 있다.
+⚠️ 같은 작업 중 §22.AO-37 리팩터가 `run_auto_approve` 를 깨뜨린 것(`NameError`)을 발견해 고쳤다 —
+구문 검사만 하고 실행하지 않은 탓이다. 상세 §22.AO-38.
 진단 도구: `scripts/gate_audit.py`. 상세: `project_status.md` §22.AO-36.
 
 ### ③ 65~70 점수 밴드만 흑자 — 문턱이 아니라 '밴드'일 가능성

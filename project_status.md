@@ -3722,6 +3722,61 @@ LLM 게이트는 넣지 않았다: Ollama ~2min/signal 로 버튼 응답에 쓸 
 
 ---
 
+### 22.AO-38 기각 사유 저장 + 🔴 내가 §22.AO-37 에서 넣은 회귀 (2026-10-07)
+
+§22.AO-36 권고 4 적용. 그 과정에서 **직전 커밋이 넣은 회귀를 발견해 먼저 고쳤다.**
+
+**■ 1. 🔴 먼저: §22.AO-37 리팩터가 `run_auto_approve` 를 깨뜨렸다**
+게이트 로직을 `EntryGateConfig` 로 옮기면서 `score_min`·`macro_min`·`macro_ok` 지역변수를
+없앴는데, 함수 **끝의 summary dict 가 그 셋을 계속 참조**하고 있었다 → `NameError`.
+pending 이 0건이어도 summary 는 항상 만들어지므로 **모든 스케줄 실행이 실패했을 것이다**
+(22:00 / 01:30 / 04:30 KST). 다행히 적용 당일 저녁 전에 잡았다.
+
+*왜 놓쳤나*: `ast.parse` 로 **구문만** 확인하고 함수를 **실행하지 않았다.**
+`NameError` 는 구문 검사에 걸리지 않는다. `/auto-approve/run` 한 번만 눌러봤다면 즉시 드러났다.
+→ 이번에는 실제로 실행해 확인했다(`evaluated=0 ... macro_ok=True` 정상 반환).
+교정: summary 가 `gate_cfg.*` 를 쓰게 하고 `macro_ok` 는 그 자리에서 계산.
+덤으로 thresholds 에 score_max·교집합 임계값도 함께 남기게 했다.
+
+*같은 병을 한 번 더 확인했다*: AST 로 전 함수의 '정의 없이 쓰인 이름'을 전수 스캔했고
+남은 건 `_notify_auto_approve`(async def 라 스캐너가 놓친 오탐) 하나뿐이었다.
+`comp` 는 PASS 2 루프에 자체 정의가 있어 무사.
+
+**■ 2. 권고 4 — 기각 사유를 `pipeline_log` 에 저장**
+`run_auto_approve` 는 `skipped_list` 를 반환하는데 **아무도 저장하지 않아 매 실행마다 버려졌다.**
+그래서 §22.AO-36 에서 "어느 게이트가 무엇을 걸렀나"를 알 수 없어 게이트를 **재계산해** 귀속시켜야 했다.
+
+`_job_auto_approve` 의 `pipeline_log` details 에 다음을 추가:
+| 필드 | 내용 |
+|---|---|
+| `skip_reasons` | **범주별 집계** — `{"intersection": 12, "score_min": 5, "validate": 2}` |
+| `skipped_list` | 시그널별 상세(최대 50건, 초과분은 `skipped_truncated` 에 개수) |
+| `thresholds` | 그 실행에 적용된 임계값 — 나중에 설정이 바뀌어도 당시 기준을 알 수 있다 |
+| `evaluated` | 평가 건수(기존엔 없었다) |
+
+범주화는 `skip_category()` / `summarize_skips()` 로, **사유 문자열을 만드는
+`evaluate_basic_gates` 와 같은 파일에** 뒀다 — 문구가 바뀌면 같이 눈에 들어오게.
+사유가 여러 개면(`;` 구분) 각각 센다. 10개 범주: no_score · score_min · score_max · macro ·
+intersection · validate · llm_reject · llm_defer · llm_low_confidence · other.
+
+**■ 검증**
+- `skip_category` 10케이스 전원 정확, `summarize_skips` 복합 사유 집계 정확
+  (`{'intersection': 2, 'score_min': 1, 'validate': 1}`).
+- **end-to-end**: 임시 시그널 3건(ZZA 점수미달 · ZZB 교집합 · ZZC 점수초과) → 잡 직접 호출 →
+  `skipped=3`, `skip_reasons={"score_max":1,"score_min":1,"intersection":1}`,
+  `skipped_list` 3건 상세, `thresholds` 7개 모두 기록됨. 테스트 시그널·로그 삭제 확인.
+- `run_auto_approve` 실행 정상, 자가진단 **7/7 PASS**.
+
+**■ 교훈**
+- 🔴 **구문 검사는 검증이 아니다.** `ast.parse` 통과 ≠ 동작. 리팩터 뒤에는 **반드시 실행**할 것 —
+  이 저장소에서 같은 실수가 반복된다(§22.AO-27 호출부 회귀, §22.AO-32 재측정 누락, 그리고 이번).
+- **지역변수를 없앨 때는 그 함수 끝까지 읽을 것.** summary dict 처럼 함수 **말미**에서만 쓰이는
+  참조는 눈에 띄지 않는다.
+- **반환하지만 저장하지 않는 데이터는 없는 데이터다.** `skipped_list` 는 처음부터 있었는데
+  저장하지 않아, 두 달 뒤 분석에서 게이트를 재계산해야 했다.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
@@ -4045,6 +4100,10 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **구문 검사는 검증이 아니다 — 리팩터 뒤에는 실행할 것**(2026-10-07, §22.AO-38).
+  §22.AO-37 에서 지역변수 3개를 없앴는데 함수 **말미의 summary dict** 가 계속 참조해 `NameError` 였다.
+  `ast.parse` 는 통과했고, 스케줄 실행(22:00/01:30/04:30)이 전부 실패할 상태였다.
+  `/auto-approve/run` 한 번이면 즉시 드러났다. **반환하지만 저장하지 않는 데이터는 없는 데이터다.**
 - 🔴 **진입 경로가 둘이고 기준이 다르다**(2026-10-07, §22.AO-36). `auto_approve` 는 score·macro·
   교집합·LLM 게이트를 모두 적용하지만 `POST /signals/{id}/approve`(대시보드 승인 버튼)는
   **`validate_entry` 하나뿐**이다. 실측 체결의 **87%가 후자**이고 그중 56%가 교집합 게이트 탈락분이다.

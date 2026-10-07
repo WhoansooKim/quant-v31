@@ -114,6 +114,38 @@ def evaluate_basic_gates(sig: dict, cfg: EntryGateConfig, macro_score: float) ->
     return reasons
 
 
+def skip_category(reason: str) -> str:
+    """기각 사유 문자열 → 범주 (§22.AO-38).
+
+    사유 문자열을 만드는 `evaluate_basic_gates` 와 **같은 파일**에 둔다 —
+    문구가 바뀌면 이 함수도 같이 눈에 들어와야 한다(떨어뜨려 두면 조용히 어긋난다).
+    """
+    r = reason or ""
+    if "no_composite_score" in r:              return "no_score"
+    if "crowded top" in r:                     return "score_max"
+    if r.startswith("composite_score"):        return "score_min"
+    if r.startswith("macro_score"):            return "macro"
+    if r.startswith("intersection"):           return "intersection"
+    if r.startswith("validate"):               return "validate"
+    if "LLM REJECT" in r:                      return "llm_reject"
+    if "LLM DEFER" in r:                       return "llm_defer"
+    if "low_conf" in r:                        return "llm_low_confidence"
+    return "other"
+
+
+def summarize_skips(skipped: list[dict]) -> dict[str, int]:
+    """기각 목록을 범주별 건수로 집계. 사유가 여러 개면(`;` 구분) 각각 센다."""
+    out: dict[str, int] = {}
+    for item in skipped or []:
+        for part in str(item.get("reason", "")).split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            k = skip_category(part)
+            out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
 def run_auto_approve(
     pg: PostgresStore,
     pos_mgr: PositionManager,
@@ -275,8 +307,12 @@ def run_auto_approve(
         "skipped": len(skipped),
         "errors_count": len(errors),
         "macro_score": macro_score,
-        "macro_ok": macro_ok,
-        "thresholds": {"score_min": score_min, "macro_min": macro_min,
+        "macro_ok": macro_score >= gate_cfg.macro_min,
+        "thresholds": {"score_min": gate_cfg.score_min, "score_max": gate_cfg.score_max,
+                       "macro_min": gate_cfg.macro_min,
+                       "intersection_enabled": gate_cfg.isec_enabled,
+                       "momentum_min": gate_cfg.isec_mom_min,
+                       "technical_min": gate_cfg.isec_tech_min,
                        "llm_min_confidence": llm_min_confidence},
         "approved_list": approved,
         "executed_list": executed,

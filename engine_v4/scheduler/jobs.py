@@ -1409,7 +1409,7 @@ class SwingScheduler:
 
         check_label: 'pre_open' (22:00) | 'mid_session' (01:30) | 'pre_close' (04:30)
         """
-        from engine_v4.strategy.auto_approve import run_auto_approve
+        from engine_v4.strategy.auto_approve import run_auto_approve, summarize_skips
         try:
             from engine_v4.risk.position_manager import PositionManager
             from engine_v4.broker.kis_client import KisClient
@@ -1421,11 +1421,23 @@ class SwingScheduler:
                 cache=self.cache,
                 check_label=check_label,
             )
+            # 🔴 2026-10-07 (§22.AO-38): 기각 사유를 저장한다.
+            #   §22.AO-36 분석에서 "어느 게이트가 무엇을 걸렀나"를 알 수 없어
+            #   게이트를 **재계산해** 귀속시켜야 했다. run_auto_approve 는 skipped_list 를
+            #   반환하는데 그걸 아무도 저장하지 않아 매 실행마다 버려지고 있었다.
+            #   범주별 집계(skip_reasons)를 함께 넣어 추세를 바로 볼 수 있게 한다.
+            skipped_list = summary.get("skipped_list") or []
             self.pg.insert_pipeline_log(
                 f"auto_approve_{check_label}", "completed", 0,
-                {"approved": summary.get("auto_approved"), "executed": summary.get("executed"),
+                {"evaluated": summary.get("evaluated"),
+                 "approved": summary.get("auto_approved"), "executed": summary.get("executed"),
                  "skipped": summary.get("skipped"), "errors": summary.get("errors_count"),
-                 "llm_gate": summary.get("llm_gate_enabled")},
+                 "llm_gate": summary.get("llm_gate_enabled"),
+                 "thresholds": summary.get("thresholds"),
+                 "skip_reasons": summarize_skips(skipped_list),
+                 # jsonb 가 무한정 커지지 않게 상한을 둔다(통상 pending 은 수십 건)
+                 "skipped_list": skipped_list[:50],
+                 "skipped_truncated": max(0, len(skipped_list) - 50)},
             )
             logger.info(f"Auto-approve [{check_label}]: {summary.get('auto_approved')}/"
                         f"{summary.get('evaluated')} approved, {summary.get('executed')} executed, "
