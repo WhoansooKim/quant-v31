@@ -366,6 +366,117 @@ async def list_signals(status: str | None = None, limit: int = 50):
 
 # ⚠️ 이 라우트는 반드시 `/signals/{signal_id}` **앞에** 있어야 한다 — FastAPI 는 등록 순서로
 #   매칭하므로 뒤에 두면 "gate-status" 가 signal_id 로 파싱돼 422 가 난다(2026-10-07 실측).
+@app.get("/experiment/status")
+async def experiment_status(action: str = "prereg_mom_rank_092"):
+    """사전등록 실험 진행 상황 (§22.AO-42).
+
+    기준선·성공기준을 `swing_harness_log` 의 사전등록 레코드에서 **읽어온다** — 여기 하드코딩하지 않는다.
+    그래야 판정 기준을 나중에 끼워맞출 수 없고(§22.AO-40), 대시보드도 임계값을 복제하지 않는다
+    (§22.AO-37 에서 C# 에 복제하면 설정과 갈라진다는 것을 확인했다).
+
+    `config_drift` 가 핵심이다 — 관찰 중 설정이 되돌아가면 실험이 무효다(§22.AO-26 교훈).
+    """
+    try:
+        with pg.get_conn() as conn:
+            row = conn.execute("""
+                SELECT details, created_at FROM swing_harness_log
+                 WHERE action = %s AND status = 'completed'
+                 ORDER BY log_id DESC LIMIT 1""", (action,)).fetchone()
+            if not row:
+                raise HTTPException(404, f"사전등록 레코드 없음: {action}")
+            prereg = row["details"] or {}
+            started = row["created_at"]
+
+            # 관찰 중 설정이 되돌아갔는지 — 되돌아가면 실험 무효.
+            # 감시 대상 키/값은 사전등록 레코드가 지정한다(여기 하드코딩하지 않는다).
+            watch_key = prereg.get("config_key") or "intersection_momentum_min"
+            target = float(prereg.get("target_value"))
+            cur_thr = float(pg.get_config_value(watch_key, "0"))
+
+            # 적용 이후 신규 청산 (사전등록 시각 기준)
+            closed = conn.execute("""
+                SELECT (p.realized_pct*100)::float AS realized,
+                       (t.mfe_pct*100)::float AS mfe, p.hold_days,
+                       s.return_20d_rank::float AS mom, p.symbol,
+                       (p.exit_time AT TIME ZONE 'Asia/Seoul')::date AS exited
+                  FROM swing_positions p
+                  LEFT JOIN swing_trade_postmortem t ON t.position_id = p.position_id
+                  LEFT JOIN swing_signals s ON s.signal_id = p.signal_id
+                 WHERE p.status='closed' AND p.entry_time >= %s
+                 ORDER BY p.exit_time""", (started,)).fetchall()
+            open_n = conn.execute(
+                "SELECT count(*) AS n FROM swing_positions WHERE status='open' AND entry_time >= %s",
+                (started,)).fetchone()["n"]
+            # 승인 경로 분포 (§22.AO-37)
+            via = {r["k"]: r["n"] for r in conn.execute("""
+                SELECT coalesce(approved_via,'(none)') AS k, count(*) AS n
+                  FROM swing_signals
+                 WHERE signal_type='ENTRY' AND approved_at >= %s GROUP BY 1""", (started,)).fetchall()}
+            # 기각 사유 분포 (§22.AO-38)
+            skips: dict = {}
+            for r in conn.execute("""
+                SELECT details->'skip_reasons' AS sr FROM swing_pipeline_log
+                 WHERE step_name LIKE 'auto_approve%%' AND created_at >= %s
+                   AND details ? 'skip_reasons'""", (started,)).fetchall():
+                for k, v in (r["sr"] or {}).items():
+                    skips[k] = skips.get(k, 0) + int(v)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Experiment status failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Experiment status failed: {e}")
+
+    crit = prereg.get("prereg_success_criteria") or {}
+    base = prereg.get("baseline") or {}
+    import statistics as st
+    rz = [c["realized"] for c in closed if c["realized"] is not None]
+    mf = [c["mfe"] for c in closed if c["mfe"] is not None]
+    n = len(rz)
+    cur = {
+        "n_closed": n, "n_open": open_n,
+        "realized_median_pct": round(st.median(rz), 3) if rz else None,
+        "realized_mean_pct": round(st.fmean(rz), 3) if rz else None,
+        "mfe_median_pct": round(st.median(mf), 3) if mf else None,
+        "win_rate_pct": round(100*sum(1 for x in rz if x > 0)/n, 1) if n else None,
+        "hold_days_mean": round(st.fmean([c["hold_days"] for c in closed if c["hold_days"]]), 1)
+                           if any(c["hold_days"] for c in closed) else None,
+    }
+    # 판정 임계도 사전등록 레코드에서 읽는다 — 나중에 끼워맞출 수 없게
+    th = prereg.get("thresholds") or {}
+    min_n = int(th.get("min_n", 25))
+    need_r = float(th.get("realized_median_gt", 0.50))     # 왕복비용 돌파
+    need_mfe = float(th.get("mfe_median_ge", 5.5))
+    need_wr = float(th.get("win_rate_ge", 55.0))
+    checks = {
+        f"primary_realized_median_gt_{need_r}": (cur["realized_median_pct"] > need_r) if rz else None,
+        "min_not_losing(>0%)": (cur["realized_median_pct"] > 0) if rz else None,
+        f"secondary_mfe_median_ge_{need_mfe}": (cur["mfe_median_pct"] >= need_mfe) if mf else None,
+        f"secondary_win_rate_ge_{need_wr}": (cur["win_rate_pct"] >= need_wr) if n else None,
+        "sample_sufficient": n >= min_n,
+    }
+    drift_ok = abs(cur_thr - target) < 1e-9
+    return {
+        "experiment": action,
+        "started_kst": (started.astimezone(KST).strftime("%Y-%m-%d %H:%M") if started else None),
+        "change": prereg.get("change"),
+        "config_drift": {"ok": drift_ok, "key": watch_key, "expected": target, "current": cur_thr,
+                         "warning": None if drift_ok
+                                    else "🔴 설정이 사전등록값과 다르다 — 실험이 무효다"},
+        "baseline": base,
+        "current": cur,
+        "criteria": crit,
+        "checks": checks,
+        "progress": {"n": n, "min_n": min_n,
+                     "pct": round(100*min(1.0, n/min_n), 1),
+                     "earliest_verdict": crit.get("earliest_verdict")},
+        "verdict_ready": bool(drift_ok and checks["sample_sufficient"]),
+        "approved_via": via,
+        "skip_reasons": dict(sorted(skips.items(), key=lambda kv: -kv[1])),
+        "note": "평균이 아니라 중앙값으로 판정한다. n<30 이면 연장.",
+    }
+
+
 @app.get("/signals/gate-status")
 async def signals_gate_status(status: str = "pending"):
     """pending 시그널의 진입 게이트 판정 (§22.AO-37 후속).

@@ -380,7 +380,18 @@ class SwingStrategy:
             take_profit_pct = float(self.pg.get_config_value(
                 "take_profit_pct", str(self.cfg.take_profit_pct)))
 
-            if pnl_pct <= stop_loss_pct:
+            # §22.AO-43: 이 블록은 risk/exit_manager.py 의 5레이어와 **병렬로** 돈다.
+            #   즉 출구 경로가 둘이고 손절 기준이 서로 다르다(여기 고정 −5% / 저기 1.5×ATR).
+            #   §22.AO-36 에서 진입 경로가 둘인데 기준이 달랐던 것과 같은 종류의 결함이다.
+            #   14.8년 56,340거래 백테스트: 이 경로를 끄면 샤프 0.70 → 1.55, CAGR 5.0% → 11.2%
+            #   (동일 투자율 29%). 고정 −5% 손절이 ATR 하드스톱보다 먼저 발동해 승자를 자르고,
+            #   SMA50 이탈(trend_break)이 되돌림 구간에서 조기 청산시키는 것이 원인이다.
+            #   🔴 되돌리려면 swing_legacy_exit_enabled=true 로 하면 끝이다(사전등록 참조).
+            legacy_exit = self.pg.get_config_value(
+                "swing_legacy_exit_enabled", "false") == "true"
+            if not legacy_exit:
+                exit_reason = None
+            elif pnl_pct <= stop_loss_pct:
                 exit_reason = "stop_loss"
             elif pnl_pct >= take_profit_pct:
                 exit_reason = "take_profit"

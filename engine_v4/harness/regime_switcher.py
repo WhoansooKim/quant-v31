@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 #   레짐 적응은 진입 엄격도(auto_approve_score_min) + 트레일 폭(atr_trailing_multiplier)만 담당.
 #   ⚠️ 2026-10-07 현재 **둘 다 실효가 없다** — 전자는 기본 비활성(§22.AO-35),
 #      후자는 브레이크이븐이 먼저 발동해 미사용(§22.AO-26-C).
+#   🔴 2026-10-11 (§22.AO-43): 후자가 '미사용'이었던 것이 **손실의 주원인**이었다.
+#      브레이크이븐이 먼저 발동한다는 것은 +1R~+2.5R 되돌림 거래가 전부 0% 로 청산된다는
+#      뜻이고, 56,340거래에서 순중앙값이 매년 정확히 −0.300%(=본전 +0.2% − 수수료 0.5%)였다.
+#      브레이크이븐을 끄고 트레일을 1.0×ATR 로 좁히자 CAGR 1.9% → 11.2%(동일 투자율),
+#      샤프 0.32 → 1.55. 프리셋 값도 그에 맞춰 내렸다.
 #   위기(RISK_OFF) 방어 = 진입 score 70 + 좁은 트레일 2.0 으로 유지(포지션 크기 축소는 제외).
 # 🔴 2026-10-07 (§22.AO-35): 키 이름이 틀려서 **레짐 적응이 통째로 무효**였다.
 #   여기서 `composite_score_min` 을 썼지만 진입 경로(auto_approve)가 읽는 것은
@@ -71,17 +76,20 @@ REGIME_PRESETS: dict[str, dict[str, str]] = {
     "RISK_ON": {
         # 2026-06-03 IC 보정: 55 → 58 (60일 분석 결과 sweet spot 65-70)
         ENTRY_STRICTNESS_KEY: "58",
-        "atr_trailing_multiplier": "3.0",
+        # §22.AO-43: 2.5~3.0 은 트레일이 본전선을 넘지 못해 **모든 거래를 0% 상한에 묶는다**
+        #   (trail_sl = hwm − m×ATR 이 본전을 넘으려면 hwm > entry + m×ATR, 즉 +m R 이상).
+        #   14.8년 56,340거래 검증 고원은 0.5~1.5 이므로 프리셋도 그 안으로 옮긴다.
+        "atr_trailing_multiplier": "1.25",
     },
     "NEUTRAL": {
         # 2026-06-03 IC 보정: 60 → 63
         # 2026-06-04 절충 완화: 63 → 61 (시그널 0건 회복, 1주 관찰)
         ENTRY_STRICTNESS_KEY: "61",
-        "atr_trailing_multiplier": "2.5",
+        "atr_trailing_multiplier": "1.0",
     },
     "RISK_OFF": {
         ENTRY_STRICTNESS_KEY: "70",
-        "atr_trailing_multiplier": "2.0",
+        "atr_trailing_multiplier": "0.75",
     },
 }
 
