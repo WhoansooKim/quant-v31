@@ -4,6 +4,14 @@
 # 적용 2026-08-27:
 #   A-1 rsi2_exit_min_hold_days 0 → 8      (rsi2 30건 실제 +3.39% vs 20일보유 +9.53%)
 #   A-3 time_stop_days          15 → 21    (20일 신호지평 보장)
+#
+# 🔴 2026-10-11 (§22.AO-43): A-1 / A-3 은 **전진 해소**됐다. 이 실험은 7개월간
+#   표본 3건으로 판정 불가였는데, 그 자체가 측정 대역폭 문제의 증거였다.
+#   지표를 15.6년 소급 계산(hist_indicators, 493만 행)해 56,340거래로 답했다:
+#     A-1 보유일 하한: 0→CAGR 18.2% · 8→18.7% · 21→20.9% · off→21.5%  → 999(off) 적용
+#     A-3 time_stop:   21 → 60 (트레일이 제대로 동작하면 21일 정지가 승자를 자른다)
+#   이 스크립트는 그에 맞춰 기대값을 갱신했다. 전진검증 주체는
+#   scripts/exit_watch.py (6시간 주기) 로 이전한다.
 #   B   fractional_shares_enabled → true   (정수내림+강제1주 → 주가가중 왜곡 제거)
 #   A-2 atr_hard_stop_multiplier 는 2.0 적용 후 **1.5 로 되돌림** (hard_stop 은 원래 옳게
 #       자르고 있었음: n=11, 20일 갭 +0.17pp). 이 스크립트가 되돌림 유지 여부도 감시한다.
@@ -105,7 +113,13 @@ L.append("")
 L.append(f"<b>설정</b>: {cfg or '조회실패'}")
 warn = []
 if cfg:
-    if "rsi2_exit_min_hold_days=8" not in cfg: warn.append("A-1 rsi2 게이트 되돌려짐")
+    # §22.AO-43 (2026-10-11): A-1 은 **전진 해소**됐다. 라이브 7개월 표본 3건으로
+    # 판정 불가였던 것을 14.8년 56,340거래 포트폴리오 스윕으로 답했다:
+    #   보유일 하한 0→CAGR 18.2% / 8→18.7% / 21→20.9% / off→21.5%
+    # 가설 방향(하한을 올리면 개선)은 맞았고, 답은 끄는 것이다 → 999.
+    # 따라서 8 이 아닌 것은 '되돌림'이 아니라 '해소'다. 999 가 아닐 때만 경보한다.
+    if "rsi2_exit_min_hold_days=999" not in cfg:
+        warn.append("A-1 → AO-43 으로 해소(999 기대). 현재 값이 다르다")
     if "fractional_shares_enabled=true" not in cfg: warn.append("B 소수주식 꺼짐")
     if "allow_min_one_share=false" not in cfg: warn.append("B 강제1주 재활성")
     if "atr_hard_stop_multiplier=1.5" not in cfg: warn.append("A-2 스톱이 1.5 가 아님")
@@ -174,7 +188,8 @@ L.append("")
 if is_verdict:
     L.append("<b>판정 기준</b>: rsi2 보유일 5.5d↑ & 수익 +4.21%↑ (표본 10건↑)")
     L.append("  + 진입 CV&lt;0.10 + 등가중/달러가중 부호 일치 → A-1·B 유효")
-    L.append("되돌리려면 rsi2_exit_min_hold_days=0 / fractional_shares_enabled=false.")
+    L.append("A-1/A-3 은 §22.AO-43 으로 해소(rsi2 off · time_stop 60). "
+             "전진검증은 scripts/exit_watch.py (6시간)로 이전.")
 else:
     L.append(f"다음 {vdate} 리포트에서 판정한다. 그때 rsi2 표본이 10건 미만이면 3주차로 연장.")
 print("\n".join(L))

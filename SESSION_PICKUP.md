@@ -1,8 +1,58 @@
-# 세션 인수인계 — 2026-10-06 시스템 업데이트/재부팅
+# 세션 인수인계 — 2026-10-11 출구 결함 교정 (§22.AO-43)
 
-> 이 파일은 재부팅 직후 새 세션이 **가장 먼저** 읽는 용도다.
-> 전체 맥락은 `project_status.md` (§22.AO-26 ~ AO-32, §24), 의사결정 맥락은
-> `~/.claude/projects/-home-quant-quant-v31/memory/MEMORY.md` 에 있다.
+> 🔴 **가장 먼저 할 일: 엔진 재시작이 아직 안 됐다.**
+> ```bash
+> sudo systemctl restart quant-engine-v4 && sleep 25 && curl -s localhost:8001/health
+> ```
+> config 변경은 이미 라이브다(DB 에서 매번 읽는다). 그러나 `strategy/swing.py` 의
+> **레거시 출구 차단은 재시작 전까지 적용되지 않는다** — 그때까지 고정 −5% 손절과
+> SMA50 `trend_break` 가 계속 발동한다. 이것이 샤프 0.70 → 1.55 의 핵심 변경이다.
+
+## 0. §22.AO-43 요약 — 7개월 손실의 주원인을 찾았다
+
+출구가 **두 시스템으로 병렬** 운영됐고(`exit_manager` 5레이어 + `swing.py` 3조건)
+손절 기준이 달랐다(1.5×ATR vs 고정 −5%). 더 결정적으로 `breakeven_trigger_r` 과
+`atr_trailing_activation_r` 이 둘 다 1.0 이라 +1R 에서 동시 발동하는데
+`trail_sl = hwm − 2.5×ATR` 은 +2.5R 전까지 본전선 아래다 → **본전 스톱이 항상 이기고
++1R~+2.5R 되돌림 거래가 전부 0% 로 청산**된다. 사유가 `atr_trailing_stop` 으로
+**잘못 기록**돼 7개월간 보이지 않았고, 이름이 반대 방향(폭을 넓혀라)으로 유도했다.
+
+측정 돌파: `swing_indicators` 가 7개월치뿐이어서(collector 가 최신 1일만 저장)
+모든 백테스트가 라이브와 같은 창에 갇혀 있었다. `daily_prices` 의 15.6년 524만 봉으로
+지표를 소급 계산(`hist_indicators`, 493만 행) → **56,340거래** 표본 확보.
+
+| 구성 | CAGR | 낙폭 | 샤프 |
+|---|---|---|---|
+| 현행 전부 @29% (= 바꾸기 전) | +1.9% | −19.7% | 0.32 |
+| config+코드 @29% | **+11.2%** | −21.2% | **1.55** |
+| config+코드 @45% | **+17.5%** | −32.2% | **1.55** |
+| 벤치마크: SPY 15.0% / QQQ 20.0% / MTUM 16.0% (낙폭 모두 ~−34%) | | | |
+
+검증 4종 통과: 시뮬레이터 재현 상관 0.922(n=36 설정고정구간) · out-of-sample
+2011~2018 +14.4% / 2019~2026 +21.1% · 월블록 부트스트랩 CI [+15.0,+22.7](현행은 0 포함) ·
+순평균 음수인 해 0/16(현행 7/16) · trail 0.5~1.5 전부 양수(고원).
+
+적용: `atr_trailing_multiplier` 2.5→**1.0** · `breakeven_enabled`→**false** ·
+`rsi2_exit_min_hold_days` 8→**999** · `time_stop_days` 21→**60** ·
+`swing_legacy_exit_enabled` 신규 **false** · regime_switcher 프리셋 →1.25/1.0/0.75
+(🔴 `harness_regime_switch_enabled=true` 였으므로 프리셋을 안 고치면 되돌아간다)
+
+🔴 **판정 전까지 이 6키를 되돌리지 말 것.** 사전등록 `prereg_exit_overhaul_ao43`.
+판정 2027-01-31 또는 신규 n≥25 중 늦은 시점. 1차 기준 실현 **중앙값 > +0.50%**.
+중단: 신규 n≥15 에서 중앙값 < −1.0% → 즉시 되돌림.
+되돌리기: `swing_legacy_exit_enabled=true` · `atr_trailing_multiplier=2.5` ·
+`breakeven_enabled=true` · `rsi2_exit_min_hold_days=8` · `time_stop_days=21`
+
+**전진검증은 6시간 주기** `scripts/exit_watch.py` (cron `0 */6 * * *`).
+변화가 있을 때만 발송한다. 수동 확인: `bash scripts/exit_watch.sh --force`
+
+## 0-B. 미결정 — 사용자 판단 필요
+
+**투자율 29% → 45%** 가 18% 경로다. 적용하지 않았다 — 수익이 아니라 위험 다이얼이다.
+(@29% 낙폭 −21% / @45% −32% / @55% −39%, 샤프는 1.55 로 일정)
+`position_pct=0.05 × max_positions=20 = 목표 100%` 인데 실측 29%(최근 11%)인 이유는
+추가 게이트가 신호를 고갈시키기 때문이다. **`composite_score>=61` 의 IC 는 +0.066
+(p=0.474) 으로 예측력이 없다** — 투자율만 깎고 엣지는 없다. 다음 검토 대상.
 
 ## 0. 재부팅 직후 확인 (순서대로)
 
