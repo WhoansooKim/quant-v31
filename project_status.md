@@ -3898,6 +3898,55 @@ end-to-end: rank 0.80 시그널 승인 시도 → **HTTP 400** `intersection: ra
 
 ---
 
+### 22.AO-41 composite 제외 검토 — 효과가 0이어서 적용하지 않았다 (2026-10-11)
+
+§22.AO-40 에서 "`composite` 가 작동하는 유일한 팩터를 희석한다"(IC +0.066 vs mom_rank +0.323)를
+찾았으므로 선택에서 빼는 것을 검토했다. **측정해 보니 효과가 없어 적용하지 않았다** (사용자 결정).
+
+**■ 왜 내 원래 진단이 그대로 조치로 이어지지 않는가**
+내가 찾은 것은 "composite 의 **순위 정보**가 쓸모없다"였다. 그런데 **시스템은 composite 를
+순위로 쓰지 않는다** — 문턱(≥61)으로만 쓴다(`evaluate_basic_gates`). 둘은 다른 얘기다.
+
+**■ 측정 결과 — 실현 중앙값이 동일하다**
+| 정책 | n | 실현중앙 | 승률 | 연순수익 |
+|---|---|---|---|---|
+| **A 현행** (mom≥0.86 & comp 61~85) | 40 | **−0.39%** | 47.5% | −2.5% |
+| **B composite 제외** (mom≥0.86 만) | 56 | **−0.39%** | 48.2% | **−3.4%** |
+
+중앙값이 소수점까지 같고, **연순수익은 오히려 0.9%p 악화**된다 — 거래가 40→56건으로 늘어
+수수료만 더 낸다. B 가 추가로 들이는 **16건**은 실현중앙 −0.26%, 승률 50.0%,
+A 대비 **p=0.7647**, 부트스트랩 95% CI **[−4.27, +1.76]%** (0 포함, 폭 6%p).
+즉 좋지도 나쁘지도 않고 n 이 얇아 **구별 자체가 안 된다**.
+
+**■ 이유 — composite 문턱은 mom_rank 와 거의 중복이다**
+- 단독으로 빼면 **나빠진다**: `comp<61` 전체 36건은 실현중앙 **−2.30%**, 승률 30.6%
+- 그런데 `mom_rank ≥ 0.86` 을 이미 걸면 `comp<61 & mom≥0.86` 은 **16건뿐이고 p=0.51**
+→ **저점수와 저모멘텀이 거의 같은 거래를 가리킨다.** 문턱을 0.86 으로 올린 순간
+  composite 문턱은 할 일이 없어졌다. 빼도 되지만 **빼서 얻는 것도 없다.**
+
+**■ 적용하지 않은 결정적 이유**
+어제 `prereg_mom_rank_086` 으로 **변수 하나**를 사전등록했다. 여기서 두 번째 변수를 바꾸면
+2027-01 판정에서 "문턱 상향이 효과가 있었나"에 답할 수 없다.
+**효과가 0인 변경 때문에 측정 가능성을 잃는 것이 가장 나쁜 거래다.**
+재검토 시점: `prereg_mom_rank_086` 판정 이후, 그때 변수 하나로.
+
+**■ 부수 발견 — `auto_approve_score_max=85` 는 죽은 게이트**
+`composite > 85` 인 체결이 **7개월간 0건**이다. 한 번도 작동한 적이 없다.
+동작 변화가 없으므로 값은 유지하되, '작동 중'으로 오해하지 않게 `swing_config.description` 에
+기록했다(§22.AO-35 의 죽은 키 계열).
+
+**■ 기록**
+`swing_harness_log` 의 `review_composite_exclusion` 에 제안·측정치·결론·재검토 시점을 남겼다.
+*§22.AO-38 교훈 — 반환하지만 저장하지 않는 데이터는 없는 데이터다. 같은 논의를 반복하지 않기 위해.*
+
+**■ 교훈**
+- **"팩터의 예측력이 없다" ≠ "그 게이트를 빼야 한다".** 어떻게 쓰이는지(순위냐 문턱이냐)를
+  먼저 확인할 것. 나는 순위 기준의 결함을 찾고 문턱 제거를 제안했다 — 다른 얘기였다.
+- **게이트는 단독이 아니라 조합으로 평가할 것.** composite 문턱은 단독으로는 유용하고
+  (−2.30% 구간을 막는다) mom_rank 와 함께면 중복이다. 조건부로 봐야 결론이 바뀐다.
+
+---
+
 ### 22.AO-27 🔴 진입 승인 실패(회귀) + 워치리스트 3중 장애 (2026-08-31)
 
 §22.AO-26 B 적용이 **호출부의 정수 가정**을 남겨 진입이 전부 막혔던 회귀. 사용자 신고("추가하면 에러")로 발견.
@@ -4221,6 +4270,11 @@ ebff79e docs: update git history hash in project_status.md
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
 ### Critical Reminders
+- 🔴 **"팩터에 예측력이 없다" ≠ "그 게이트를 빼라"**(2026-10-11, §22.AO-41).
+  `composite` 는 **순위가 아니라 문턱**으로 쓰인다. 순위 결함(IC +0.066)을 찾고 문턱 제거를 제안했는데,
+  측정해 보니 실현 중앙값이 동일(−0.39%)하고 수수료만 늘어 연 0.9%p 악화였다.
+  게이트는 **단독이 아니라 조합**으로 볼 것 — composite 문턱은 단독으론 유용(−2.30% 구간 차단),
+  `mom_rank≥0.86` 과 함께면 중복(p=0.51).
 - 🔴 **`composite_score` 는 작동하는 팩터를 희석한다**(2026-10-11, §22.AO-40).
   `mom_rank` IC(MFE)=+0.323(Bonferroni p=2.5e-3) vs `composite` **+0.066(p=0.47)**.
   구성요소 중 `sentiment·flow·quality·value` 가 MFE 와 음(−)이다. 선택 기준으로 composite 를 쓰면
