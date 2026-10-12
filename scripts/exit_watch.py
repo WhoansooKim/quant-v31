@@ -29,7 +29,12 @@ EXPECT = {"atr_trailing_multiplier": "1.0", "breakeven_enabled": "false",
           # §22.AO-44 투자율 29%→45% (사용자 결정 2026-10-12). 이 둘은 **쌍으로만** 의미가 있다:
           #   position_pct 만 올리면 신호 폭주 때 100% 까지 가고, 그 폭주는 낙폭 직전에 일어난다.
           #   max_total_exposure_pct 가 백테스트의 target_deploy 와 같은 하드캡 역할을 한다.
-          "position_pct": "0.10", "max_total_exposure_pct": "0.45"}
+          "position_pct": "0.10", "max_total_exposure_pct": "0.45",
+          # §22.AO-46: dual_sort 는 거래당 구별력이 0인데 포트폴리오를 −5.0%p 깎았다.
+          #   기전 — 모멘텀이 높을수록 기각률이 올라간다(0.92~0.95 15.7% → 0.995+ 23.8%).
+          #   거래당 중앙값은 같아도(통과 +0.497% vs 기각 +0.541%) 포트폴리오는 상위
+          #   모멘텀부터 담으므로, 최상위를 빼면 수익이 빠진다.
+          "dual_sort_enabled": "false"}
 # 사전등록(§22.AO-44) — 투자율은 수익 다이얼이 아니라 위험 다이얼이다. 기대와 중단선을 먼저 못박는다.
 DEP_TARGET = 45.0          # 목표 투자율 %
 DEP_BAND = (33.0, 48.0)    # 이 밖이면 다이얼이 의도대로 안 먹은 것 (NEUTRAL×0.85 감쇠 포함)
