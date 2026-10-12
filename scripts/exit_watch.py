@@ -6,11 +6,11 @@
 → 6시간마다 **검사**하고, 상태가 바뀌었거나 하루 1회 요약 시각일 때만 **발송**한다.
 
 감시 항목
-  1. config 드리프트 — 6키 중 하나라도 되돌아가면 실험 무효 (즉시 경보)
+  1. config 드리프트 — 등록키 중 하나라도 되돌아가면 실험 무효 (즉시 경보)
   2. 신규 청산 진척 — n / 25, 실현 중앙값 vs +0.50% 기준선
   3. 청산 사유별 중앙값 — 특히 trail_or_be 가 0% 부근을 벗어났는가 (교정의 직접 서명)
   4. 보유 포지션의 확보 수익 — 스톱이 진입 위로 올라갔는가
-  5. 투자율 — 18% 경로는 ~45% 를 요구한다 (현재 29%)
+  5. 투자율 — 45% 목표 대역(33~48%) 집행 여부 + 낙폭 중단선 −30%
   6. 벤치마크 대조 — 적용일 이후 시스템 vs SPY / QQQ
 """
 from __future__ import annotations
@@ -25,7 +25,16 @@ MIN_N, BAR_MEDIAN = 25, 0.50   # 사전등록 기준
 KILL_N, KILL_MEDIAN = 15, -1.0 # 중단 조건
 EXPECT = {"atr_trailing_multiplier": "1.0", "breakeven_enabled": "false",
           "rsi2_exit_min_hold_days": "999", "time_stop_days": "60",
-          "swing_legacy_exit_enabled": "false", "intersection_momentum_min": "0.92"}
+          "swing_legacy_exit_enabled": "false", "intersection_momentum_min": "0.92",
+          # §22.AO-44 투자율 29%→45% (사용자 결정 2026-10-12). 이 둘은 **쌍으로만** 의미가 있다:
+          #   position_pct 만 올리면 신호 폭주 때 100% 까지 가고, 그 폭주는 낙폭 직전에 일어난다.
+          #   max_total_exposure_pct 가 백테스트의 target_deploy 와 같은 하드캡 역할을 한다.
+          "position_pct": "0.10", "max_total_exposure_pct": "0.45"}
+# 사전등록(§22.AO-44) — 투자율은 수익 다이얼이 아니라 위험 다이얼이다. 기대와 중단선을 먼저 못박는다.
+DEP_TARGET = 45.0          # 목표 투자율 %
+DEP_BAND = (33.0, 48.0)    # 이 밖이면 다이얼이 의도대로 안 먹은 것 (NEUTRAL×0.85 감쇠 포함)
+DD_EXPECT = -44.2          # 백테스트 5슬롯@45% 최대낙폭. 이걸 넘으면 가정이 깨진 것
+DD_KILL = -30.0            # 실측 낙폭이 여기 닿으면 투자율을 되돌릴지 사용자에게 묻는다
 STATE = "/home/quant/quant-v31/scripts/.exit_watch_state"
 ENVF = "/home/quant/quant-v31/.env"
 
@@ -54,14 +63,14 @@ def build(pg) -> tuple[str, dict]:
     drift = {k: (v, cur[k]) for k, v in EXPECT.items() if cur[k] != v}
     state["drift"] = sorted(drift)
 
-    L.append(f"<b>§22.AO-43 출구 교정 감시</b>  {dt.datetime.now():%m-%d %H:%M}")
+    L.append(f"<b>§22.AO-43 출구교정 + AO-44 투자율45% 감시</b>  {dt.datetime.now():%m-%d %H:%M}")
     if drift:
         L.append("\n🔴 <b>CONFIG 드리프트 — 실험 무효 위험</b>")
         for k, (want, got) in drift.items():
             L.append(f"  {k}: 기대 {want} / 실제 {got}")
         L.append("  되돌린 주체를 찾을 것 (regime_switcher · 변이 적용 · 수동)")
     else:
-        L.append("\n✅ config 6키 유지")
+        L.append(f"\n✅ config {len(EXPECT)}키 유지")
 
     with pg.get_conn() as c:
         r = c.execute("""
@@ -116,7 +125,20 @@ def build(pg) -> tuple[str, dict]:
             state["dep"] = round(dep)
             L.append(f"\n<b>자산 ${sn['tv']:,.0f}</b> · 누적 {float(sn['cr'] or 0)*100:+.2f}%"
                      f" · 최대낙폭 {float(sn['dd'] or 0)*100:.1f}%")
-            L.append(f"  투자율 {dep:.0f}%  (18% 경로는 ~45% 요구 — 백테스트 @29% 는 11.2%)")
+            ddm = float(sn["dd"] or 0) * 100
+            state["dd"] = round(ddm, 1)
+            if dep < DEP_BAND[0]:
+                # 동시보유가 적으면 다이얼을 올려도 투자율이 안 오른다 — 공급 제약 신호다.
+                L.append(f"  투자율 {dep:.0f}%  ⚠️ 목표 {DEP_TARGET:.0f}% 미달"
+                         f" — 신호 공급 제약(게이트)일 수 있다. 동시보유 수를 확인하라")
+            elif dep > DEP_BAND[1]:
+                L.append(f"  투자율 {dep:.0f}%  🔴 상한 초과 — max_total_exposure_pct 가 안 먹고 있다")
+            else:
+                L.append(f"  투자율 {dep:.0f}%  ✅ 목표 {DEP_TARGET:.0f}% 대역")
+            if ddm <= DD_KILL:
+                L.append(f"  🔴 <b>낙폭 {ddm:.1f}% — 중단 검토선 {DD_KILL:.0f}% 도달</b>"
+                         f" (백테스트 기대 최악 {DD_EXPECT:.1f}%). 투자율 되돌릴지 판단 필요")
+                state["urgent"] = True
 
         # 벤치마크 — 적용일 이후
         bm = []
@@ -141,7 +163,9 @@ def build(pg) -> tuple[str, dict]:
                 line += f" · <b>시스템 {sys_ret:+.2f}%</b>"
                 state["sysret"] = round(sys_ret, 2)
             L.append(line)
-    L.append("\n<i>14.8년 56,340거래 기준: @29% CAGR 11.2% / @45% 17.5% (낙폭 −32%)</i>")
+    L.append("\n<i>14.8년 백테스트 — 라이브는 동시보유 5개 수준이므로 5슬롯 행이 기준이다:\n"
+             "  5슬롯 @29% CAGR 14.4% 낙폭 −30% · <b>@45% CAGR 22.5% 낙폭 −44%</b>\n"
+             "  (20슬롯이면 @45% 17.5% 낙폭 −32% — 슬롯이 차야 얻는 값이다)</i>")
     return "\n".join(L), state
 
 
