@@ -34,7 +34,21 @@ EXPECT = {"atr_trailing_multiplier": "1.0", "breakeven_enabled": "false",
           #   기전 — 모멘텀이 높을수록 기각률이 올라간다(0.92~0.95 15.7% → 0.995+ 23.8%).
           #   거래당 중앙값은 같아도(통과 +0.497% vs 기각 +0.541%) 포트폴리오는 상위
           #   모멘텀부터 담으므로, 최상위를 빼면 수익이 빠진다.
-          "dual_sort_enabled": "false"}
+          "dual_sort_enabled": "false",
+          # §22.AO-47: intersection_technical_min 은 이름과 달리 전적으로 LSTM 게이트였다.
+          #   가격점수(tech_base)는 three조건 통과 시 구조적으로 60 이상이다(소급 289,394건
+          #   중 60 미만 0건, 추세25+돌파20+거래량15=60). 37% 기각은 전부 LSTM 블렌딩이고
+          #   그 LSTM 은 기준선대비 +0.03%p — 예측력이 없다. 게이트 값은 그대로 두고
+          #   블렌딩 가드를 기준선대비로 바꿨다(정확도 절대값은 기준선 51.8% 아래라 무의미).
+          "intersection_technical_min": "60", "lstm_min_edge": "0.02"}
+# 사전등록(§22.AO-47) — 재시작은 '진입 공급 변경'이다. 기대값을 먼저 못박는다.
+#   기록된 190신호의 반사실 계산(복합점수는 factor_detail.weights 로 정확히 재계산):
+SUP_TECH_REJECT_BEFORE = 37.4   # % — 기술 게이트 기각률 (71/190)
+SUP_TECH_REJECT_EXPECT = 0.0    # % — 블렌딩이 멈추면 base>=60 이므로 전원 통과
+SUP_ALL3_BEFORE = 28            # 3게이트 전부 통과 (7.4개월)
+SUP_ALL3_EXPECT = 42            # 동일 기간 반사실 → 월 3.8 → 5.7건 (+50%)
+#   🔴 공급이 늘어도 노출은 max_total_exposure_pct=0.45 하드캡이 막는다 — 공급 증가는
+#      '슬롯이 더 빨리 차는' 효과로 나타나야 하고, 투자율이 48% 를 넘으면 캡이 안 먹은 것이다.
 # 사전등록(§22.AO-44) — 투자율은 수익 다이얼이 아니라 위험 다이얼이다. 기대와 중단선을 먼저 못박는다.
 DEP_TARGET = 45.0          # 목표 투자율 %
 DEP_BAND = (33.0, 48.0)    # 이 밖이면 다이얼이 의도대로 안 먹은 것 (NEUTRAL×0.85 감쇠 포함)
@@ -47,6 +61,7 @@ DD_YEAR_MEAN = -8.9        # 연도별 최대낙폭의 평균 — MDD 보다 표
 #   🔴 MDD 는 14.8년 중 한 구간이 정해서 인접 설정끼리 7~9%p 씩 튄다
 #      (해제 10슬롯 −41.5% vs 12슬롯 −32.2%). 판정에는 연낙폭 평균을 쓸 것.
 DD_KILL = -30.0            # 실측 낙폭이 여기 닿으면 투자율을 되돌릴지 사용자에게 묻는다
+SUP_CUTOFF = "2026-10-13"   # §22.AO-47 재시작일 — 공급 측정 기준선
 STATE = "/home/quant/quant-v31/scripts/.exit_watch_state"
 ENVF = "/home/quant/quant-v31/.env"
 
@@ -151,6 +166,36 @@ def build(pg) -> tuple[str, dict]:
                 L.append(f"  🔴 <b>낙폭 {ddm:.1f}% — 중단 검토선 {DD_KILL:.0f}% 도달</b>"
                          f" (백테스트 기대 최악 {DD_EXPECT:.1f}%). 투자율 되돌릴지 판단 필요")
                 state["urgent"] = True
+
+        # ── 진입 공급 (§22.AO-47) ─────────────────────────────────
+        # 🔴 이 블록이 '재시작이 공급을 바꿨는가'를 재는 유일한 장치다. 사전등록:
+        #    기술 게이트 기각률 37.4% → 0% / 3게이트 통과 월 3.8 → 5.7건.
+        #    LSTM 블렌딩이 다시 켜지면(edge≥0.02 모델 등장) 기각률이 되돌아온다 —
+        #    그때는 '되돌아왔다'가 아니라 '검증을 통과한 모델이 들어왔다'는 뜻이다.
+        sup = c.execute("""
+            SELECT count(*) n,
+                   sum((factor_detail->'technical'->'lstm' IS NOT NULL)::int) blended,
+                   sum(((factor_detail->'technical'->>'score')::float < 60)::int) tech_rej
+            FROM swing_signals
+            WHERE signal_type='ENTRY' AND time > %s::date
+              AND factor_detail->'technical'->>'score' IS NOT NULL""",
+            (SUP_CUTOFF,)).fetchone()
+        if sup and sup["n"]:
+            n = sup["n"]; rej = sup["tech_rej"] or 0; bl = sup["blended"] or 0
+            rate = rej / n * 100
+            state["sup_n"], state["sup_rej"] = n, round(rate)
+            L.append(f"\n<b>진입 공급 {n}건</b> (재시작 {SUP_CUTOFF} 이후)"
+                     f" · 기술게이트 기각 {rej}건 {rate:.0f}%"
+                     f"  (사전등록 {SUP_TECH_REJECT_BEFORE:.1f}% → {SUP_TECH_REJECT_EXPECT:.0f}%)")
+            if bl:
+                L.append(f"  ⚠️ LSTM 블렌딩 {bl}건 — 기준선대비 0.02 를 넘는 모델이 들어왔는지"
+                         f" swing_ml_models.edge_vs_baseline 확인")
+            if rate > 10:
+                L.append(f"  🔴 기각률이 기대(0%)와 다르다 — 가격점수는 three조건 통과 시"
+                         f" 구조적으로 60 이상이어야 한다. _calc_technical 을 확인하라")
+                state["urgent"] = True
+        else:
+            L.append(f"\n<b>진입 공급</b> 재시작 이후 점수화된 신호 0건 — 아직 판정 불가")
 
         # 벤치마크 — 적용일 이후
         bm = []
