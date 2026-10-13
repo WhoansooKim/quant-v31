@@ -4691,6 +4691,109 @@ ebff79e docs: update git history hash in project_status.md
 8. **All phases complete**: A(LLM) + B(Exit) + C(MultiFactor) + D(Optimizer) + E(Events) + F(Telegram/KIS) + **Tier 3(LSTM+Social+DualSort)** + **Macro Overlay**
 9. **New features**: Capital Injection, Watchlist(weighted scoring + signal backtest + intraday chart + sector heatmap), Collapsible Sidebar(JS+localStorage), Live Ticker, Help(Korean 12섹션, 용어사전+초보자교육), Extended Hours, Performance TWR Fix, CNN Ticker Links, Ollama Local LLM, Background AI Analysis, Market Sector Heatmap(in-place drilldown), Mobile Responsive, Pagination, Chart Touch Zoom, Signal Replay Backtest, **LSTM Prediction(70.5%), Social Sentiment(Reddit+StockTwits), Dual Sort(momentum+value)**, **User Management + RBAC**, **yfinance Short Interest + Crowding Integration**, **Fundamental rule_based optimization**
 
+### §22.AO-47 — technical_score 소급 + LSTM 검증 결함 4개 수정 (2026-10-13)
+
+**사용자 지시:** "technical_score도 소급해서 측정해 달라" → 결과를 보고한 뒤
+"결과 나오면 LSTM 결함도 고쳐달라".
+
+#### 소급 결과: 게이트가 거르는 것이 **0건**이다
+
+`ai/multi_factor.py:_calc_technical` 의 가격 부분을 SQL 로 축자 재현해
+`hist_indicators.tech_base` 를 **4,933,554행** 계산했다(외부 API 불필요 — 전부 자체 데이터).
+
+```
+momentum = min(40, eff_rank×40)   (eff_rank: rank>0.80 구간은 0.80+(rank−0.80)×0.6 로 압축)
+         + 추세정렬 25 + 돌파 20 + 거래량 15
+```
+
+15.6년 three조건 후보 **289,394건**에서 tech_base 분포:
+
+| 최소 | 중앙 | 최대 | 60 미만 |
+|---|---|---|---|
+| **60.1** | 90.1 | 96.8 | **0건** |
+
+🔴 `추세 25 + 돌파 20 + 거래량 15 = 60` 이므로 **three조건을 통과하면 모멘텀이 0점이어도
+60 이상**이다. `intersection_technical_min = 60` 은 가격지표 쪽에서 **구조적으로 무효**다.
+
+#### 그런데 라이브에서는 공급의 37% 를 거른다 — 전부 LSTM 이다
+
+`technical = 가격점수 × 0.5 + up_probability × 100 × 0.5`
+
+기록된 `factor_detail` 을 역산:
+
+| 종목 | 기본점수 | LSTM up_prob | 최종 technical |
+|---|---|---|---|
+| TGT | 81 | 0.0004 | 37.3 |
+| DIS | 86 | 0.0008 | 41.0 |
+
+🔴 **`intersection_technical_min` 은 이름과 달리 전적으로 LSTM 게이트다.** config 키 이름이
+실제 동작을 숨기고 있었다.
+
+라이브 실측(종료 거래 n=121)은 방향은 맞지만 **판정에 못 쓴다**:
+기각 n=47 중앙 −1.850% / 승률 34.0% vs 통과 n=74 중앙 −0.165% / 승률 48.6%,
+중앙값차 95%CI **[−0.550, +3.000]%p**(0 포함), Mann-Whitney **p=0.0905**,
+월 고정 비교 양수 **2/4**. 모멘텀은 균형(0.859 vs 0.849)이라 교란이 아니라 표본 부족이다.
+
+#### 🔴 그래서 LSTM 자체를 측정했다 — 결함 4개
+
+`scripts/lstm_validate.py` : **같은 데이터·같은 모델**로 분할과 정규화만 바로잡아 재측정.
+기준선 = '항상 상승' 예측 정확도 = 5일 상승 비율 = **51.76%**.
+
+| 방식 | 정확도 | AUC | 기준선대비 |
+|---|---|---|---|
+| A. 라이브 재현 (종목분할 + 전구간정규화) | 55.88% | 0.578 | **+4.13%p** |
+| B. 시간분할 + 인과정규화 | 51.79% | 0.533 | **+0.03%p** |
+| C. 시간분할 + 전구간정규화 | 51.82% | 0.533 | +0.06%p |
+
+B≈C 이므로 **정규화 누출의 기여는 0.03%p**, 보고 정확도 인플레이션은 **거의 전부 분할**이다.
+
+`ai/lstm_predictor.py` 의 결함:
+
+1. **분할이 종목 기준이었다.** `all_X` 를 종목별 concat 한 뒤 `X_all[:80%]` 로 잘랐다.
+   주석은 `time-ordered, not random` 이었지만 concat 순서가 종목-major 라 학습/검증이
+   **같은 날짜**를 공유했다. → 기준선대비 +4.13%p 의 출처.
+2. **표준화가 전 구간 통계였다.** `means/stds` 를 창 전체에서 뽑아 t 시점 샘플을 t 이후
+   데이터로 표준화했다(선행정보). 기여 +0.03%p — 작지만 누출이다.
+3. 🔴 **종목당 학습 시퀀스가 11개뿐이었다.** `days=400`(거래일 275)에서 sma200 이 199행,
+   lookback 60 + horizon 5 를 더 먹어 `i∈[259,270)` → 11개. 200종목 × 11 = **2,197** =
+   DB `swing_ml_models.total_samples` 에 기록된 그 값이다. 게다가 그 11개 날짜가 **모든
+   종목에서 동일**해서 (1) 의 종목 분할이 사실상 "같은 2주를 양쪽에 두는" 분할이 됐다.
+4. 🔴 **예측 경로에서 특성 2개가 항상 0 이었다.** `predict` 는 `days=lookback+100=160`
+   (거래일 109)을 받아 sma200 이 **100% 결손** → `price_sma200_pct`,`sma50_sma200_pct`
+   전부 NaN → `np.nan_to_num(nan=0.0)` 이 조용히 0 으로 메웠다. 학습은 실제 z 값을 봤다.
+   **학습/서빙 불일치** — up_probability 0.0004 포화의 원인.
+
+실측 확인 (수정 전):
+
+| 경로 | 행 | 시퀀스 | sma200 결손 | 마지막 60창 전부-NaN 컬럼 |
+|---|---|---|---|---|
+| 학습 days=400 | 275 | **11** | 72.4% | 0/10 |
+| 예측 days=160 | 109 | 0 | **100.0%** | **2/10** |
+
+추가로 **`lstm_min_accuracy = 0.53` 가드는 공허했다** — 기준선이 이미 51.8% 인데 문턱이
+0.53 이고, 비교 대상이 누출된 0.6455 였다. 아무것도 걸러낼 수 없는 가드였다.
+
+#### 적용한 수정 (코드)
+
+- `ai/lstm_predictor.py`
+  - `_causal_zscore(feat, window=252)` 신설 — **시점 t 까지의 이동통계**로만 표준화.
+    창 길이에 의존하지 않으므로 결함 2 와 4 가 동시에 해소된다. 표준편차 0 은 NaN 으로 둔다.
+  - `train_days = 1100` (거래일 ~754) 을 **학습·예측이 공유**한다 → 종목당 시퀀스
+    11 → **431**, 날짜 11 → **431**, 총 2,197 → **81,819**.
+  - `_prepare_sequences` 가 **날짜를 함께 반환**한다 — 날짜 없이는 올바른 분할이 불가능하다.
+  - 분할: 날짜 경계 80/20 + **horizon 엠바고**(학습 끝 5영업일 폐기, 타깃 구간 겹침 제거).
+    날짜 60개 미만이면 학습을 **거부**한다(결함 3 재발 방지).
+  - `baseline`(다수클래스 정확도)·`edge_vs_baseline` 을 결과와 DB 에 기록. edge ≤ 0 이면 경고.
+  - `predict` 는 결손을 0 으로 메우지 않고 **'예측 불가'로 보고**한다.
+- `ai/multi_factor.py` — 블렌딩 가드를 정확도 절대값에서 **기준선대비**로 교체
+  (`lstm_min_edge`, 기본 0.02). 기준선이 기록되지 않은 과거 모델은 **검증되지 않은 것으로
+  보고 블렌딩하지 않는다**.
+- DB: `swing_ml_models` 에 `baseline`,`edge_vs_baseline`,`n_dates` 컬럼 추가.
+  `swing_config` 에 `lstm_min_edge=0.02` 추가, `lstm_min_accuracy` 는 사문화 표기.
+- `scripts/lstm_walkforward.py` 신설 — 경계 하나는 표본 하나다. 4폴드 × 2시드 +
+  **날짜 블록 부트스트랩** 신뢰구간(같은 날 200종목은 시장을 공유하므로 유효 표본은
+  7,133개가 아니라 날짜 블록 ~36개다).
+
 ### Critical Reminders
 - 🔴 **청산 사유 이름을 믿지 말 것**(2026-10-11, §22.AO-43). `atr_trailing_stop` 23건은
   실제로는 **본전 스톱**이었다(`effective_sl = max(trail, breakeven)` 에서 트레일이
@@ -4853,6 +4956,30 @@ ebff79e docs: update git history hash in project_status.md
   Finnhub `/stock/metric` 은 한 호출 12~14초(120~260KB)다. 60회/분 한도에 맞춰 1.15초 간격
   순차로 짜면 1,504종목에 5.4시간이지만, 8스레드면 34회/분으로 한도 아래이면서 45분이다.
   **먼저 한 호출을 타이밍하라.**
+- 🔴 **검증 분할은 '시간 기준'이라고 주석에 쓰여 있어도 코드를 봐야 한다**(2026-10-13, §22.AO-47).
+  `lstm_predictor.py:train` 은 `# Train/test split (80/20 — time-ordered, not random)` 아래에서
+  종목별 concat 을 인덱스로 잘랐다 → 실제로는 **종목 분할**이고 학습/검증이 같은 날짜를
+  공유했다. 같은 데이터·같은 모델에서 분할만 날짜 기준으로 바꾸자 기준선대비가
+  **+4.13%p → +0.03%p** 로 사라졌다. 시퀀스를 만들 때 **날짜를 같이 들고 다녀라** —
+  날짜가 없으면 올바른 분할이 애초에 불가능하다. 타깃이 h일 전방이면 **h일 엠바고**도 필요하다.
+- 🔴 **정확도 절대값은 판정에 쓸 수 없다**(§22.AO-47). 5일 방향 예측의 기준선('항상 상승')은
+  이미 **51~54%** 다. `lstm_min_accuracy=0.53` 가드는 기준선보다 낮은 문턱을 누출된 0.6455 와
+  비교하고 있었으므로 **아무것도 걸러내지 못했다**. 학습 결과에는 `baseline` 과
+  `edge_vs_baseline` 을 반드시 함께 저장하고, 소비자 코드는 edge 만 본다(`lstm_min_edge`).
+  기준선이 기록되지 않은 과거 모델은 **검증되지 않은 것으로 취급해 쓰지 않는다.**
+- 🔴 **학습과 예측이 다른 길이의 창을 받으면 특성이 조용히 0 이 된다**(§22.AO-47).
+  학습 `days=400`, 예측 `days=160` 이었고 예측 쪽에서 sma200 이 100% 결손 → 특성 2개가
+  전부 NaN → `nan_to_num(nan=0.0)` 이 0 으로 메웠다. 학습이 본 적 없는 입력이 들어가
+  up_probability 가 0.0004 로 포화됐고, 그 값이 진입 공급의 37% 를 거르고 있었다.
+  창 길이는 **한 곳에서 정해 양쪽이 공유**하고, 결손은 메우지 말고 '예측 불가'로 보고하라.
+- 🔴 **표본 개수가 설계를 폭로한다**(§22.AO-47). DB 에 적힌 `total_samples=2,197` 이
+  200종목 × **11** 이라는 뜻임을 알아챈 것이 결함 3·4 의 입구였다. 400일 창에서 sma200 이
+  199행, lookback 60 + horizon 5 를 더 먹으면 종목당 11개만 남는다 — 그 11개 날짜는 모든
+  종목에서 동일하다. **학습 표본 수를 종목당으로 환산해서 검산하라.**
+- ⚠️ **경계 하나는 표본 하나다**(§22.AO-47). 같은 폴드에서 **시드만 바꿔** 기준선대비
+  +0.73%p / **−2.45%p** 가 나왔다. 여러 폴드 × 여러 시드로 재고, 같은 날 전 종목은 시장
+  움직임을 공유하므로 신뢰구간은 **날짜 블록 부트스트랩**으로 내라(유효 표본은 샘플 수가
+  아니라 날짜 수다).
 
 ## 25. 하락장 방어 로드맵 (Tier 1~3) — ✅ 구현·배포 완료 (상세 §22.AJ/AK)
 

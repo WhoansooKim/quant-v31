@@ -426,12 +426,30 @@ class MultiFactorScorer:
             try:
                 pred = self.lstm.predict(symbol)
                 if pred.get("available"):
-                    min_accuracy = float(self.pg.get_config_value(
-                        "lstm_min_accuracy", "0.53"))
                     model_info = self.lstm.get_model_info()
-                    model_accuracy = model_info.get("accuracy", 0)
+                    model_accuracy = model_info.get("accuracy", 0) or 0
 
-                    if model_accuracy >= min_accuracy:
+                    # 🔴 정확도 절대값으로 거르면 안 된다(§22.AO-47). 5일 방향 예측의
+                    #    기준선('항상 상승')은 51~54% 라 `accuracy >= 0.53` 은 아무것도
+                    #    걸러내지 못했다 — 누출된 0.6455 로 공허하게 통과했다.
+                    #    판정은 **기준선대비**로 한다. 기준선이 없는 (수정 전 학습된)
+                    #    모델은 검증되지 않은 것으로 보고 블렌딩하지 않는다.
+                    min_edge = float(self.pg.get_config_value("lstm_min_edge", "0.02"))
+                    baseline = model_info.get("baseline")
+                    edge = model_info.get("edge_vs_baseline")
+                    if edge is None and baseline is not None:
+                        edge = model_accuracy - baseline
+
+                    if edge is None:
+                        logger.debug(
+                            f"LSTM blend skipped {symbol}: 기준선 미기록 모델 "
+                            f"(accuracy={model_accuracy}) — 재학습 전까지 블렌딩 안 함")
+                    elif edge < min_edge:
+                        logger.debug(
+                            f"LSTM blend skipped {symbol}: 기준선대비 {edge:+.4f} "
+                            f"< {min_edge} (accuracy={model_accuracy}, "
+                            f"baseline={baseline})")
+                    else:
                         lstm_weight = float(self.pg.get_config_value(
                             "lstm_weight_in_technical", "0.5"))
                         # LSTM score: up_probability * 100
@@ -444,9 +462,12 @@ class MultiFactorScorer:
                             "lstm_score": round(lstm_score, 1),
                             "weight": lstm_weight,
                             "model_accuracy": model_accuracy,
+                            "baseline": baseline,
+                            "edge_vs_baseline": edge,
                         }
                         logger.debug(f"LSTM blend {symbol}: base={base_score:.0f} "
-                                     f"lstm={lstm_score:.0f} → {blended:.0f}")
+                                     f"lstm={lstm_score:.0f} → {blended:.0f} "
+                                     f"(edge={edge:+.4f})")
             except Exception as e:
                 logger.debug(f"LSTM blend failed for {symbol}: {e}")
 
