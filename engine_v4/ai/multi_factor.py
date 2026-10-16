@@ -9,6 +9,7 @@ Finnhub API 없으면 기술 점수만 계산 (graceful degradation).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -72,6 +73,16 @@ CONTRADICT = negative developments (downgrade, weak guidance, losses, investigat
 MIXED = both present, or too vague to tell
 
 Answer with one word only: SUPPORT, CONTRADICT, or MIXED"""
+
+def _fingerprint(news_used: list[dict]) -> str:
+    """LLM 에 보낸 헤드라인 블록의 지문 (sha1 앞 12자) — §22.AO-48.
+
+    같은 지문이면 **같은 입력**이다. 지문이 같은데 판정이 다르면 LLM 불안정이고,
+    지문이 다르면 뉴스가 바뀐 것이다. 이 구분이 없으면 composite 차이를 설명할 수 없다.
+    프롬프트에 들어가는 형태 그대로(헤드라인만, 순서 포함) 해시한다."""
+    blob = "\n".join((n.get("headline") or "") for n in news_used)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+
 
 # 범주 → 점수/확신 매핑 (코드가 결정, 모델은 분류만)
 _DIRECTION_MAP = {
@@ -677,32 +688,56 @@ class MultiFactorScorer:
 
         news = self.finnhub.get_company_news(symbol, days=7)
         if not news:
-            return {**neutral, "source": "no_news", "reason": "no recent news"}
+            return {**neutral, "source": "no_news", "reason": "no recent news",
+                    "evidence": {"news_fetched": 0, "news_used": 0,
+                                 "fingerprint": _fingerprint([]), "headlines": []}}
 
-        headlines = "\n".join(f"- {n['headline']}" for n in news[:8])
+        # 🔴 LLM 에 **실제로 보내는** 것만 근거로 센다(§22.AO-48).
+        #    이전에는 news_count=len(news)=10 을 기록했는데 프롬프트에 들어가는 건 8개였다 —
+        #    기록된 수가 입력을 가리키지 않으면 재현이 불가능하다.
+        used = news[:8]
+        headlines = "\n".join(f"- {n['headline']}" for n in used)
         src = "claude" if self._claude else f"llm/{self._ollama_model}"
+        ev = {
+            "fingerprint": _fingerprint(used),
+            "news_fetched": len(news),
+            "news_used": len(used),
+            "model": src,
+            "headlines": [{"h": n.get("headline", "")[:200],
+                           "dt": n.get("datetime", ""),
+                           "src": n.get("source", "")} for n in used],
+        }
 
         # ① 종목 고유 뉴스인가
-        rel = self._llm_word(RELEVANCE_PROMPT.format(symbol=symbol, headlines=headlines),
-                             {"YES", "NO"})
+        rel, rel_raw = self._llm_word(
+            RELEVANCE_PROMPT.format(symbol=symbol, headlines=headlines), {"YES", "NO"})
+        ev["rel_word"], ev["rel_raw"] = rel, rel_raw
         if rel is None:
-            return {**neutral, "source": "llm_error", "news_count": len(news)}
+            out = {**neutral, "source": "llm_error", "news_count": len(used), "evidence": ev}
+            self._save_llm_momentum_audit(symbol, sig, out)
+            return out
         if rel == "NO":
-            return {"score": 50.0, "confidence": 0.0, "relevant": False,
-                    "direction": None, "reason": "no company-specific news",
-                    "source": src, "news_count": len(news), "damped": False}
+            out = {"score": 50.0, "confidence": 0.0, "relevant": False,
+                   "direction": None, "reason": "no company-specific news",
+                   "source": src, "news_count": len(used), "damped": False,
+                   "evidence": ev}
+            self._save_llm_momentum_audit(symbol, sig, out)
+            return out
 
         # ② 방향 분류
-        direction = self._llm_word(DIRECTION_PROMPT.format(symbol=symbol, headlines=headlines),
-                                   set(_DIRECTION_MAP))
+        direction, dir_raw = self._llm_word(
+            DIRECTION_PROMPT.format(symbol=symbol, headlines=headlines), set(_DIRECTION_MAP))
+        ev["dir_word"], ev["dir_raw"] = direction, dir_raw
         if direction is None:
-            return {**neutral, "source": "llm_error", "relevant": True,
-                    "news_count": len(news)}
+            out = {**neutral, "source": "llm_error", "relevant": True,
+                   "news_count": len(used), "evidence": ev}
+            self._save_llm_momentum_audit(symbol, sig, out)
+            return out
 
         score, conf = _DIRECTION_MAP[direction]
         min_conf = float(self.pg.get_config_value("llm_momentum_min_confidence", "40"))
         effective = score if conf >= min_conf else 50.0
-        return {
+        out = {
             "score": effective,
             "raw_score": score,
             "confidence": conf,
@@ -710,12 +745,49 @@ class MultiFactorScorer:
             "direction": direction,
             "reason": f"company news -> {direction}",
             "source": src,
-            "news_count": len(news),
+            "news_count": len(used),
             "damped": effective != score,
+            "evidence": ev,
         }
+        self._save_llm_momentum_audit(symbol, sig, out)
+        return out
 
-    def _llm_word(self, prompt: str, allowed: set[str]) -> str | None:
-        """한 단어 분류만 받는다. 허용 집합 밖이면 None(=판단 보류)."""
+    def _save_llm_momentum_audit(self, symbol: str, sig: dict, out: dict) -> None:
+        """판정 근거를 swing_llm_momentum_audit 에 남긴다 (§22.AO-48).
+
+        왜 별 테이블인가: `factor_detail` 에도 요약은 들어가지만, 같은 종목의 두 판정을
+        **지문으로 대조**하려면 조회 가능한 행이 필요하다. fingerprint 가 같고 dir_word 가
+        다르면 LLM 불안정, 다르면 뉴스가 바뀐 것이다 — 이 구분이 없으면 composite 차이의
+        원인을 끝까지 알 수 없다(KO 가 65.5/59.8 로 갈린 사례).
+        """
+        ev = out.get("evidence") or {}
+        if not ev.get("fingerprint"):
+            return
+        try:
+            with self.pg.get_conn() as conn:
+                conn.execute("""
+                    INSERT INTO swing_llm_momentum_audit
+                      (signal_id, symbol, fingerprint, model, news_fetched, news_used,
+                       headlines, rel_word, rel_raw, dir_word, dir_raw,
+                       raw_score, confidence, score, damped, source)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (sig.get("signal_id"), symbol, ev["fingerprint"], ev.get("model"),
+                      ev.get("news_fetched"), ev.get("news_used"),
+                      json.dumps(ev.get("headlines") or [], ensure_ascii=False),
+                      ev.get("rel_word"), ev.get("rel_raw"),
+                      ev.get("dir_word"), ev.get("dir_raw"),
+                      out.get("raw_score"), out.get("confidence"), out.get("score"),
+                      out.get("damped"), out.get("source")))
+                conn.commit()   # 🔴 get_conn 은 커밋 없이 닫는다(data/storage.py)
+        except Exception as e:
+            logger.warning(f"LLM momentum audit save failed for {symbol}: {e}")
+
+    def _llm_word(self, prompt: str, allowed: set[str]) -> tuple[str | None, str]:
+        """한 단어 분류만 받는다. 허용 집합 밖이면 None(=판단 보류).
+
+        🔴 **원문 응답도 함께 돌려준다**(§22.AO-48). 채택된 토큰만 남기면 모델이 무엇을
+           말했는지 사후에 알 수 없고, 같은 입력에 다른 답이 나와도 추적이 불가능하다.
+        """
         text = ""
         try:
             if self._claude:
@@ -732,10 +804,10 @@ class MultiFactorScorer:
                     timeout=300)
                 text = r.json().get("response", "")
             else:
-                return None
+                return None, ""
         except Exception as e:
             logger.warning(f"LLM word query failed: {e}")
-            return None
+            return None, f"<error: {e}>"
 
         up = text.strip().upper()
         # 가장 먼저 등장하는 허용 토큰을 채택 (모델이 앞뒤로 말을 붙여도 견딤)
@@ -744,7 +816,7 @@ class MultiFactorScorer:
             i = up.find(w)
             if i >= 0 and i < pos:
                 best, pos = w, i
-        return best
+        return best, text.strip()[:500]
 
     # ─── Flow Score (0-100) ──────────────────────────────
 

@@ -4867,6 +4867,60 @@ SSE 스트림의 graceful shutdown 타임아웃으로 §22.AO-32 에 기록된 �
 재시작 이후 점수화된 ENTRY 신호 수 · 기술게이트 기각률(사전등록 37.4% → 0%) ·
 LSTM 블렌딩 재개 여부. 기각률이 10% 를 넘으면 즉시 경보한다.
 
+### §22.AO-48 — LLM 모멘텀 판정 근거 저장 (2026-10-16)
+
+**사용자 지시:** "뉴스 저장부터 고쳐달라."
+
+#### 왜 막혀 있었나
+
+KO 가 **같은 지표·같은 가중치**로 10-16 07:00 에 composite 65.5, 21:30 에 59.8 이 나왔다.
+차이의 **전부**가 `llm_momentum` 50 → 25 였다(가중 0.2305 × 25점 = 5.76 = 관측차 5.7).
+`llm_momentum_active=true` 이므로 composite 의 sentiment 자리는 naive 감성이 아니라
+qwen2.5:3b 의 판정이고, 그 가중은 technical(0.239)에 이어 **두 번째**다.
+그런데 점수와 함께 **판정 근거가 된 뉴스를 저장하지 않아** 뉴스가 바뀐 것인지 모델이
+흔들린 것인지 알 수 없었다. 재현 불가능한 입력에 0.23 가중이 걸려 있고 게이트는 61 이다.
+
+#### 고친 것
+
+- `swing_llm_momentum_audit` 신설 — 프롬프트에 **실제로 들어간** 헤드라인(본문·시각·출처),
+  **지문**(헤드라인 블록 sha1 앞 12자), 양 단계의 **원문 응답**, 점수·확신·감쇠 여부.
+- `_llm_word` 가 `(채택토큰, 원문)` 을 돌려준다. 채택된 토큰만 남기면 모델이 무엇을
+  말했는지 사후에 알 수 없다.
+- 🔴 `news_count` 의 의미를 바로잡았다. 전에는 `len(news)` = **수집 10건**을 기록했지만
+  프롬프트에 들어가는 건 `news[:8]` = **8건**이었다. 기록된 수가 입력을 가리키지 않으면
+  재현이 불가능하다. 이제 `news_fetched` / `news_used` 를 따로 남긴다.
+- `scripts/llm_momentum_audit.py` — 지문 충돌(같은 뉴스·다른 판정) 검사 + 종목별 변동폭.
+
+#### 저장하자마자 나온 것
+
+**① KO 의 50 → 25 는 LLM 불안정이 아니라 뉴스 변경이었다.**
+같은 지문으로 2회 호출 → `YES/CONTRADICT/25.0` **동일**. `temperature=0.0` 이 의도대로
+결정적이다. 07:00 판정은 KFC 기사 이전의 뉴스 집합이었다. **전 세션에서 "어느 쪽이 맞는지
+알 수 없다"고 한 것이 바로 이 질문이고, 저장 하나로 답이 나왔다.**
+
+**② 그런데 그 CONTRADICT 자체가 틀렸다.** KO 에 보낸 8건 중:
+- "Jefferies Maintains Coca-Cola **Buy** Rating as KFC Switches US Beverage Supply From PepsiCo"
+- "KFC Dumps Pepsi For Coke In US Restaurants Starting 2027 — **PEP Stock Drops**"
+- "Why Did MRNA, **KO**, V Stocks **Climb To 52-Week Highs** Today?"
+
+KO 에게 명백히 **호재**다. 부정적인 부분("PepsiCo just lost", "sting financially", "PEP Stock
+Drops")은 전부 **PEP 이야기**다. 모델은 그걸 KO 의 악재로 읽어 25점을 줬다 —
+**회사 귀속 오류**이고, 2단 분해가 막으려던 바로 그 실패다.
+
+**③ ①단계(관련성)가 양방향으로 틀린다.** pending 8종목을 돌린 결과 `relevant=NO` → 중립 50
+이 3건인데, 근거 헤드라인은 명백히 자기 회사 뉴스였다:
+- **NOW**: 8건 중 7건이 ServiceNow 고유 — "Why ServiceNow (NOW) Stock Is Trading Up Today",
+  "3 Reasons ServiceNow Stock Is Climbing", "Unveils EmployeeWorks AI Platform", "Climbs 5%"
+- **DHR**: "Will Danaher (DHR) Beat Estimates Again", "Danaher Teams Up With NVIDIA"
+- **DIS**: "Walt Disney (DIS) Lands $20 Million AI Asset Deal", "Walt Disney (DIS) Rises Higher Than Market"
+
+즉 8종목 중 3건이 **거짓 음성**(실제 호재를 중립으로), 1건(KO)이 **방향 오류**다.
+⚠️ 이건 내 눈으로 헤드라인을 읽은 판단이고 n=8 이다 — **측정이 아니라 측정의 출발점**이다.
+이제 근거가 쌓이므로 `llm_momentum` 의 IC 를 다른 팩터처럼 정식으로 잴 수 있다.
+
+🔴 **적용 전 제약**: 코드 변경이므로 **엔진 재시작 전까지 감사 기록이 남지 않는다**
+(현재 audit 행 10건은 전부 세션 밖 수동 호출). 재시작 후 자동으로 쌓인다.
+
 ### Critical Reminders
 - 🔴 **청산 사유 이름을 믿지 말 것**(2026-10-11, §22.AO-43). `atr_trailing_stop` 23건은
   실제로는 **본전 스톱**이었다(`effective_sl = max(trail, breakeven)` 에서 트레일이
@@ -5071,6 +5125,16 @@ LSTM 블렌딩 재개 여부. 기각률이 10% 를 넘으면 즉시 경보한다
   (→25)였는데 둘 다 `news_count=10` 이다. 🔴 **어느 쪽이 맞는지 기록만으로는 알 수 없다** —
   점수와 함께 **판정 근거가 된 뉴스 항목을 저장하지 않기 때문**이다. 재현 불가능한 입력에
   0.23 가중이 걸려 있고 게이트는 61 이다. 저장부터 고쳐야 측정이 가능하다.
+- 🔴 **점수를 저장하면서 근거를 저장하지 않으면 그 팩터는 영구 미측정 상태가 된다**
+  (2026-10-16, §22.AO-48). `llm_momentum` 은 composite 에서 두 번째로 큰 가중(0.2305)을
+  가지고 게이트(61)를 넘기거나 떨어뜨리는데, 판정에 쓴 뉴스를 남기지 않아 **같은 종목의
+  65.5 와 59.8 중 어느 쪽이 맞는지 알 수 없었다**. 헤드라인·지문(sha1)·원문 응답을 남기자
+  하루 안에 ① 원인은 뉴스 변경(temperature=0.0 은 결정적) ② 그 판정 자체가 회사 귀속
+  오류라는 것 ③ ①단계 관련성 판정이 거짓 음성 3/8 이라는 것이 동시에 드러났다.
+  **LLM 출력을 숫자로 쓰는 모든 곳에 입력 지문과 원문 응답을 남겨라.**
+- ⚠️ **기록된 개수가 실제 입력 개수인지 확인하라**(§22.AO-48). `news_count=10` 으로 7개월간
+  기록돼 있었지만 프롬프트에 들어간 건 `news[:8]` 로 **8개**였다. 수가 입력을 가리키지
+  않으면 재현이 불가능하다 — `news_fetched` / `news_used` 로 분리했다.
 
 ## 25. 하락장 방어 로드맵 (Tier 1~3) — ✅ 구현·배포 완료 (상세 §22.AJ/AK)
 

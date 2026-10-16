@@ -1,6 +1,6 @@
 PENDING_CLAUDE_REPORT
-# §22.AO-26 주간 검증 — 2026-10-12 00:05 KST
-🔬 §22.AO-26 6주차 판정 (10/12 00:05 KST)
+# §22.AO-26 주간 검증 — 2026-10-15 09:05 KST
+🔬 §22.AO-26 7주차 판정 (10/15 09:05 KST)
 적용 8/27: rsi2 보유일게이트 8d · 시간청산 21d · 소수주식
 
 설정: allow_min_one_share=false,atr_hard_stop_multiplier=1.5,fractional_shares_enabled=true,momentum_factor_active=true,rsi2_exit_min_hold_days=999,time_stop_days=60
@@ -15,11 +15,11 @@ B 진입금액 산포 (등가중이면 CV→0)
   → ✅ 등가중 복원
 
 등가중 vs 달러가중 (적용 전 +0.294% vs -0.332%)
-  청산 42건: 등가중 -0.870% vs 달러가중 -1.128% (실현 $-39.30)
-  → ✅ 괴리 해소(부호 일치)
+  청산 43건: 등가중 -0.668% vs 달러가중 -1.029% (실현 $-36.24)
+  → 🟡 아직 괴리 — 표본 누적 필요
 
-평균 보유일 8.6d (적용 전 4.9d, 신호지평 20d)
-청산 사유: hard_stop:16, atr_trailing_stop:12, trend_break:6, rsi2_overbought:5, stop_loss:2, time_stop:1
+평균 보유일 8.7d (적용 전 4.9d, 신호지평 20d)
+청산 사유: hard_stop:16, atr_trailing_stop:13, trend_break:6, rsi2_overbought:5, stop_loss:2, time_stop:1
 
 판정 기준: rsi2 보유일 5.5d↑ & 수익 +4.21%↑ (표본 10건↑)
   + 진입 CV&lt;0.10 + 등가중/달러가중 부호 일치 → A-1·B 유효
