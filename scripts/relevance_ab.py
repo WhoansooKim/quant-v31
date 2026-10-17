@@ -26,14 +26,10 @@ import sys
 
 sys.path.insert(0, "/home/quant/quant-v31")
 from engine_v4.ai.data_feeds import FinnhubClient
-from engine_v4.ai.multi_factor import RELEVANCE_PROMPT, MultiFactorScorer
+from engine_v4.ai.multi_factor import (RELEVANCE_PROMPT, MultiFactorScorer,
+                                       _core_names, _names_company)
 from engine_v4.config.settings import get_config
 from engine_v4.data.storage import PostgresStore
-
-# 회사명 꼬리 제거 — "The Walt Disney Company" → "Walt Disney"
-_SUFFIX = re.compile(
-    r"\b(inc|incorporated|corp|corporation|company|co|plc|ltd|limited|holdings?|"
-    r"group|sa|nv|ag|lp|llc|trust|class\s+[abc]|the)\b\.?", re.I)
 
 RELEVANCE_PROMPT_V2 = """Headlines:
 {headlines}
@@ -49,32 +45,16 @@ commentary that does not name {company}.
 Answer with one word only: YES or NO"""
 
 
-def core_names(company: str) -> list[str]:
-    """회사명에서 매칭에 쓸 핵심어들. 'Coca-Cola' 처럼 하이픈도 그대로 둔다."""
-    c = _SUFFIX.sub(" ", company or "")
-    c = re.sub(r"[,\.]", " ", c)
-    c = re.sub(r"\s+", " ", c).strip()
-    if not c:
-        return []
-    out = [c]
-    # 첫 단어가 충분히 길면 그것도 후보 ("ServiceNow", "Danaher", "Medtronic")
-    first = c.split()[0]
-    if len(first) >= 5 and first.lower() != c.lower():
-        out.append(first)
-    return out
-
-
 def rule_relevant(symbol: str, company: str, heads: list[str]) -> tuple[bool, str]:
-    """결정적 규칙. 반환 (관련있음, 근거)."""
-    names = core_names(company)
+    """결정적 규칙 — 구현은 `multi_factor._names_company` 하나뿐이다(갈라지면 측정이 무효).
+
+    여기서는 '지명된 헤드라인이 하나라도 있는가' 로 축약해 LLM 의 YES/NO 와 비교한다.
+    라이브는 같은 규칙으로 **필터**해서 지명된 것만 ②에 넘긴다.
+    """
     for h in heads:
-        for n in names:
-            if n and n.lower() in h.lower():
-                return True, f"회사명 '{n}'"
-        # 티커는 대문자 경계로만 — 'NOW'/'MO' 가 영어 단어인 경우를 피한다
-        if re.search(rf"\({re.escape(symbol)}\)", h) or \
-           re.search(rf"(?<![A-Za-z]){re.escape(symbol)}(?![A-Za-z])", h):
-            return True, f"티커 '{symbol}'"
+        why = _names_company(symbol, company, h)
+        if why:
+            return True, why
     return False, "일치 없음"
 
 

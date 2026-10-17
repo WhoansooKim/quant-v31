@@ -10,6 +10,7 @@ Finnhub API 없으면 기술 점수만 계산 (graceful degradation).
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import logging
 import time
@@ -73,6 +74,71 @@ CONTRADICT = negative developments (downgrade, weak guidance, losses, investigat
 MIXED = both present, or too vague to tell
 
 Answer with one word only: SUPPORT, CONTRADICT, or MIXED"""
+
+# 회사명 꼬리 제거 — "The Walt Disney Company" → "Walt Disney"
+_NAME_SUFFIX = re.compile(
+    r"\b(inc|incorporated|corp|corporation|compan(y|ies)|co|plc|ltd|limited|holdings?|"
+    r"group|sa|nv|ag|lp|llc|trust|class\s+[abc]|the)\b\.?", re.I)
+
+
+# 회사명 끝 토큰이 업종 일반어면 매칭에 쓰지 않는다 — "Boston Scientific" 의 'Scientific',
+# "Bank of America" 의 'America' 가 남의 기사까지 끌어오는 것을 막는다.
+_GENERIC_TOKEN = {
+    "america", "american", "scientific", "technologies", "technology", "systems",
+    "solutions", "services", "financial", "industries", "industrial", "international",
+    "materials", "devices", "networks", "communications", "energy", "resources",
+    "motors", "brands", "products", "partners", "properties", "enterprises",
+    "laboratories", "pharmaceuticals", "health", "healthcare", "global", "digital",
+    "electric", "electronics", "media", "entertainment", "airlines", "stores",
+    "automotive", "semiconductor", "software", "data", "capital", "insurance",
+    "bancorp", "bank", "air", "foods", "beverage", "retail", "metals", "mining",
+    "companies", "stores", "worldwide", "america", "americas", "trust", "realty",
+}
+
+
+def _core_names(company: str) -> list[str]:
+    """회사명에서 매칭에 쓸 핵심어. 'Coca-Cola' 처럼 하이픈은 그대로 둔다.
+
+    전체명 외에 **구별력 있는 한 토큰**도 후보로 넣는다 — 그러지 않으면
+    "The Walt Disney Company" 가 'Walt Disney' 로만 남아 "Disney offers $20M to ..." 를
+    놓친다(§22.AO-51 실측). 단 업종 일반어(`_GENERIC_TOKEN`)는 제외한다.
+    """
+    c = _NAME_SUFFIX.sub(" ", company or "")
+    c = re.sub(r"[,\.]", " ", c)
+    c = re.sub(r"\s+", " ", c).strip()
+    if not c:
+        return []
+    out = [c]
+    toks = c.split()
+    if len(toks) > 1:
+        # **마지막** 토큰만 본다. 영어 회사명에서 구별력은 보통 뒤에 있고
+        # 앞 토큰은 지명·인명이 많다("Boston" Scientific → Boston Beer/Properties 오탐).
+        t = toks[-1]
+        if len(t) >= 6 and t.lower() not in _GENERIC_TOKEN:
+            out.append(t)
+    return out
+
+
+def _names_company(symbol: str, company: str, headline: str) -> str | None:
+    """이 헤드라인이 **이 회사를 지명**하는가. 반환은 근거 문자열 또는 None (§22.AO-51).
+
+    🔴 왜 결정적 규칙인가: ①단계를 LLM(qwen2.5:3b)에 맡겼더니 실측 거짓음성이
+    압도적이었다 — "Apple Inc." 의 Apple 뉴스에도 NO 를 냈다. 프롬프트가 **티커만**
+    주는데 헤드라인은 **회사명**으로 쓰기 때문이다("ServiceNow"/"Walt Disney"). 게다가
+    NOW·MO 같은 티커는 영어 단어라 질문 자체가 모호하다.
+    관련성은 판단이 아니라 **문자열 일치 문제**다 — LLM 은 방향(②)에만 쓴다.
+    """
+    if not headline:
+        return None
+    for n in _core_names(company):
+        if n and n.lower() in headline.lower():
+            return f"회사명 '{n}'"
+    # 티커는 대문자 경계로만 — 'NOW'/'MO' 가 영어 단어로 쓰인 경우를 피한다
+    if re.search(rf"\({re.escape(symbol)}\)", headline) or \
+       re.search(rf"(?<![A-Za-z]){re.escape(symbol)}(?![A-Za-z])", headline):
+        return f"티커 '{symbol}'"
+    return None
+
 
 def _fingerprint(news_used: list[dict]) -> str:
     """LLM 에 보낸 헤드라인 블록의 지문 (sha1 앞 12자) — §22.AO-48.
@@ -674,11 +740,18 @@ class MultiFactorScorer:
     def _llm_momentum_score(self, symbol: str, sig: dict) -> dict:
         """뉴스가 최근 주가 움직임의 '지속'을 지지하는지 평가 (0-100).
 
-        2단 분해: ① 종목 고유 뉴스인가(YES/NO) → ② 방향(SUPPORT/CONTRADICT/MIXED).
+        2단 분해: ① 이 회사를 지명한 헤드라인만 추린다 → ② 방향(SUPPORT/CONTRADICT/MIXED).
         모델에는 분류만 시키고 점수 매핑은 코드가 한다 — 소형 모델의 숫자 앵커링 회피.
-        ①이 NO 면 '정보 없음'이라 중립 50·확신 0 으로 끝낸다. 지지 뉴스의 부재를
-        반박으로 오해하지 않기 위한 장치.
+        지명된 헤드라인이 0 이면 '정보 없음'이라 중립 50·확신 0 으로 끝낸다. 지지 뉴스의
+        부재를 반박으로 오해하지 않기 위한 장치.
+
+        🔴 ①은 **결정적 규칙**이다(§22.AO-51). 이전에는 LLM 에 YES/NO 를 물었고,
+        그 결과 표본의 72%가 기각되어 강제 중립 50 이 됐으며(§22.AO-49) 실측에서
+        "Apple Inc." 의 Apple 뉴스조차 NO 였다. 또 YES 여도 남의 회사 헤드라인이 ②로
+        넘어가 귀속 오류를 냈다(KO 의 CONTRADICT 는 실제로 PEP 악재였다).
+        `llm_relevance_mode` = rule(기본) | llm(구 동작) | both(규칙으로 판정하고 LLM 답은 기록만).
         """
+        rel, rel_raw = None, ""
         neutral = {"score": 50.0, "confidence": 0.0, "reason": "",
                    "source": "disabled", "news_count": 0}
         if self.pg.get_config_value("llm_momentum_enabled", "true") != "true":
@@ -692,37 +765,90 @@ class MultiFactorScorer:
                     "evidence": {"news_fetched": 0, "news_used": 0,
                                  "fingerprint": _fingerprint([]), "headlines": []}}
 
-        # 🔴 LLM 에 **실제로 보내는** 것만 근거로 센다(§22.AO-48).
-        #    이전에는 news_count=len(news)=10 을 기록했는데 프롬프트에 들어가는 건 8개였다 —
-        #    기록된 수가 입력을 가리키지 않으면 재현이 불가능하다.
-        used = news[:8]
-        headlines = "\n".join(f"- {n['headline']}" for n in used)
+        # ① 관련성 — **결정적 규칙으로 이 회사를 지명한 헤드라인만 남긴다** (§22.AO-51).
+        #    두 가지를 동시에 고친다:
+        #    (a) 거짓 음성. LLM 에 YES/NO 를 묻던 이전 구현은 표본의 72%를 기각해
+        #        강제 중립 50 으로 만들었고(§22.AO-49), 실측에서 "Apple Inc." 의 Apple
+        #        뉴스조차 NO 였다 — 프롬프트가 티커만 주는데 헤드라인은 회사명을 쓴다.
+        #    (b) 🔴 귀속 오류. 이전에는 ①이 YES 면 **남의 회사 헤드라인까지** 그대로 ②로
+        #        넘어갔다. KO 가 CONTRADICT(25점) 를 받은 이유가 실제로는 PEP 악재였다.
+        #        지명된 것만 넘기면 두 결함이 한 번에 사라진다.
+        company = self._company_name(symbol)
         src = "claude" if self._claude else f"llm/{self._ollama_model}"
+        mode = self.pg.get_config_value("llm_relevance_mode", "rule")   # rule|llm|both
+
+        own, dropped = [], []
+        for n in news:
+            why = _names_company(symbol, company, n.get("headline", ""))
+            (own if why else dropped).append((n, why))
+
+        # 🔴 LLM 에 **실제로 보내는** 것만 근거로 센다(§22.AO-48).
+        used = [n for n, _ in own][:8]
         ev = {
             "fingerprint": _fingerprint(used),
             "news_fetched": len(news),
+            "news_own": len(own),
             "news_used": len(used),
+            "rel_mode": mode,
+            "company": company,
             "model": src,
-            "headlines": [{"h": n.get("headline", "")[:200],
-                           "dt": n.get("datetime", ""),
-                           "src": n.get("source", "")} for n in used],
+            "headlines": [{"h": n.get("headline", "")[:200], "dt": n.get("datetime", ""),
+                           "src": n.get("source", ""),
+                           "why": next((w for m, w in own if m is n), None)} for n in used],
+            "dropped": [n.get("headline", "")[:160] for n, _ in dropped][:10],
         }
+        if not company:
+            ev["rel_rule"] = "회사명 없음 — 규칙 적용 불가"
 
-        # ① 종목 고유 뉴스인가
-        rel, rel_raw = self._llm_word(
-            RELEVANCE_PROMPT.format(symbol=symbol, headlines=headlines), {"YES", "NO"})
-        ev["rel_word"], ev["rel_raw"] = rel, rel_raw
-        if rel is None:
-            out = {**neutral, "source": "llm_error", "news_count": len(used), "evidence": ev}
-            self._save_llm_momentum_audit(symbol, sig, out)
-            return out
-        if rel == "NO":
+        # 측정 대역폭 유지: mode=both 면 LLM ①도 호출해 기록만 한다(판정에는 쓰지 않는다).
+        if mode in ("llm", "both") or not company:
+            allh = "\n".join(f"- {n['headline']}" for n in news[:8])
+            rel, rel_raw = self._llm_word(
+                RELEVANCE_PROMPT.format(symbol=symbol, headlines=allh), {"YES", "NO"})
+            ev["rel_word"], ev["rel_raw"] = rel, rel_raw
+
+        # 회사명이 없으면 규칙을 쓸 수 없으므로 LLM 판정으로 되돌린다(열화 경로).
+        if not company:
+            if rel is None:
+                out = {**neutral, "source": "llm_error",
+                       "news_count": len(news[:8]), "evidence": ev}
+                self._save_llm_momentum_audit(symbol, sig, out)
+                return out
+            if rel == "NO":
+                out = {"score": 50.0, "confidence": 0.0, "relevant": False,
+                       "direction": None, "reason": "no company-specific news (llm fallback)",
+                       "source": src, "news_count": len(news[:8]), "damped": False,
+                       "evidence": ev}
+                self._save_llm_momentum_audit(symbol, sig, out)
+                return out
+            used = news[:8]
+            ev["news_used"] = len(used)
+            ev["fingerprint"] = _fingerprint(used)
+        elif mode == "llm":
+            # 대조군: 예전 동작을 **그대로** 재현한다 — ②에도 걸러지지 않은 목록을 준다.
+            # (필터를 섞으면 구 동작과의 비교가 성립하지 않는다)
+            used = news[:8]
+            ev["news_used"] = len(used)
+            ev["fingerprint"] = _fingerprint(used)
+            if rel is None or rel == "NO":
+                out = {"score": 50.0, "confidence": 0.0, "relevant": rel == "YES",
+                       "direction": None, "reason": "no company-specific news (llm)",
+                       "source": src, "news_count": len(used), "damped": False,
+                       "evidence": ev}
+                self._save_llm_momentum_audit(symbol, sig, out)
+                return out
+        elif not used:
+            # 규칙상 이 회사를 지명한 헤드라인이 **하나도 없다** — 진짜 '정보 없음'
+            ev["rel_rule"] = f"지명 0/{len(news)}"
             out = {"score": 50.0, "confidence": 0.0, "relevant": False,
-                   "direction": None, "reason": "no company-specific news",
-                   "source": src, "news_count": len(used), "damped": False,
-                   "evidence": ev}
+                   "direction": None, "reason": "no headline names the company",
+                   "source": src, "news_count": 0, "damped": False, "evidence": ev}
             self._save_llm_momentum_audit(symbol, sig, out)
             return out
+        if company and used:
+            ev["rel_rule"] = f"지명 {len(own)}/{len(news)}"
+
+        headlines = "\n".join(f"- {n['headline']}" for n in used)
 
         # ② 방향 분류
         direction, dir_raw = self._llm_word(
@@ -752,6 +878,29 @@ class MultiFactorScorer:
         self._save_llm_momentum_audit(symbol, sig, out)
         return out
 
+    def _company_name(self, symbol: str) -> str:
+        """`symbols.company_name` 조회 + 캐시.
+
+        ⚠️ `swing_universe.company_name` 은 428행 전부 빈 문자열이다(§22.AO-51) —
+        채워진 쪽은 `symbols` 뿐이므로 거기서 읽는다.
+        """
+        if not hasattr(self, "_name_cache"):
+            self._name_cache: dict[str, str] = {}
+        if symbol in self._name_cache:
+            return self._name_cache[symbol]
+        name = ""
+        try:
+            with self.pg.get_conn() as conn:
+                row = conn.execute(
+                    "SELECT company_name FROM symbols WHERE ticker = %s "
+                    "AND coalesce(company_name,'') <> '' LIMIT 1", (symbol,)).fetchone()
+            if row:
+                name = row["company_name"] or ""
+        except Exception as e:
+            logger.warning(f"company_name lookup failed for {symbol}: {e}")
+        self._name_cache[symbol] = name
+        return name
+
     def _save_llm_momentum_audit(self, symbol: str, sig: dict, out: dict) -> None:
         """판정 근거를 swing_llm_momentum_audit 에 남긴다 (§22.AO-48).
 
@@ -768,11 +917,14 @@ class MultiFactorScorer:
                 conn.execute("""
                     INSERT INTO swing_llm_momentum_audit
                       (signal_id, symbol, fingerprint, model, news_fetched, news_used,
+                       news_own, rel_mode, rel_rule, dropped,
                        headlines, rel_word, rel_raw, dir_word, dir_raw,
                        raw_score, confidence, score, damped, source)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (sig.get("signal_id"), symbol, ev["fingerprint"], ev.get("model"),
                       ev.get("news_fetched"), ev.get("news_used"),
+                      ev.get("news_own"), ev.get("rel_mode"), ev.get("rel_rule"),
+                      json.dumps(ev.get("dropped") or [], ensure_ascii=False),
                       json.dumps(ev.get("headlines") or [], ensure_ascii=False),
                       ev.get("rel_word"), ev.get("rel_raw"),
                       ev.get("dir_word"), ev.get("dir_raw"),
