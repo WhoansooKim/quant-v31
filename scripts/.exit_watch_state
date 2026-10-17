@@ -1,1 +1,1 @@
-{"hash": "283448103c33d13d", "at": "2026-10-16T18:00:03.221630", "state": {"drift": [], "n_new": 1, "med": 7.81, "locked": {"MRNA": 2.2, "WBD": -1.9}, "dep": 9, "dd": -15.0, "sup_n": 25, "sup_rej": 0, "sysret": 0.07}}
+{"hash": "5c08d5f4f9e08390", "at": "2026-10-18T06:00:02.735619", "state": {"drift": [], "n_new": 2, "med": 2.12, "locked": {"COP": -3.5, "WBD": -1.9}, "dep": 13, "dd": -15.0, "sup_n": 43, "sup_rej": 0, "sysret": -0.45}}
