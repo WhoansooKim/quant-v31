@@ -44,10 +44,31 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
             a = arrs[pos["sym"]]
             i = idx[pos["sym"]].get(day)
             if i is None:
-                still.append(pos); continue
+                # 🔴 §22.AO-55: 시세 없는 날을 그냥 넘기면 아래 mv 합산에서 이 포지션이
+                #    **0 으로 사라져** 자산이 급감한다 — runner.py 가 §22.AO-6 에서 고친
+                #    바로 그 유령손실이다. 여기엔 수정이 안 들어와 있었고, 그 결과
+                #    생존종목이 끝나는 2026 년 말에 보유 4종목이 0 이 되어 '−29% 해' 가
+                #    만들어졌다(실제 그 구간 청산 26건은 +46,396).
+                #    휴장·결측은 마지막 가격으로 이월하고, 데이터가 **영구히 끝난**
+                #    종목(상장폐지/유니버스 이탈)은 마지막 가격에 강제 청산한다.
+                #    들고만 있으면 슬롯이 영원히 묶여 이후 진입도 막힌다.
+                if day > a["d"][-1]:
+                    xp = pos["last_px"]
+                    proceeds = pos["qty"] * xp * (1 - SIDE_COMM)
+                    cash += proceeds
+                    trades.append({"d": day, "sym": pos["sym"],
+                                   "hold": (day - pos["d_entry"]).days,
+                                   "ret": (xp / pos["ep"] - 1) * 100,
+                                   "reason": "data_end",
+                                   "atr_pct": pos["atr"]/pos["ep"] if pos["ep"] else 0.0,
+                                   "pnl": proceeds - pos["cost"]})
+                else:
+                    still.append(pos)
+                continue
             px, ep, atr = a["c"][i], pos["ep"], pos["atr"]
             if not np.isfinite(px):
                 still.append(pos); continue
+            pos["last_px"] = px
             hold = i - pos["i_entry"]
             gain, rm = px / ep - 1.0, (px - ep) / atr
             why = None
@@ -78,6 +99,9 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                 cash += proceeds
                 trades.append({"d": day, "sym": pos["sym"], "hold": hold,
                                "ret": (xp/ep-1)*100, "reason": why,
+                               # §22.AO-55: 진입시점 ATR/가격. 라이브 7개월에서 저변동
+                               # 종목이 손실 전부를 냈다는 가설을 15.6년에서 검정하기 위함.
+                               "atr_pct": pos["atr"]/ep if ep else 0.0,
                                "pnl": proceeds - pos["cost"]})
             else:
                 still.append(pos)
@@ -110,13 +134,16 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                 cash -= cost
                 open_pos.append({"sym": t.symbol, "ep": ep, "atr": float(t.atr14),
                                  "qty": qty, "cost": cost, "i_entry": i0+1,
+                                 # last_px: 유령손실 방지용 이월가. d_entry: data_end 보유일.
+                                 "last_px": ep, "d_entry": day,
                                  "hard": ep - p["hard_mult"]*float(t.atr14),
                                  "stop": ep - p["hard_mult"]*float(t.atr14),
                                  "hwm": ep, "tr": False})
                 free -= 1; held.add(t.symbol)
 
-        mv = sum(q["qty"]*arrs[q["sym"]]["c"][idx[q["sym"]][day]]
-                 for q in open_pos if idx[q["sym"]].get(day) is not None)
+        # 🔴 시세 없는 날은 마지막 확인가로 이월한다(§22.AO-55). 제외하면 그 포지션
+        #    평가액이 0 이 되어 자산이 급감했다가 다음날 복구되는 유령손실이 생긴다.
+        mv = sum(q["qty"] * q["last_px"] for q in open_pos)
         equity_log.append({"d": day, "nav": cash+mv, "cash": cash,
                            "n_pos": len(open_pos), "deployed": mv/(cash+mv) if cash+mv else 0})
     return pd.DataFrame(equity_log), pd.DataFrame(trades)
