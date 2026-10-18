@@ -43,6 +43,17 @@ class BacktestParams:
     price_range_min: float = 20.0
     price_range_max: float = 80.0
     fractional_shares: bool = False  # §22.AO-26 B: 소수 주식 (라이브 fractional_shares_enabled 와 정합)
+    # ── 거래비용 (§22.AO-53) ────────────────────────────────────────────────
+    # 🔴 2026-10-18 이전 이 러너는 `cost = qty*close` 로 **비용 0** 이었다. 라이브는
+    #    swing_config.commission_rate=0.0025 (KIS 해외주식 편도 0.25%)를 체결마다 문다.
+    #    드래그 = 연간거래수 × 종목비중 × 2×rate 이므로 **회전율에 비례**한다 — 비용이
+    #    없으면 고회전 변이가 체계적으로 이긴다. 하네스의 과거 변이 선택은 전부 이
+    #    편향에 노출됐다. 사후 차감으로는 교정되지 않아 체결부에 넣는다.
+    # 구현: 가격이 아니라 **현금**에서 뺀다. 체결가를 바꾸면 stop_loss/ATR/R배수
+    #    판정이 함께 흔들려 '수수료만의 효과'를 분리할 수 없다. 진입 수수료는
+    #    포지션에 적재해 청산 시 pnl 에서 차감하므로 trades_log 의 pnl 은 왕복 순액이다.
+    commission_rate: float = 0.0025  # 편도. 0.0 으로 두면 §22.AO-53 이전 동작(비용 0)
+    slippage_pct: float = 0.0        # 편도 체결 불리. 기본 0 — 수수료와 한 번에 바꾸지 않는다
     # ── ①번 손익비 개선: ATR 트레일링 + 부분익절 (기본 off = 기존 고정 TP 동작 보존) ──
     use_atr_trailing: bool = False   # True 시 고정 take_profit 대신 ATR 트레일링으로 승자 추종
     atr_period: int = 14
@@ -90,6 +101,8 @@ class BacktestResult:
     avg_win_pct: float = 0.0
     avg_loss_pct: float = 0.0
     avg_hold_days: float = 0.0
+    total_commission: float = 0.0   # §22.AO-53: 왕복 거래비용 합계 (진입+청산)
+    commission_drag: float = 0.0    # 초기자본 대비 연율 드래그
     final_value: float = 0.0
     equity_curve: list = field(default_factory=list)
     trades_log: list = field(default_factory=list)
@@ -338,14 +351,23 @@ class BacktestRunner:
                                      if params.fractional_shares
                                      else int(pos["qty"] * params.partial_exit_pct))
                         if pexit_qty > 0:
-                            ppnl = (current - entry) * pexit_qty
-                            cash += current * pexit_qty
+                            _frac = pexit_qty / pos["qty"] if pos["qty"] > 0 else 0.0
+                            _efee = pos.get("entry_fee", 0.0) * _frac
+                            pos["entry_fee"] = pos.get("entry_fee", 0.0) - _efee
+                            proceeds = current * pexit_qty
+                            xfee = proceeds * (params.commission_rate + params.slippage_pct)
+                            ppnl = (current - entry) * pexit_qty - _efee - xfee
+                            cash += proceeds - xfee
                             pos["qty"] -= pexit_qty
                             pos["partial_done"] = True
                             trades_log.append({
                                 "date": day.strftime("%Y-%m-%d"), "symbol": sym, "side": "SELL",
                                 "qty": pexit_qty, "price": round(current, 2), "pnl": round(ppnl, 2),
-                                "pnl_pct": round(pnl_pct, 4), "reason": "partial_exit",
+                                "pnl_pct": round(ppnl / (entry * pexit_qty), 4) if entry * pexit_qty else 0,
+                                # fee = 이 체결에서 실제 나간 현금. 진입분은 BUY 행에
+                                # 이미 있으므로 합산 시 이중계상하지 않는다. 왕복 귀속은 fee_rt.
+                                "fee": round(xfee, 4), "fee_rt": round(_efee + xfee, 4),
+                                "reason": "partial_exit",
                                 "hold_days": (day - pos["entry_date"]).days,
                             })
 
@@ -387,8 +409,14 @@ class BacktestRunner:
                         exit_reason = "trend_break"
 
                 if exit_reason:
-                    pnl = (current - entry) * pos["qty"]
-                    cash += current * pos["qty"]
+                    proceeds = current * pos["qty"]
+                    xfee = proceeds * (params.commission_rate + params.slippage_pct)
+                    _efee = pos.get("entry_fee", 0.0)
+                    # 🔴 pnl 은 왕복 수수료를 뺀 **순액**이다 → win_rate·profit_factor·
+                    #    payoff_ratio 가 전부 순액 기준이 된다(변이 선택이 교정되는 지점).
+                    #    단 위쪽 청산판정에 쓰인 pnl_pct 는 시장가 기준 그대로 둔다.
+                    pnl = (current - entry) * pos["qty"] - _efee - xfee
+                    cash += proceeds - xfee
                     trades_log.append({
                         "date": day.strftime("%Y-%m-%d"),
                         "symbol": sym,
@@ -396,7 +424,8 @@ class BacktestRunner:
                         "qty": pos["qty"],
                         "price": round(current, 2),
                         "pnl": round(pnl, 2),
-                        "pnl_pct": round(pnl_pct, 4),
+                        "pnl_pct": round(pnl / (entry * pos["qty"]), 4) if entry * pos["qty"] else 0,
+                        "fee": round(xfee, 4), "fee_rt": round(_efee + xfee, 4),
                         "reason": exit_reason,
                         "hold_days": (day - pos["entry_date"]).days,
                     })
@@ -491,14 +520,17 @@ class BacktestRunner:
                         qty = _q(target_amount / close)
                         if qty <= 0:
                             continue
+                        _fee_rate = params.commission_rate + params.slippage_pct
                         cost = qty * close
-                        if cost > cash:
-                            qty = _q(cash / close)
+                        if cost * (1 + _fee_rate) > cash:
+                            # 수수료까지 치르고 남는 수량으로 줄인다 (현금 초과 매수 금지)
+                            qty = _q(cash / (close * (1 + _fee_rate)))
                             if qty <= 0:
                                 continue
                             cost = qty * close
+                        entry_fee = cost * _fee_rate
 
-                        cash -= cost
+                        cash -= cost + entry_fee
                         _entry_atr = (float(df.loc[day, "atr"])
                                       if pd.notna(df.loc[day, "atr"]) else 0.0)
                         positions.append({
@@ -506,6 +538,9 @@ class BacktestRunner:
                             "qty": qty,
                             "entry_price": close,
                             "entry_date": day,
+                            # 왕복 순손익을 내려면 진입 수수료를 청산까지 들고 가야 한다.
+                            # 부분익절 시에는 청산 비율만큼 안분한다.
+                            "entry_fee": entry_fee,
                             # 라이브는 진입시점 ATR 을 고정 저장해 하드스탑·R배수 산정에 쓴다
                             "entry_atr": _entry_atr,
                             # 정적 하드스탑(절대 안 움직임) + 래칫 손절(올리기만) 을 분리 보관.
@@ -526,6 +561,7 @@ class BacktestRunner:
                             "price": round(close, 2),
                             "pnl": 0,
                             "pnl_pct": 0,
+                            "fee": round(entry_fee, 4),
                             "reason": "entry",
                             "hold_days": 0,
                         })
@@ -618,6 +654,13 @@ class BacktestRunner:
         avg_hold = (np.mean([t["hold_days"] for t in sells])
                     if sells else 0)
 
+        # §22.AO-53 거래비용. 미청산 포지션의 청산 수수료는 포함되지 않는다
+        # (종료일 평가는 시장가) — 최대 노출×rate 만큼 낙관이며 0.1%p 미만이다.
+        # 각 행의 fee 는 '그 체결에서 나간 현금' 이므로 단순 합이 총 거래비용이다
+        # (SELL 행의 fee_rt 는 왕복 귀속값 — 합산하면 진입분이 이중계상된다).
+        total_comm = sum(t.get("fee", 0.0) for t in trades_log)
+        comm_drag = (total_comm / initial / years) if (initial > 0 and years > 0) else 0.0
+
         return BacktestResult(
             total_return=round(total_return, 4),
             cagr=round(cagr, 4),
@@ -630,6 +673,8 @@ class BacktestRunner:
             avg_win_pct=round(avg_win_pct, 4),
             avg_loss_pct=round(avg_loss_pct, 4),
             avg_hold_days=round(avg_hold, 1),
+            total_commission=round(total_comm, 2),
+            commission_drag=round(comm_drag, 4),
             final_value=round(final, 2),
             equity_curve=equity_curve,
             trades_log=trades_log,
