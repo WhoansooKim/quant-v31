@@ -132,6 +132,15 @@ def tune(pg, dry_run: bool = False) -> dict[str, Any]:
         return {"changed": 0, "reason": "측정된 IC 없음", "skipped": skipped}
 
     # 2) 목표 가중치 = max(0, IC) 비례 배분. 음수 IC 팩터는 목표 0.
+    # 🔴 미해결 결함(§22.AO-52): `ics` 는 여기서 **한 번** 계산되어 아래 레짐 루프의
+    #    4개 레짐에 **같은 절대 목표**로 적용된다. 측정 팩터가 flow/value(0) 를 뺀
+    #    전부였던 2026-08~10 에는 budget=1.0 이 되어 네 레짐이 한 점으로 수렴했고,
+    #    technical 0.42/0.32/0.28/0.38 → 전부 0.2252 로 **레짐 분화가 소멸**했다.
+    #    `regime_adaptive_weights=true` 가 두 달간 장식이었다.
+    #    지금은 momentum 만 게이트를 통과해 잠재적이지만, **통과 팩터가 2개가 되면
+    #    다시 평탄화된다.** 레짐별 IC 는 측정 불가다(swing_signals 에 regime 열 없음,
+    #    하루 2.13건을 4분할 → 횡단면 정보 0). 올바른 수정은 절대 목표가 아니라
+    #    각 레짐의 **사전값 기준 배수**로 움직이는 것 — 설계 결정이 필요해 미구현.
     pos = {f: max(0.0, v) for f, v in ics.items()}
     total_pos = sum(pos.values())
     changes: list[dict[str, Any]] = []
