@@ -34,17 +34,47 @@ RULES = dict(hard_mult=1.5, trail_mult=2.5, activation_r=1.0, be_enabled=True,
              swing_path=True, fixed_sl=-0.05, fixed_tp=0.50, trend_break=True)
 
 
-def load(pg, mom_min, liq_top, vol_min):
-    with pg.get_conn() as c:
-        sig = pd.DataFrame(c.execute("""
+def load(pg, mom_min, liq_top, vol_min, liq_over_passed=False, universe=None):
+    """신호 로드.
+
+    🔴 §22.AO-59: `liq_top` 의 의미가 틀려 있었다. row_number() 를 **신호 필터를 통과한
+    행 안에서** 매긴 뒤 `lr <= 400` 을 걸었으므로, 통과 행이 400개 미만인 날은 전부
+    통과했다 — 실측: 그렇게 뽑힌 신호의 **실제** 유동성 순위가 중앙값 642 · p90 1,177 ·
+    최악 1,506(전체 1,540 중)이고 진짜 상위400 비중은 **31.9%** 였다. 즉 유동성 필터가
+    아니라 **필터가 없는 것**과 같았다(교차검증: 결과가 '전체 1,540' 과 CAGR·거래수·
+    진입ATR 까지 완전히 일치). 그 탓에 라이브(거래대금 상위200)보다 훨씬 넓고 변동성
+    높은 유니버스를 돌려 CAGR 이 22.39% 로 부풀었다 — 올바른 의미로는 15.76%.
+    기본값을 올바른 의미(전체 유니버스 기준 순위)로 바꾼다.
+    `liq_over_passed=True` 로 과거(§22.AO-58 이전) 수치를 재현할 수 있다.
+    `universe=[...]` 를 주면 그 종목 안에서만 순위를 매긴다(라이브 유니버스 정합).
+    """
+    uni_pred = "AND symbol = ANY(%(uni)s)" if universe else ""
+    if liq_over_passed:
+        sql = f"""
             WITH u AS (SELECT time, symbol, atr14, return_20d_rank,
                               row_number() OVER (PARTITION BY time ORDER BY dollar_vol_20d DESC) lr
                        FROM hist_indicators
                        WHERE clean AND trend_aligned AND breakout_5d
-                             AND volume_ratio >= %s AND atr14 > 0)
+                             AND volume_ratio >= %(vol)s AND atr14 > 0 {uni_pred})
             SELECT time::date AS d, symbol, atr14, return_20d_rank AS mom
-            FROM u WHERE lr <= %s AND return_20d_rank >= %s ORDER BY time, symbol
-        """, (vol_min, liq_top, mom_min)).fetchall())
+            FROM u WHERE lr <= %(liq)s AND return_20d_rank >= %(mom)s ORDER BY time, symbol"""
+    else:
+        # 올바른 의미: 유동성 순위는 **전체 유니버스**(또는 주어진 universe) 기준
+        sql = f"""
+            WITH u AS (SELECT time, symbol, atr14, return_20d_rank, trend_aligned,
+                              breakout_5d, volume_ratio,
+                              row_number() OVER (PARTITION BY time ORDER BY dollar_vol_20d DESC) lr
+                       FROM hist_indicators
+                       WHERE clean AND atr14 > 0 {uni_pred})
+            SELECT time::date AS d, symbol, atr14, return_20d_rank AS mom
+            FROM u WHERE lr <= %(liq)s AND trend_aligned AND breakout_5d
+                     AND volume_ratio >= %(vol)s AND return_20d_rank >= %(mom)s
+            ORDER BY time, symbol"""
+    params = {"vol": vol_min, "liq": liq_top, "mom": mom_min}
+    if universe:
+        params["uni"] = list(universe)
+    with pg.get_conn() as c:
+        sig = pd.DataFrame(c.execute(sql, params).fetchall())
         bars = pd.DataFrame(c.execute("""
             SELECT p.symbol, p.time::date AS d, p.open::float AS o, p.close::float AS c,
                    h.sma_50::float AS s50, h.sma_200::float AS s200
