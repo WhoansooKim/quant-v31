@@ -190,16 +190,36 @@ class SwingStrategy:
         abs_mom_days = int(self.pg.get_config_value("abs_momentum_lookback_days", "126"))
         abs_mom = self.pg.get_abs_momentum(abs_mom_days) if abs_mom_enabled else {}
 
+        # §22.AO-62 중복 ENTRY 가드 — 같은 지표 봉으로 같은 종목을 두 번 내지 않는다.
+        # daily_pipeline 이 하루 3회(07:00 장후 / 21:30 장전 / 02:00 장중) 이 함수를 부른다.
+        # 가드가 없으면 시그널이 반복 생성되고 **그때마다 게이트가 다시 굴려진다** —
+        # 실측 ENTRY 310행 중 103행(33.2%)이 중복, 최악 6회, 중복 60그룹 중 32그룹이 체결됐다.
+        # rank 0.92 경계 아래 종목이 하루 3~6번 기회를 얻는 것은 다중비교다(게이트는 1회 평가 설계).
+        # 🔴 봉 날짜로 묶는다 — time::date 로는 22:00 UTC 와 다음날 12:30 UTC 가 같은 봉을
+        #   쓰는데도 다른 날로 잡혀 중복이 안 걸린다.
+        bar_date = indicators[0].get("time")
+        bar_date = bar_date.date() if hasattr(bar_date, "date") else bar_date
+        already = self.pg.get_entry_symbols_for_bar(bar_date) if bar_date else set()
+        if already:
+            logger.info(f"Entry scan: {len(already)} symbols already signaled "
+                        f"for bar {bar_date} — skipping (dup guard)")
+
         # Step 1: 기본 필터 (추세/브레이크아웃/거래량/가격) 통과 후보
         # 진입 0일 때 "왜 없는지" 설명하기 위해 각 조건별 통과 수(깔때기)도 집계한다.
         n_total = len(indicators)
         f_price = f_trend = f_breakout = f_volume = f_three = 0
         f_absmom = 0
+        f_dup = 0
         candidates = []
         for ind in indicators:
             symbol = ind["symbol"]
 
             if self.pg.has_open_position(symbol):
+                continue
+
+            # §22.AO-62 같은 봉으로 이미 시그널을 냈으면 재평가하지 않는다
+            if symbol in already:
+                f_dup += 1
                 continue
 
             close = float(ind["close"])
@@ -250,6 +270,16 @@ class SwingStrategy:
         self._last_entry_funnel = self._build_entry_funnel(
             n_total, f_price, f_trend, f_breakout, f_volume, f_three,
             n_passed_basic, len(candidates), dual_sort)
+        # §22.AO-62 시그니처를 바꾸지 않고 덧붙인다 — 다른 두 호출부는 dict 를 직접 만든다
+        self._last_entry_funnel["bar_date"] = str(bar_date) if bar_date else None
+        self._last_entry_funnel["dup_blocked"] = f_dup
+        # 🔴 가드가 설명을 삼키지 않게 한다 — 가드는 깔때기 카운터보다 앞에서 continue 하므로
+        #   f_dup 을 말하지 않으면 "3조건 9개가 순위에서 탈락" 처럼 사실과 다르게 읽힌다.
+        if f_dup:
+            self._last_entry_funnel["message"] = (
+                (self._last_entry_funnel.get("message") or "")
+                + f" (별도로 {f_dup}종목은 같은 지표봉 {bar_date} 으로 이미 시그널이 "
+                  f"생성돼 중복 가드가 제외 — 집계 전에 빠졌다.)")
 
         # Step 3: 시그널 생성
         signals = []
@@ -270,6 +300,7 @@ class SwingStrategy:
                 "breakout_5d": True,
                 "volume_surge": True,
                 "status": "pending",
+                "indicator_date": bar_date,
             }
             signal_id = self.pg.insert_signal(sig)
             sig["signal_id"] = signal_id
@@ -283,7 +314,8 @@ class SwingStrategy:
                         f"(SL=${stop_loss:.2f}, TP=${take_profit:.2f}){extra}")
 
         mode = "dual_sort" if dual_sort else "momentum"
-        logger.info(f"Entry scan [{mode}]: {len(signals)} signals from {len(indicators)} stocks")
+        logger.info(f"Entry scan [{mode}]: {len(signals)} signals from {len(indicators)} stocks"
+                    f"{f' (dup guard blocked {f_dup})' if f_dup else ''}")
         return signals
 
     def scan_hedge(self) -> dict | None:

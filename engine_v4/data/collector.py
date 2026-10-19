@@ -153,18 +153,28 @@ class UniverseManager:
                 logger.warning(f"Batch download error: {e}")
                 time.sleep(1)
 
-        # 거래대금 상위 200
+        # 거래대금 상위 N (§22.AO-62: 200 → 300)
+        # 왜 300: 후보 공급은 유니버스 크기에 **선형**이다 — 3,731일 실측에서 100종목
+        #   구간별 통과율이 전부 ~4.0%(순위 1-100: 4.03% / 201-300: 4.13% / 301-400: 4.03%).
+        #   캡200 7.94 → 캡300 12.06건/일. 홀드아웃 양쪽 반기 승(§22.AO-59, +2.23%p),
+        #   체결환경은 순위에 평평(§22.AO-60: 201-300 갭 +0.032% vs 101-200 +0.033%),
+        #   시장충격 0.33ppm. 400 에서 포화되므로 300.
+        # 🔴 값은 **DB config 가 유일한 출처**다. settings.py 기본값을 따로 두면
+        #   §22.AO-61 의 volume_ratio_min 사고(collector 1.5 / scan 1.0, 4.6개월 공급 1/5)가
+        #   재발한다. 키가 없으면 300 — 코드와 DB 가 같은 수를 가리킨다.
+        univ_size = int(self.pg.get_config_value("universe_size", "300"))
         universe.sort(key=lambda x: x["market_cap"], reverse=True)
-        top200 = universe[:200]
-        logger.info(f"Universe filtered: {len(top200)} / {len(universe)} total")
+        top_n = universe[:univ_size]
+        logger.info(f"Universe filtered: {len(top_n)} / {len(universe)} total "
+                    f"(universe_size={univ_size})")
 
         # DB에 저장
-        active_symbols = [s["symbol"] for s in top200]
-        self.pg.upsert_universe(top200)
+        active_symbols = [s["symbol"] for s in top_n]
+        self.pg.upsert_universe(top_n)
         self.pg.deactivate_missing(active_symbols)
-        self.cache.set_universe(top200, ttl=86400 * 7)
+        self.cache.set_universe(top_n, ttl=86400 * 7)
 
-        return top200
+        return top_n
 
     def get_universe(self) -> list[dict]:
         """캐시 우선, 없으면 DB."""

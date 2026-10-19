@@ -238,17 +238,36 @@ class PostgresStore:
                 INSERT INTO swing_signals
                     (symbol, signal_type, entry_price, stop_loss, take_profit,
                      return_20d_rank, trend_aligned, breakout_5d, volume_surge,
-                     exit_reason, position_id, status)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     exit_reason, position_id, status, indicator_date)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING signal_id
             """, (sig["symbol"], sig["signal_type"], sig.get("entry_price"),
                   sig.get("stop_loss"), sig.get("take_profit"),
                   sig.get("return_20d_rank"), sig.get("trend_aligned"),
                   sig.get("breakout_5d"), sig.get("volume_surge"),
                   sig.get("exit_reason"), sig.get("position_id"),
-                  sig.get("status", "pending"))).fetchone()
+                  sig.get("status", "pending"),
+                  sig.get("indicator_date"))).fetchone()
             conn.commit()
         return row["signal_id"]
+
+    def get_entry_symbols_for_bar(self, indicator_date) -> set[str]:
+        """§22.AO-62 그 지표 봉으로 이미 ENTRY 시그널이 만들어진 종목 집합.
+
+        daily_pipeline 이 하루 3회(07:00 장후 / 21:30 장전 / 02:00 장중) 돌며
+        scan_entries 를 매번 호출한다. 가드가 없으면 같은 봉으로 같은 종목 시그널이
+        반복 생성되고, 그때마다 **게이트가 다시 굴려진다** — 실측 ENTRY 행의 33.2%가
+        중복이고 최악 6회, 중복 60그룹 중 32그룹이 결국 체결됐다.
+
+        🔴 `time::date` 로 묶으면 안 된다: 22:00 UTC 와 다음날 12:30 UTC 스캔이 같은 봉
+        (금요일 종가)을 쓰는데 UTC 날짜가 달라 중복으로 안 잡힌다. 봉 날짜가 유일한 키다.
+        """
+        with self.get_conn() as conn:
+            rows = conn.execute("""
+                SELECT DISTINCT symbol FROM swing_signals
+                WHERE signal_type = 'ENTRY' AND indicator_date = %s
+            """, (indicator_date,)).fetchall()
+        return {r["symbol"] for r in rows}
 
     def get_signals(self, status: str | None = None, limit: int = 50) -> list[dict]:
         with self.get_conn() as conn:
