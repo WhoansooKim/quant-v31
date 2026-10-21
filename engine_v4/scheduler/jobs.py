@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime
@@ -634,6 +635,7 @@ class SwingScheduler:
             missing = [s for s in symbols if s not in current_prices]
             if missing:
                 logger.warning(f"Exit check: no price data for {missing} — skip exit evaluation")
+                self._alert_price_gaps(positions, missing)
 
             # 포지션별 현재가 업데이트
             for p in positions:
@@ -816,6 +818,58 @@ class SwingScheduler:
         except Exception as e:
             self.pg.insert_pipeline_log("hedge_check", "failed", time.time() - start, error_msg=str(e))
             logger.error(f"Hedge check failed: {e}", exc_info=True)
+
+    # 보유 종목 시세 결손 가드 — WBD 는 10/6 합병 상장폐지 후 2주간 stale price 로
+    # 보유 상태가 유지됐다(손절 점검 불가, WARNING 로그만). 결손을 '스킵'으로 흡수하지 말고
+    # 마지막 일봉 나이를 불변식으로 보고 경보 + 청산 검토 이벤트를 남긴다.
+    PRICE_GAP_BUSDAYS = 2
+
+    def _alert_price_gaps(self, positions: list[dict], missing: list[str]) -> list[dict]:
+        import numpy as np
+        import yfinance as yf
+
+        today = datetime.now(KST).date()
+        gaps = []
+        for sym in missing:
+            last_bar = None
+            try:
+                hist = yf.Ticker(sym).history(period="1mo", interval="1d")
+                if not hist.empty:
+                    last_bar = hist["Close"].dropna().index[-1].date()
+            except Exception as e:
+                logger.warning(f"Price gap probe failed for {sym}: {e}")
+            age = (int(np.busday_count(last_bar, today)) if last_bar else None)
+            if age is not None and age <= self.PRICE_GAP_BUSDAYS:
+                continue
+            for p in (p for p in positions if p["symbol"] == sym):
+                gaps.append({"position_id": p["position_id"], "symbol": sym,
+                             "last_bar": last_bar, "busdays": age})
+
+        for g in gaps:
+            with self.pg.get_conn() as conn:
+                dup = conn.execute("""
+                    SELECT 1 FROM swing_events
+                    WHERE event_type = 'price_gap' AND symbol = %s
+                      AND created_at > now() - interval '20 hours'
+                """, (g["symbol"],)).fetchone()
+                if dup:
+                    continue
+                age_txt = (f"{g['busdays']}영업일" if g["busdays"] is not None
+                           else "1개월 내 일봉 없음")
+                title = (f"{g['symbol']} 시세 결손 {age_txt} — 손절 점검 불가 "
+                         f"(포지션 #{g['position_id']}, 상장폐지/합병 확인 필요)")
+                conn.execute("""
+                    INSERT INTO swing_events
+                        (event_type, symbol, severity, title, detail, action_taken)
+                    VALUES ('price_gap', %s, 'critical', %s, %s, 'exit_review')
+                """, (g["symbol"], title, json.dumps(g, default=str)))
+                conn.commit()
+            logger.error(f"PRICE GAP: {title}")
+            try:
+                self.notifier.send_sync(f"🚨 <b>보유 종목 시세 결손</b>\n{title}")
+            except Exception as e:
+                logger.warning(f"Price gap telegram failed: {e}")
+        return gaps
 
     def _auto_execute_exit(self, action: ExitAction):
         """자동 매도 실행 — 포지션 종료 + trade 기록 + 시그널 + KIS 주문 + 텔레그램."""
