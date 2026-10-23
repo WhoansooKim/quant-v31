@@ -1554,9 +1554,10 @@ def _generate_snapshot() -> dict:
     if positions:
         symbols = list(set(p["symbol"] for p in positions))
         try:
-            data = yf.download(symbols, period="1d", progress=False)
+            # period=2d — scheduler/jobs.py 와 동일. 1d 는 장외/주말에 빈 값이라 폴백이 상시 발동했다.
+            data = yf.download(symbols, period="2d", progress=False)
             if len(symbols) == 1:
-                price = float(data["Close"].iloc[-1])
+                price = float(data["Close"].dropna().iloc[-1])
                 current_prices[symbols[0]] = price
             else:
                 for sym in symbols:
@@ -1568,21 +1569,10 @@ def _generate_snapshot() -> dict:
         except Exception as e:
             logger.warning(f"yfinance fetch failed: {e}")
 
-    # 2) 포지션별 현재가 업데이트
-    invested_usd = 0.0
-    entry_cost = 0.0
-    for p in positions:
-        sym = p["symbol"]
-        qty = float(p.get("qty") or 1)
-        ep = float(p["entry_price"])
-        entry_cost += qty * ep
-
-        cp = current_prices.get(sym)
-        if cp:
-            pg.update_position_price(p["position_id"], cp)
-            invested_usd += qty * cp
-        else:
-            invested_usd += qty * ep  # fallback to entry price
+    # 2) 포지션별 현재가 업데이트 + 투자액/원가 (scheduler/jobs.py 와 공용)
+    valuation = pg.value_open_positions(positions, current_prices)
+    invested_usd = valuation["invested_usd"]
+    entry_cost = valuation["entry_cost"]
 
     # 3) 실현손익 합산 (closed positions)
     closed = pg.get_closed_positions(limit=9999)
@@ -1646,6 +1636,7 @@ def _generate_snapshot() -> dict:
         "open_positions": open_count,
         "exchange_rate": None,
         "trading_pnl": round(trading_pnl, 2),
+        "stale_positions": len(valuation["stale"]),
     }
     pg.insert_snapshot(snap)
     cache.set_snapshot(snap)

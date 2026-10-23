@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
@@ -549,20 +550,56 @@ class PostgresStore:
 
     # ─── Snapshots ────────────────────────────────────────
 
+    def value_open_positions(self, positions: list[dict],
+                             current_prices: dict[str, float]) -> dict:
+        """오픈 포지션 평가 — 두 스냅샷 생성기(api/main.py, scheduler/jobs.py) 공용.
+
+        시세 결손 시 진입가로 평가하면 미실현손익이 0 으로 지워진다(WBD 2주 결손).
+        폴백은 마지막 관측가(swing_positions.current_price), 그것도 없을 때만 진입가.
+        결손 종목은 stale 로 반환해 스냅샷에 건수를 남긴다 — 조용히 흡수하지 않는다.
+        """
+        def _finite(v) -> float | None:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) and f > 0 else None
+
+        invested = 0.0
+        entry_cost = 0.0
+        stale: list[str] = []
+        for p in positions:
+            qty = float(p.get("qty") or 1)
+            ep = float(p["entry_price"])
+            entry_cost += qty * ep
+            cp = _finite(current_prices.get(p["symbol"]))
+            if cp is not None:
+                self.update_position_price(p["position_id"], cp)
+                invested += qty * cp
+                continue
+            stale.append(p["symbol"])
+            last_seen = _finite(p.get("current_price"))
+            invested += qty * (last_seen if last_seen is not None else ep)
+        if stale:
+            logger.warning(f"Snapshot: 시세 결손 {len(stale)}종목 {stale} — "
+                           f"마지막 관측가로 평가 (없으면 진입가)")
+        return {"invested_usd": invested, "entry_cost": entry_cost, "stale": stale}
+
     def insert_snapshot(self, snap: dict) -> None:
         with self.get_conn() as conn:
             conn.execute("""
                 INSERT INTO swing_snapshots
                     (total_value_usd, total_value_krw, cash_usd, invested_usd,
                      daily_pnl_usd, daily_return, cumulative_return,
-                     max_drawdown, open_positions, exchange_rate, trading_pnl)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     max_drawdown, open_positions, exchange_rate, trading_pnl,
+                     stale_positions)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (snap["total_value_usd"], snap.get("total_value_krw"),
                   snap["cash_usd"], snap["invested_usd"],
                   snap.get("daily_pnl_usd"), snap.get("daily_return"),
                   snap.get("cumulative_return"), snap.get("max_drawdown"),
                   snap.get("open_positions", 0), snap.get("exchange_rate"),
-                  snap.get("trading_pnl", 0)))
+                  snap.get("trading_pnl", 0), snap.get("stale_positions", 0)))
             conn.commit()
 
     def get_snapshots(self, days: int = 30) -> list[dict]:

@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS swing_snapshots (
     max_drawdown       NUMERIC(10,6),
     open_positions     INT DEFAULT 0,
     exchange_rate      NUMERIC(10,2),            -- USD/KRW
+    trading_pnl        NUMERIC(14,2),
+    stale_positions    INT DEFAULT 0,            -- 시세 결손으로 마지막 관측가 평가된 포지션 수
     UNIQUE(time)
 );
 

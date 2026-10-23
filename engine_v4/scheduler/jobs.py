@@ -1293,19 +1293,10 @@ class SwingScheduler:
                 except Exception as e:
                     logger.warning(f"yfinance fetch for snapshot: {e}")
 
-            # 포지션 현재가 업데이트 + 투자액/원가 계산
-            invested_usd = 0.0
-            entry_cost = 0.0
-            for p in positions:
-                qty = float(p.get("qty") or 1)
-                ep = float(p["entry_price"])
-                entry_cost += qty * ep
-                cp = _finite_price(current_prices.get(p["symbol"]))
-                if cp is not None:
-                    self.pg.update_position_price(p["position_id"], cp)
-                    invested_usd += qty * cp
-                else:
-                    invested_usd += qty * ep
+            # 포지션 현재가 업데이트 + 투자액/원가 계산 (api/main.py 와 공용)
+            valuation = self.pg.value_open_positions(positions, current_prices)
+            invested_usd = valuation["invested_usd"]
+            entry_cost = valuation["entry_cost"]
 
             # 실현손익 (위에서 이미 읽은 closed 재사용 — 오픈/청산 일관성 유지)
             realized_pnl = sum(float(p.get("realized_pnl") or 0) for p in closed)
@@ -1377,6 +1368,7 @@ class SwingScheduler:
                 "open_positions": open_count,
                 "exchange_rate": None,
                 "trading_pnl": round(trading_pnl, 2),
+                "stale_positions": len(valuation["stale"]),
             }
             self.pg.insert_snapshot(snap)
             self.cache.set_snapshot(snap)
