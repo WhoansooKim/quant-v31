@@ -6755,3 +6755,17 @@ OXY 0.7236 · FANG 0.7136 · MDLZ 0.7085 · ROST 0.6717 · ICE 0.6382.
 - `validate_entry` 4) 섹터 상한 — 수동 승인·auto_approve PASS1·execute_entry 재검증 모두 같은 경로.
 - config `max_per_sector=3` (risk, 0=끔). HEDGE 제외. **섹터 미상은 막지 않고 경고만** — 결손이 전량 거부로 번지지 않게.
 - 실DB 검증: 생활용품 3 보유 상태에서 CHD/PEP/COST 거부, NVDA 통과, 미상 종목 통과.
+
+### §22.AO-64 NDX100 파싱 0건 — 3.5개월간 NDX 단독 종목이 유니버스에서 빠져 있었다 (2026-10-23)
+
+§22.AO-63 백필 중 발견. `swing_universe` 의 NDX 단독 15종목 마지막 갱신이 **2026-07-11**,
+이후 매주 refresh 로그가 `NDX100: 0 symbols` 를 **INFO** 로만 남겼다. 위키 `/wiki/Nasdaq-100`
+본문에서 구성종목 표가 빠지고 `/wiki/List_of_NASDAQ-100_companies` 로 옮겨졌기 때문.
+§22.AO-59/62 백테스트는 `swing_universe` 428종목(NDX 단독 포함)을 썼으므로 **라이브가 백테스트보다 좁았다**.
+
+- URL 교체 → 101행 파싱. 표의 `ICB Industry` 로 S&P500 미포함 종목 섹터를 GICS 명칭 근사
+  (Technology→IT, Telecommunications→Comm, Basic Materials→Materials; PDD 처럼 GICS 와 다른 경우 있음).
+- 가드: S&P500 < 450 또는 NDX100 < 90 이면 WARNING — 0건을 INFO 로 흘리지 않는다.
+- 모의 refresh(DB 미기록, 캡 300): 300종목 · 현재 활성 대비 신규 100 / 이탈 0 · NDX 단독 12
+  (SPCX CRWV NBIS MSTR ASML SHOP ARM ALAB RKLB MELI PDD ALNY) · 섹터 결손 0.
+  → 신규 100 의 대부분은 §22.AO-62 캡 200→300 몫(10/24 첫 적용), NDX 몫은 12.

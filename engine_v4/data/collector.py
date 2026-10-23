@@ -20,7 +20,15 @@ logger = logging.getLogger(__name__)
 # ── S&P500 / NASDAQ100 대표 종목 (상위 200) ─────────────
 
 _SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-_NDX100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
+# 구성종목 표는 별도 목록 페이지에 있다. 지수 본문 페이지(/wiki/Nasdaq-100)는 2026-07 경
+# 표가 빠져 NDX100 파싱이 0건이 됐고, 3.5개월간 NDX 단독 종목이 유니버스에서 빠졌다(§22.AO-64).
+_NDX100_URL = "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"
+# 구성종목 수 하한 — 이보다 적으면 페이지 구조 변경으로 보고 경고한다(0건을 INFO 로 흘리지 않게)
+_MIN_SP500, _MIN_NDX100 = 450, 90
+# NDX 표는 ICB 분류 — S&P500 에 없는 종목(ASML·ARM·MELI 등)의 섹터를 GICS 명칭으로 근사
+_ICB_TO_GICS = {"Technology": "Information Technology",
+                "Telecommunications": "Communication Services",
+                "Basic Materials": "Materials"}
 _HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) SwingV4-Collector/1.0"}
 
 # 하드코드 시드 — Wikipedia 접근 실패 시 fallback
@@ -98,16 +106,25 @@ class UniverseManager:
             if html:
                 tables = pd.read_html(io.StringIO(html), header=0)
                 for tbl in tables:
-                    if "Ticker" in tbl.columns:
-                        ndx100 = set(tbl["Ticker"].str.replace(".", "-", regex=False).tolist())
-                        break
-                    elif "Symbol" in tbl.columns:
-                        ndx100 = set(tbl["Symbol"].str.replace(".", "-", regex=False).tolist())
-                        break
+                    tcol = ("Ticker" if "Ticker" in tbl.columns
+                            else "Symbol" if "Symbol" in tbl.columns else None)
+                    if tcol is None:
+                        continue
+                    tick = tbl[tcol].astype(str).str.replace(".", "-", regex=False)
+                    ndx100 = set(tick.tolist())
+                    icb = next((c for c in tbl.columns if str(c).startswith("ICB Industry")), None)
+                    if icb:
+                        for sym, ind in zip(tick, tbl[icb]):
+                            if isinstance(ind, str):
+                                gics.setdefault(sym, _ICB_TO_GICS.get(ind, ind))
+                    break
                 logger.info(f"NDX100: {len(ndx100)} symbols")
         except Exception as e:
             logger.warning(f"NDX100 parse failed: {e}")
 
+        if len(sp500) < _MIN_SP500 or len(ndx100) < _MIN_NDX100:
+            logger.warning(f"🔴 지수 구성종목 파싱 부족: S&P500 {len(sp500)} (기대 ≥{_MIN_SP500}), "
+                           f"NDX100 {len(ndx100)} (기대 ≥{_MIN_NDX100}) — 위키 페이지 구조 변경 의심")
         all_symbols = sp500 | ndx100
         if not all_symbols:
             # Fallback: 하드코드 시드 목록 사용
