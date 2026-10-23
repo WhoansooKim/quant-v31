@@ -225,6 +225,18 @@ class PositionManager:
         if entry_price < price_min or entry_price > price_max:
             return False, f"Price ${entry_price:.2f} outside range ${price_min}-${price_max}"
 
+        # 4) 섹터 상한 (§22.AO-63) — 섹터당 오픈 ≤ max_per_sector. 0 이면 끔.
+        #    15년 라이브정합 백테스트: ≤3 이 전반·후반 양쪽 승(15.12→15.88%), ≤2 는 강건성 실패.
+        #    섹터 미상 종목은 막지 않는다(경고만) — 데이터 결손이 진입 전량 거부로 번지지 않게.
+        max_per_sector = int(self.pg.get_config_value("max_per_sector", "3"))
+        if max_per_sector > 0:
+            sector, held = self.pg.open_sector_count(symbol)
+            if sector is None:
+                logger.warning(f"Sector unknown for {symbol} — sector cap not applied")
+            elif held >= max_per_sector:
+                return False, (f"Sector cap: {sector} already {held} open "
+                               f"(max_per_sector={max_per_sector})")
+
         return True, "OK"
 
     def execute_entry(self, signal: dict, account_value_usd: float) -> dict | None:

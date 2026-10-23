@@ -504,6 +504,21 @@ class PostgresStore:
             """, (symbol,)).fetchone()
         return row["cnt"] > 0
 
+    def open_sector_count(self, symbol: str) -> tuple[str | None, int]:
+        """symbol 의 섹터와, 그 섹터의 오픈 포지션 수(HEDGE 제외). 섹터 미상이면 (None, 0)."""
+        with self.get_conn() as conn:
+            row = conn.execute("""
+                SELECT nullif(u.sector, '') AS sector,
+                       (SELECT count(*) FROM swing_positions p
+                          JOIN swing_universe pu ON pu.symbol = p.symbol
+                         WHERE p.status = 'open' AND p.side <> 'HEDGE'
+                           AND pu.sector = u.sector) AS cnt
+                FROM swing_universe u WHERE u.symbol = %s
+            """, (symbol,)).fetchone()
+        if not row or not row["sector"]:
+            return None, 0
+        return row["sector"], int(row["cnt"])
+
     # ─── Trades ───────────────────────────────────────────
 
     def insert_trade(self, trade: dict) -> int:
