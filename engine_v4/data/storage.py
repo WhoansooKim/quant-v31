@@ -46,7 +46,8 @@ class PostgresStore:
                     VALUES (%s, %s, %s, %s, %s, true, now())
                     ON CONFLICT (symbol) DO UPDATE SET
                         company_name = EXCLUDED.company_name,
-                        sector = EXCLUDED.sector,
+                        -- 출처에 섹터가 없으면(NDX 단독 등) 기존 값을 지우지 않는다
+                        sector = COALESCE(NULLIF(EXCLUDED.sector, ''), swing_universe.sector),
                         market_cap = EXCLUDED.market_cap,
                         index_member = EXCLUDED.index_member,
                         is_active = true,

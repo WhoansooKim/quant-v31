@@ -74,6 +74,7 @@ class UniverseManager:
 
         sp500 = set()
         ndx100 = set()
+        gics: dict[str, str] = {}
 
         # S&P 500
         try:
@@ -83,6 +84,10 @@ class UniverseManager:
                 df_sp = tables[0]
                 col = "Symbol" if "Symbol" in df_sp.columns else df_sp.columns[0]
                 sp500 = set(df_sp[col].str.replace(".", "-", regex=False).tolist())
+                # GICS 섹터 — 섹터 집중 측정/상한의 근거. 예전엔 sector="" 로 매 갱신마다 덮어썼다.
+                if "GICS Sector" in df_sp.columns:
+                    gics = dict(zip(df_sp[col].str.replace(".", "-", regex=False),
+                                    df_sp["GICS Sector"]))
                 logger.info(f"S&P500: {len(sp500)} symbols")
         except Exception as e:
             logger.warning(f"S&P500 parse failed: {e}")
@@ -142,7 +147,7 @@ class UniverseManager:
                         universe.append({
                             "symbol": sym,
                             "company_name": "",
-                            "sector": "",
+                            "sector": gics.get(sym, ""),
                             "market_cap": int(avg_dv),  # dollar volume proxy
                             "index_member": "+".join(index_member),
                         })

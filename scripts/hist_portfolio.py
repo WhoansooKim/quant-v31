@@ -31,7 +31,7 @@ def spy_regime(pg):
 
 
 def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
-              regime=None, target_deploy=1.0):
+              regime=None, target_deploy=1.0, sector_of=None, max_per_sector=None):
     dates = np.array(sorted(sig.d.unique()))
     by_date = {d: g.sort_values("mom", ascending=False) for d, g in sig.groupby("d")}
     idx = {s: {d: i for i, d in enumerate(a["d"])} for s, a in arrs.items()}
@@ -121,6 +121,12 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
             for t in by_date[day].itertuples():
                 if free <= 0: break
                 if t.symbol in held: continue
+                # 섹터 상한 — 같은 섹터 보유가 max_per_sector 이상이면 건너뛴다(다음 후보로)
+                if max_per_sector is not None:
+                    sec = sector_of.get(t.symbol)
+                    if sec and sum(sector_of.get(q["sym"]) == sec
+                                   for q in open_pos) >= max_per_sector:
+                        continue
                 a = arrs.get(t.symbol); 
                 if a is None: continue
                 i0 = idx[t.symbol].get(day)
