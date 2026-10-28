@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from engine_v4.data.storage import PostgresStore
@@ -199,7 +199,7 @@ def attribute_news_for_position(pg: PostgresStore, position_id: int) -> dict[str
 
         # Pull news events for symbol during hold (with -1 day buffer on entry)
         sym = pos["symbol"]
-        end_t = pos["exit_time"] or datetime.utcnow()
+        end_t = pos["exit_time"] or datetime.now(timezone.utc)
         start_t = pos["entry_time"] - timedelta(days=1)
 
         events = conn.execute(
@@ -227,7 +227,7 @@ def attribute_news_for_position(pg: PostgresStore, position_id: int) -> dict[str
         conn.commit()
 
     attributed = []
-    ref_time = end_t if end_t else datetime.utcnow()
+    ref_time = end_t
 
     for e in events:
         title = e.get("title") or ""
