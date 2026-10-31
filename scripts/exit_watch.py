@@ -174,7 +174,9 @@ def build(pg) -> tuple[str, dict]:
         #    그때는 '되돌아왔다'가 아니라 '검증을 통과한 모델이 들어왔다'는 뜻이다.
         sup = c.execute("""
             SELECT count(*) n,
-                   sum((factor_detail->'technical'->'lstm' IS NOT NULL)::int) blended,
+                   -- 🔴 2026-11-01: 블렌딩 건너뛴 시그널도 "lstm": null 을 기록한다. JSON null 은
+                   --    SQL NULL 이 아니라서 IS NOT NULL 이 참 → 137건 전부 오탐이었다(실제 0건).
+                   sum((jsonb_typeof(factor_detail->'technical'->'lstm') = 'object')::int) blended,
                    sum(((factor_detail->'technical'->>'score')::float < 60)::int) tech_rej
             FROM swing_signals
             WHERE signal_type='ENTRY' AND time > %s::date

@@ -48,10 +48,34 @@ RSI2=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND(AVG(hold_days)::numeric,1)::te
 #    그 탓에 9/17 3주차 판정이 "CV 0.242 → 🔴 여전히 주가가중"이라는 **오진**을 냈다.
 #    사이징은 멀쩡했다. 진입 시점 체결액은 swing_trades 의 BUY 기록에만 온전히 남는다.
 #    원 진입액 기준 실측: 적용후 CV 0.010(\$78.32~\$81.08) / 적용전 0.451.
-CVPOST=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND((STDDEV(c)/NULLIF(AVG(c),0))::numeric,3)::text,'')||'|'||
-               COALESCE(ROUND(MIN(c)::numeric,2)::text,'')||'|'||COALESCE(ROUND(MAX(c)::numeric,2)::text,'')
-               FROM (SELECT qty*price AS c FROM swing_trades
-                     WHERE side='BUY' AND executed_at >= '${CUTOFF}' AND qty > 0) t;")
+#
+# 🔴 2026-11-01 교정: 적용 후 전체를 한 덩어리로 재면 **사이징 정책 빈티지가 섞인다.**
+#    10/12 §22.AO-44 로 position_pct 0.05→0.10 이 되어 진입액이 \$79 → \$157 로 정상적으로 두 배가 됐는데,
+#    두 집단을 합친 CV 0.315 가 10/29 9주차에 "🔴 여전히 주가가중" 이라는 두 번째 오진을 냈다.
+#    등가중은 "같은 정책 안에서 진입액이 같다"는 뜻이므로 CV 는 **빈티지별로** 잰다.
+#    빈티지 경계 = swing_config.position_pct.updated_at (DB 가 유일한 출처 — 코드에 날짜를 박지 않는다).
+#    한계: updated_at 은 마지막 변경 시각만 남기므로 그 이전 변경은 경계로 잡히지 않는다.
+#    또 총노출 캡(max_total_exposure_pct)이 마지막 슬롯을 깎는 것은 **설계된 동작**이다
+#    (10/23 MRSH \$45.87 = 45% 캡 잔여분). 빈티지 중앙값의 80% 미만은 '캡 축소'로 따로 세고
+#    판정 CV 에서는 뺀다 — 단 건수·금액은 반드시 보고해 숨기지 않는다.
+#    출력: 빈티지당 한 줄 "시작일|n|CV전체|CV캡제외|min|max|캡축소건수|캡축소금액들" , 줄 구분 ';'
+CVPOST=$(PSQL "WITH b AS (SELECT GREATEST(updated_at, '${CUTOFF}'::timestamptz) AS t
+                          FROM swing_config WHERE key='position_pct'),
+               x AS (SELECT qty*price AS c,
+                            CASE WHEN executed_at >= (SELECT t FROM b) THEN (SELECT t FROM b)
+                                 ELSE '${CUTOFF}'::timestamptz END AS v
+                     FROM swing_trades WHERE side='BUY' AND executed_at >= '${CUTOFF}' AND qty > 0),
+               m AS (SELECT v, percentile_cont(0.5) WITHIN GROUP (ORDER BY c) AS med FROM x GROUP BY v),
+               y AS (SELECT x.*, (x.c < 0.8*m.med) AS trim FROM x JOIN m USING (v))
+               SELECT string_agg(line, ';' ORDER BY v) FROM (
+                 SELECT v, to_char(v AT TIME ZONE 'Asia/Seoul','MM/DD')||'|'||COUNT(*)||'|'||
+                   COALESCE(ROUND((STDDEV(c)/NULLIF(AVG(c),0))::numeric,3)::text,'0')||'|'||
+                   COALESCE(ROUND((STDDEV(c) FILTER (WHERE NOT trim)/
+                                   NULLIF(AVG(c) FILTER (WHERE NOT trim),0))::numeric,3)::text,'0')||'|'||
+                   ROUND(MIN(c)::numeric,2)||'|'||ROUND(MAX(c)::numeric,2)||'|'||
+                   COUNT(*) FILTER (WHERE trim)||'|'||
+                   COALESCE(string_agg(ROUND(c::numeric,2)::text, ',') FILTER (WHERE trim),'') AS line
+                 FROM y GROUP BY v) z;")
 CVPRE=$(PSQL "SELECT COUNT(*)||'|'||COALESCE(ROUND((STDDEV(c)/NULLIF(AVG(c),0))::numeric,3)::text,'')||'|'||
               COALESCE(ROUND(MIN(c)::numeric,2)::text,'')||'|'||COALESCE(ROUND(MAX(c)::numeric,2)::text,'')
               FROM (SELECT qty*price AS c FROM swing_trades
@@ -149,15 +173,18 @@ L.append("")
 
 # 2) B 사이징 산포
 pn, pcv, pmin, pmax = parts("CVPRE", 4)
-qn, qcv, qmin, qmax = parts("CVPOST", 4)
-L.append("<b>B 진입금액 산포</b> (등가중이면 CV→0)")
+L.append("<b>B 진입금액 산포</b> (등가중이면 같은 사이징 빈티지 안에서 CV→0)")
 if pcv: L.append(f"  적용 전 {pn}건: CV {pcv} (${pmin}~${pmax})")
-if qn and int(qn or 0) > 0:
-    L.append(f"  적용 후 {qn}건: CV {qcv or '-'} (${qmin}~${qmax})")
-    c = f(qcv)
-    if c is not None:
-        # B 는 진입 즉시 효과가 보이므로 1주차에도 판정 가능 (rsi2 와 달리 청산을 안 기다린다)
-        L.append("  → " + ("✅ 등가중 복원" if c < 0.10 else "🔴 여전히 주가가중 — 사이징 경로 점검"))
+vint = [s.split("|") for s in os.environ.get("CVPOST", "").split(";") if s.count("|") >= 7]
+if vint:
+    worst = 0.0
+    for since, n, cv_all, cv_core, vmin, vmax, ntrim, trims in vint:
+        L.append(f"  빈티지 {since}~ {n}건: CV {cv_core} (${vmin}~${vmax})"
+                 + (f" · 캡축소 {ntrim}건 ${trims} 제외, 포함 CV {cv_all}" if int(ntrim) else ""))
+        worst = max(worst, f(cv_core) or 0.0)
+    # B 는 진입 즉시 효과가 보이므로 1주차에도 판정 가능 (rsi2 와 달리 청산을 안 기다린다)
+    L.append("  → " + ("✅ 등가중 유지 (빈티지별)" if worst < 0.10
+                       else "🔴 같은 빈티지 안에서 진입액이 갈린다 — 사이징 경로 점검"))
 else:
     L.append("  적용 후 신규 진입 0건 — 대기")
 L.append("")

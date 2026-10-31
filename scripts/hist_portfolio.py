@@ -31,7 +31,13 @@ def spy_regime(pg):
 
 
 def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
-              regime=None, target_deploy=1.0, sector_of=None, max_per_sector=None):
+              regime=None, target_deploy=1.0, sector_of=None, max_per_sector=None,
+              gap_fill=False, earn_idx=None, blackout=0, pre_exit=False):
+    """gap_fill (§22.AO-65): 시가가 스톱 아래면 **시가에** 체결한다. 기본(False)은 종가가 스톱을
+    깨면 스톱 가격에 체결 — 갭 손실이 구조적으로 0 이 된다(라이브 NOW: 스톱 \$147.96 → \$113.73).
+    earn_idx: {symbol: 실적 갭 반영 봉 인덱스 set} — blackout>0 이면 진입 후 N봉 안(진입봉 시가는
+    이미 반영이므로 i0+2..i0+1+N)에 갭이 있는 신호를 건너뛴다. pre_exit 는 다음 봉이 갭이면 오늘
+    종가에 청산한다. 기본값에서 기존 결과는 그대로 재현된다."""
     dates = np.array(sorted(sig.d.unique()))
     by_date = {d: g.sort_values("mom", ascending=False) for d, g in sig.groupby("d")}
     idx = {s: {d: i for i, d in enumerate(a["d"])} for s, a in arrs.items()}
@@ -76,6 +82,12 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                 if gain <= p["fixed_sl"]: why, xp = "stop_loss", px
                 elif gain >= p["fixed_tp"]: why, xp = "take_profit", px
                 elif p["trend_break"] and not a["ta"][i]: why, xp = "trend_break", px
+            # gap_fill: True=모든 스톱 · "hard"=hard stop 만 · "trail"=트레일/본전 스톱만 (분해용)
+            _is_hard = pos["stop"] <= pos["hard"]
+            if gap_fill and why is None and np.isfinite(a["o"][i]) and a["o"][i] <= pos["stop"] \
+                    and (gap_fill is True or (gap_fill == "hard") == _is_hard):
+                # 갭으로 스톱을 건너뛰었다 — 첫 확인 시점 가격 ≈ 시가
+                why, xp = ("hard_stop" if _is_hard else "trail_or_be"), a["o"][i]
             if why is None and px <= pos["hard"]:
                 why, xp = "hard_stop", pos["hard"]
             if why is None and rm >= p["rsi2_min_r"] and gain >= p["rsi2_min_gain"] \
@@ -86,6 +98,8 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                 if r2 > p["rsi2_thr"]: why, xp = "rsi2_overbought", px
             if why is None and hold >= p["time_stop"]:
                 why, xp = "time_stop", px
+            if why is None and pre_exit and earn_idx and (i + 1) in earn_idx.get(pos["sym"], ()):
+                why, xp = "pre_earnings", px
             if why is None:
                 pos["hwm"] = max(pos["hwm"], px)
                 if not pos["tr"] and rm >= p["activation_r"]: pos["tr"] = True
@@ -99,6 +113,7 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                 cash += proceeds
                 trades.append({"d": day, "sym": pos["sym"], "hold": hold,
                                "ret": (xp/ep-1)*100, "reason": why,
+                               "i_entry": pos["i_entry"], "i_exit": i,
                                # §22.AO-55: 진입시점 ATR/가격. 라이브 7개월에서 저변동
                                # 종목이 손실 전부를 냈다는 가설을 15.6년에서 검정하기 위함.
                                "atr_pct": pos["atr"]/ep if ep else 0.0,
@@ -131,6 +146,9 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                 if a is None: continue
                 i0 = idx[t.symbol].get(day)
                 if i0 is None or i0+1 >= len(a["o"]): continue
+                if blackout and earn_idx:
+                    ei = earn_idx.get(t.symbol, ())
+                    if any((i0 + k) in ei for k in range(2, blackout + 2)): continue
                 ep = a["o"][i0+1]
                 if not np.isfinite(ep) or ep <= 0: continue
                 spend = min(budget, cash)
