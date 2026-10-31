@@ -77,6 +77,7 @@ def load(pg, mom_min, liq_top, vol_min, liq_over_passed=False, universe=None):
         sig = pd.DataFrame(c.execute(sql, params).fetchall())
         bars = pd.DataFrame(c.execute("""
             SELECT p.symbol, p.time::date AS d, p.open::float AS o, p.close::float AS c,
+                   p.low::float AS l,
                    h.sma_50::float AS s50, h.sma_200::float AS s200
             FROM hist_prices_adj p
             LEFT JOIN hist_indicators h ON h.symbol = p.symbol AND h.time = p.time
@@ -90,6 +91,8 @@ def build_arrays(bars):
         g = g.reset_index(drop=True)
         out[s] = {"d": g["d"].values, "o": g["o"].to_numpy(float),
                   "c": g["c"].to_numpy(float),
+                  # §22.AO-66: 장중 저가 — 스톱 터치 비관 경계용 (없으면 종가로 대체)
+                  "l": (g["l"] if "l" in g else g["c"]).to_numpy(float),
                   "ta": ((g["c"] > g["s50"]) & (g["s50"] > g["s200"])).to_numpy()}
     return out
 

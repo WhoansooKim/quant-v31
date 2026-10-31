@@ -32,12 +32,19 @@ def spy_regime(pg):
 
 def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
               regime=None, target_deploy=1.0, sector_of=None, max_per_sector=None,
-              gap_fill=False, earn_idx=None, blackout=0, pre_exit=False):
+              gap_fill=False, earn_idx=None, blackout=0, pre_exit=False,
+              stop_slip=0.0, touch="close", slip=0.0):
     """gap_fill (§22.AO-65): 시가가 스톱 아래면 **시가에** 체결한다. 기본(False)은 종가가 스톱을
     깨면 스톱 가격에 체결 — 갭 손실이 구조적으로 0 이 된다(라이브 NOW: 스톱 \$147.96 → \$113.73).
     earn_idx: {symbol: 실적 갭 반영 봉 인덱스 set} — blackout>0 이면 진입 후 N봉 안(진입봉 시가는
     이미 반영이므로 i0+2..i0+1+N)에 갭이 있는 신호를 건너뛴다. pre_exit 는 다음 봉이 갭이면 오늘
-    종가에 청산한다. 기본값에서 기존 결과는 그대로 재현된다."""
+    종가에 청산한다. 기본값에서 기존 결과는 그대로 재현된다.
+
+    §22.AO-66 체결 현실화 (라이브 8/1~ 스톱청산 49건 실측):
+      stop_slip — 갭 아닌 스톱 체결은 스톱가 × (1 − stop_slip). 라이브 중앙 0.55%.
+      touch — "close": 종가가 스톱 이하일 때만 발동(낙관 경계) / "low": 장중 저가 터치로 발동(비관 경계).
+              라이브는 하루 4회 확인하므로 실제는 두 경계 사이다.
+      slip — 진입·비스톱 청산의 편도 슬리피지(§22.AO-60 5bp)."""
     dates = np.array(sorted(sig.d.unique()))
     by_date = {d: g.sort_values("mom", ascending=False) for d, g in sig.groupby("d")}
     idx = {s: {d: i for i, d in enumerate(a["d"])} for s, a in arrs.items()}
@@ -88,8 +95,13 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                     and (gap_fill is True or (gap_fill == "hard") == _is_hard):
                 # 갭으로 스톱을 건너뛰었다 — 첫 확인 시점 가격 ≈ 시가
                 why, xp = ("hard_stop" if _is_hard else "trail_or_be"), a["o"][i]
-            if why is None and px <= pos["hard"]:
-                why, xp = "hard_stop", pos["hard"]
+            _lo = a["l"][i] if (touch == "low" and np.isfinite(a["l"][i])) else px
+            if why is None and _lo <= pos["hard"]:
+                why, xp = "hard_stop", pos["hard"] * (1 - stop_slip)
+            # 저가 모드: 트레일/본전 스톱도 장중 터치가 종가 기준 청산(rsi2·시간)보다 먼저 일어난다.
+            #   pos["stop"] 은 아직 오늘 종가로 갱신 전 = 어제까지의 스톱 → 미래 정보 없음.
+            if why is None and touch == "low" and pos["stop"] > pos["hard"] and _lo <= pos["stop"]:
+                why, xp = "trail_or_be", pos["stop"] * (1 - stop_slip)
             if why is None and rm >= p["rsi2_min_r"] and gain >= p["rsi2_min_gain"] \
                     and hold >= p["rsi2_min_hold"]:
                 d2 = a["c"][i] - a["c"][i-1]; d1 = a["c"][i-1] - a["c"][i-2] if i >= 2 else 0.0
@@ -107,8 +119,13 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                     pos["stop"] = max(pos["stop"], ep*(1+p["be_buffer"]))
                 if pos["tr"]:
                     pos["stop"] = max(pos["stop"], pos["hwm"] - p["trail_mult"]*atr)
-                if px <= pos["stop"]: why, xp = "trail_or_be", pos["stop"]
+                # 종가 모드(기존): 오늘 종가로 올린 스톱을 오늘 종가가 깨면 청산.
+                #   저가 모드는 위에서 어제 스톱으로 이미 판정했으므로 여기서 다시 보지 않는다.
+                if touch != "low" and px <= pos["stop"]:
+                    why, xp = "trail_or_be", pos["stop"] * (1 - stop_slip)
             if why:
+                if why not in ("hard_stop", "trail_or_be"):
+                    xp = xp * (1 - slip)
                 proceeds = pos["qty"] * xp * (1 - SIDE_COMM)
                 cash += proceeds
                 trades.append({"d": day, "sym": pos["sym"], "hold": hold,
@@ -151,6 +168,7 @@ def portfolio(sig, arrs, p, max_pos=20, start_cash=10000.0, min_notional=5.0,
                     if any((i0 + k) in ei for k in range(2, blackout + 2)): continue
                 ep = a["o"][i0+1]
                 if not np.isfinite(ep) or ep <= 0: continue
+                ep = ep * (1 + slip)
                 spend = min(budget, cash)
                 if spend < min_notional: continue
                 qty = spend / (ep*(1+SIDE_COMM))
