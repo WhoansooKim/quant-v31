@@ -6848,3 +6848,21 @@ rsi2 on 은 R2 에서 오히려 패(4.25→1.6~1.8) — 라이브 rsi2 +$104 는
 - 🔴 **러너를 고치면 '그 러너로 내린 모든 결정'의 날짜를 적어라.** AO-43~64 는 전부 스톱가 체결 위에 있다.
 - 🔴 **장중 확인이 있는 라이브는 종가 판정 백테스트로 모델되지 않는다** — 비갭 스톱의 25% 가 종가 회복일 청산이었다.
 - 🔴 **전략 판정은 노출을 맞춘 지수와 하라.** 45% 노출 전략의 비교 대상은 SPY 100% 가 아니라 SPY×45% 다.
+
+### §22.AO-67 스윙 전략 은퇴 → SPY 지수 코어 전환 (2026-11-02, 사용자 결정)
+
+**근거:** §22.AO-66 — 체결 현실화 러너에서 어떤 설정도 노출맞춤 SPY 를 두 경계 모두에서 못 이겼다.
+**사용자 결정:** SPY 100% · 기존 스윙 3종(HAS·KDP·EOG) 현행 출구로 자연청산 · Tier3 SH 헤지 off.
+
+| 변경 | 내용 |
+|---|---|
+| `swing_entries_enabled=false` (신규) | `validate_entry` 0단계 — 수동승인·auto_approve·execute_entry 전부 차단(§22.AO-63 단일 관문) |
+| `auto_approve_enabled` true→**false** | 재시작 전 구 코드도 즉시 멈추게 하는 이중 차단 |
+| `hedge_enabled` true→**false** | 헤지는 정직한 러너로 미검증, SPY 보유와 겹치면 하락장 순노출 ~60% |
+| `core_enabled=true` · `core_symbol=SPY` · reserve $5 · min $20 (신규) | `_job_core_allocate` 화~토 00:30 KST — 남는 현금을 SPY 로(lot 단위, 매도 없음) |
+| `expected_scheduler_jobs` 32→**33** | 재부팅 점검 기대치 |
+
+**side=CORE 제외 지점(호출부 grep):** `_job_exit_check` 필터 · `scan_exits`(🔴 HEDGE 도 원래 여기를 지났다 — 함께 제외) ·
+`get_open_position_count`(슬롯) · `open_sector_count` · `_get_open_exposure_usd`(총노출 캡).
+현금은 `_compute_cash_usd` — 스냅샷과 같은 공식, 실DB 대조 $1,325.36 일치. dry-run: SPY 1.7428주 $1,317.07, 잔여 $5.00.
+⚠️ 엔진 재시작 후 적용. 되돌리기: `swing_entries_enabled=true` · `auto_approve_enabled=true` · `core_enabled=false` (CORE lot 은 수동 청산).

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import logging
 import time
 from datetime import datetime
@@ -131,6 +132,17 @@ class SwingScheduler:
             CronTrigger(day_of_week="tue-sat", hour=5, minute=35, timezone=KST),
             id="hedge_check",
             name="Tier3 Hedge Check (16:35 ET · SPY 국면 기반 SH 진입/청산)",
+            replace_existing=True,
+        )
+
+        # 2d) 지수 코어 배분 — 화~토 00:30 KST (§22.AO-67). 23:30 청산 체크 직후 생긴 현금을
+        #     SPY 로 옮긴다. core_enabled=false 면 no-op. 🔴 잡을 추가했으므로
+        #     swing_config.expected_scheduler_jobs 도 같은 커밋에서 33 으로 갱신했다.
+        self.scheduler.add_job(
+            self._job_core_allocate,
+            CronTrigger(day_of_week="tue-sat", hour=0, minute=30, timezone=KST),
+            id="core_allocate",
+            name="Index Core Allocate (SPY, 현금→지수)",
             replace_existing=True,
         )
 
@@ -605,7 +617,8 @@ class SwingScheduler:
         try:
             positions = self.pg.get_open_positions()
             # Tier3 헤지 포지션(side=HEDGE)은 5-Layer 출구 대상 제외 — 시장국면 기반으로만 청산
-            positions = [p for p in positions if p.get("side") != "HEDGE"]
+            # 지수 코어(side=CORE, §22.AO-67)도 제외 — 매수보유가 설계이며 스톱이 없다
+            positions = [p for p in positions if p.get("side") not in ("HEDGE", "CORE")]
             if not positions:
                 self.pg.insert_pipeline_log("exit_check", "completed",
                                             time.time() - start,
@@ -757,6 +770,68 @@ class SwingScheduler:
         if row and row.get("total_value_usd"):
             return float(row["total_value_usd"])
         return float(self.pg.get_config_value("initial_capital", "1000"))
+
+    def _compute_cash_usd(self) -> float:
+        """스냅샷과 **같은 공식**의 현금(generate_snapshot 1310행). 공식이 갈라지면 976↔954 진동 글리치가
+        재발하므로 여기서 새로 정의하지 않고 같은 조각을 같은 순서로 합친다."""
+        init = float(self.pg.get_config_value("initial_capital", str(DEFAULT_INITIAL_CAPITAL)))
+        all_open = self.pg.get_open_positions()
+        closed = self.pg.get_closed_positions(limit=9999)
+        closed_ids = {p["position_id"] for p in closed}
+        entry_cost = sum(float(p["qty"]) * float(p["entry_price"])
+                         for p in all_open if p["position_id"] not in closed_ids)
+        realized = sum(float(p.get("realized_pnl") or 0) for p in closed)
+        comm = float(self.pg.get_total_commissions()["total_commission"])
+        adj = self.pg.get_total_capital_adjustments()
+        return init + adj + realized - entry_cost - comm
+
+    def _job_core_allocate(self):
+        """지수 코어(§22.AO-67): 남는 현금을 core_symbol(SPY) 로 매수해 보유한다.
+
+        배경: 정직한 러너(§22.AO-66)에서 스윙 전략은 어떤 설정도 노출맞춤 SPY 를 못 이겼다.
+        사용자 결정(2026-11-02): SPY 100% · 기존 스윙 자연청산 · Tier3 헤지 off.
+        - 매도 없음. side=CORE 는 exit_check·scan_exits·슬롯·섹터·노출캡에서 제외된다.
+        - 매수 단위는 lot(포지션 행) — 청산되는 스윙 현금이 생길 때마다 한 행씩 쌓인다.
+        - 수수료는 insert_trade 가 commission_rate 로 차감하므로 그만큼 남기고 산다.
+        """
+        import yfinance as yf
+        start = time.time()
+        if self.pg.get_config_value("core_enabled", "false") != "true":
+            return
+        sym = self.pg.get_config_value("core_symbol", "SPY")
+        try:
+            cash = self._compute_cash_usd()
+            reserve = float(self.pg.get_config_value("core_cash_reserve_usd", "5"))
+            min_notional = float(self.pg.get_config_value("core_min_notional_usd", "20"))
+            rate = float(self.pg.get_config_value("commission_rate", "0.0025"))
+            spend = cash - reserve
+            if spend < min_notional:
+                self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
+                                            {"skipped": "below_min", "cash": round(cash, 2)})
+                return
+            data = yf.download(sym, period="2d", progress=False)
+            price = float(data["Close"].dropna().iloc[-1])
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError(f"{sym} price invalid: {price}")
+            qty = round(spend / (price * (1 + rate)), 4)
+            is_paper = self.pg.get_config_value("trading_mode", "paper") == "paper"
+            pid = self.pg.open_position({
+                "symbol": sym, "side": "CORE", "qty": qty, "entry_price": price,
+                "stop_loss": None, "take_profit": None, "signal_id": None, "is_paper": is_paper,
+            })
+            self.pg.insert_trade({"position_id": pid, "signal_id": None, "symbol": sym,
+                                  "side": "BUY", "qty": qty, "price": price, "is_paper": is_paper})
+            logger.info(f"Core allocate: {sym} x{qty} @ ${price:.2f} = ${qty*price:.2f} "
+                        f"(cash ${cash:.2f}) #{pid}")
+            self.notifier.send_sync(
+                f"🏛️ <b>지수 코어 매수</b>\n{sym} x{qty} @ ${price:.2f} = ${qty*price:.2f}\n"
+                f"현금 ${cash:.2f} → ${cash - qty*price*(1+rate):.2f} (§22.AO-67)")
+            self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
+                                        {"symbol": sym, "qty": qty, "price": price,
+                                         "amount": round(qty * price, 2), "cash_before": round(cash, 2)})
+        except Exception as e:
+            self.pg.insert_pipeline_log("core_allocate", "failed", time.time() - start, error_msg=str(e))
+            logger.error(f"Core allocate failed: {e}", exc_info=True)
 
     def _job_hedge_check(self):
         """Tier 3 하락장 헤지: 시장 국면 전환 시 SH(inverse ETF) 진입/청산 자동 실행.

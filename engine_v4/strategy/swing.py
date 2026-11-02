@@ -381,7 +381,10 @@ class SwingStrategy:
 
     def scan_exits(self) -> list[dict]:
         """청산 시그널 스캔 → swing_signals 생성."""
-        positions = self.pg.get_open_positions()
+        # HEDGE(시장국면 청산) · CORE(지수 매수보유, §22.AO-67) 는 스윙 출구 대상이 아니다.
+        # 🔴 이전엔 HEDGE 도 여기를 지났다 — exit_check 의 필터만으론 scan_exits 경로가 열려 있었다.
+        positions = [p for p in self.pg.get_open_positions()
+                     if p.get("side") not in ("HEDGE", "CORE")]
         if not positions:
             logger.info("No open positions for exit scan")
             return []

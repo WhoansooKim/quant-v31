@@ -492,7 +492,8 @@ class PostgresStore:
     def get_open_position_count(self) -> int:
         with self.get_conn() as conn:
             row = conn.execute("""
-                SELECT count(*) as cnt FROM swing_positions WHERE status = 'open'
+                SELECT count(*) as cnt FROM swing_positions
+                WHERE status = 'open' AND side <> 'CORE'   -- 지수 코어는 슬롯을 쓰지 않는다(§22.AO-67)
             """).fetchone()
         return row["cnt"]
 
@@ -511,7 +512,7 @@ class PostgresStore:
                 SELECT nullif(u.sector, '') AS sector,
                        (SELECT count(*) FROM swing_positions p
                           JOIN swing_universe pu ON pu.symbol = p.symbol
-                         WHERE p.status = 'open' AND p.side <> 'HEDGE'
+                         WHERE p.status = 'open' AND p.side NOT IN ('HEDGE', 'CORE')
                            AND pu.sector = u.sector) AS cnt
                 FROM swing_universe u WHERE u.symbol = %s
             """, (symbol,)).fetchone()

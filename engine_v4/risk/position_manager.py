@@ -202,14 +202,22 @@ class PositionManager:
         """현재 오픈 포지션 명목가치 합 (entry_price × qty)."""
         try:
             positions = self.pg.get_open_positions()
+            # 지수 코어(side=CORE)는 스윙 총노출 캡의 대상이 아니다(§22.AO-67)
             return sum(float(p.get("entry_price") or 0) * float(p.get("qty") or 0)
-                       for p in positions)
+                       for p in positions if p.get("side") != "CORE")
         except Exception as e:
             logger.warning(f"open exposure calc failed: {e}")
             return 0.0
 
     def validate_entry(self, symbol: str, entry_price: float) -> tuple[bool, str]:
         """진입 시그널 종합 검증."""
+        # 0) 스윙 전략 은퇴 스위치 (§22.AO-67). 정직한 러너(§22.AO-66)에서 어떤 설정도 노출맞춤
+        #    SPY 를 못 이겨 사용자 결정으로 신규 스윙 진입을 멈췄다. 수동 승인·auto_approve·
+        #    execute_entry 가 전부 이 함수를 지나므로(§22.AO-63) 여기 한 곳에서 막는다.
+        #    기존 보유분의 출구는 계속 돈다. 지수 코어는 _job_core_allocate 가 별도로 산다.
+        if self.pg.get_config_value("swing_entries_enabled", "true") != "true":
+            return False, "Swing entries disabled (swing_entries_enabled=false, §22.AO-67)"
+
         # 1) 포지션 제한
         can_open, reason = self.can_open_position()
         if not can_open:
