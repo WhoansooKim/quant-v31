@@ -1,48 +1,65 @@
 # Quant V4 Swing Trading System — Project Status
 
-> Last updated: **2026-08-14** (Opus 4.8)
+> Last updated: **2026-11-07** (Opus 5.5)
 > Purpose: Session continuity — 이 파일 + 메모리(MEMORY.md)만 보면 Claude 재시작 후 즉시 이어서 작업 가능.
 
-## ⭐ 2026-08-14 현재 상태 스냅샷 (재개 시 여기부터)
+## ⭐ 2026-11-07 현재 상태 스냅샷 (재개 시 여기부터)
 
-**한 줄 요약:** paper 모드, 총자산 ~$1,915(자본 $2,000, TWR −4.26%), 오픈 11개. 18% 목표 위해 백테스트 검증
-기반 개선 진행 중. **다음 할 일 = 하락장 방어(Tier 1~3), §25 참조.**
+**한 줄 요약:** paper 모드. **스윙 전략 은퇴(§22.AO-67)** → **지수 코어 1.5배 = SPY 50% + SSO 50%(§22.AO-68, 사용자 결정,
+MDD −47% 수용)**. 총자산 $1,749.02(11/6 종가), 현재 보유 SPY 2.3719주 + 현금 $4.99 — **SSO 전환은 2026-11-10(화) 00:30 KST
+첫 실행에서** 일어난다(SPY ≈1.19주 매도 → SSO ≈13.6주 매수 예상). 엔진은 11/7 17:50 KST 새 코드로 재시작, 잡 33개.
+
+**9개월 결과 (2026-03-09 ~ 11-01):** 라이브 −10.26% vs SPY +10.96%. 청산 BUY 142건, 거래당 중앙 −1.07%, 승률 43%,
+가격손익 −$140 + 수수료 −$84. 회전 T≈17×/년 → 수수료+슬리피지 드래그 ≈10%/년(필요 거래당 우위 +1.65% vs 실측 −0.2%).
+
+**어떻게 여기까지 왔나 (2026-11 결정 사슬):**
+| § | 날짜 | 내용 |
+|---|---|---|
+| AO-65 | 11-01 | 백테스트 러너가 갭다운에도 **스톱가 체결** → CAGR 16.21% 는 허상(갭 시가 체결 7.67%). 실적 블랙아웃 기각 |
+| AO-66 | 11-01 | 정직한 러너(R2 종가판정 / R3 저가판정): 현행 +4.3% / −7.6%. **어떤 설정도 노출맞춤 SPY 미달** |
+| AO-67 | 11-02 | 사용자 결정: 스윙 은퇴, SPY 100% 코어, 기존 3종 자연청산(EOG −4.0%, KDP −2.7%, HAS +1.2%), 헤지 off |
+| AO-68 | 11-07 | 조사 4갈래(내부진단·학술·실무·비용) + H1~H5 측정(t+1 시가, 0.30%/편). 200일선+레버리지·섹터·혼합 전부 노출맞춤 SPY 미달, 종목 모멘텀은 현재 구성종목 룩어헤드로 판정불가. **두 반기 모두 18% = SPY 1.5배 상시노출뿐(18.9/18.2%)** → 사용자 결정으로 채택 |
+
+**현재 라이브 config (핵심):**
+| key | value | 의미 |
+|---|---|---|
+| swing_entries_enabled | false | 스윙 신규 진입 전면 차단(validate_entry 0단계) |
+| auto_approve_enabled / hedge_enabled | false / false | 이중 차단 · Tier3 헤지 끔 |
+| core_enabled | true | `_job_core_allocate` 화~토 00:30 KST |
+| core_targets | {"SPY":0.5,"SSO":0.5} | 목표비중. 평소엔 남는 현금만 부족분에 매수(매도 없음) |
+| core_last_rebalance | '' → 첫 실행 후 2026-11-10 | 연도가 올해 이전/빈값이면 리밸런스 → **매년 첫 실행 1회** |
+| core_rebalance_band | 0 | >0 이면 비중 이탈 리밸런스(측정 설계는 연 1회라 끔) |
+| core_cash_reserve_usd / core_min_notional_usd | 5 / 20 | 남길 현금 · 최소 주문 |
+| core_symbol | SPY | **폐기**(core_targets 가 대체, 참조 코드 없음) |
+| commission_rate | 0.0025 | KIS 표준(사용자 결정: 유지. 메리츠 0.07% 대안은 미채택) |
+
+**기대치(측정, 2012-03~2026-11, 연 1회 리밸런스):** 전반 18.9% · 후반 18.2% · MDD −47% · 최악연도 −28.6% ·
+**15년 중 6년은 그 해 18% 미달**. 1년 단위 18% 는 이 구조로도 보장되지 않는다. 이것은 알파가 아니라 노출 선택이다.
+
+**다음 할 일:**
+1. **2026-11-10 01:07 KST 전환 결과 확인** — core_allocate 로그, SPY #149 분할 청산 행(exit_reason=core_rebalance),
+   SSO 로트, 현금 ≈$5, 비중 ≈50:50, core_last_rebalance=2026-11-10, 분할 행 realized_pnl 정합.
+2. 스윙 기준으로 도는 잔여 잡 정리(하네스 변이·자동배포·레짐전환, exit_watch, 주간 리뷰) — 진입 차단으로 실해는 없고 알림만 무의미.
+3. `partial_close_position` 실현손익 유실 결함(스윙 경로) — 미수정, 스윙 재개 시 반드시 먼저 수정.
+
+**절대 반복 금지 (11월 교훈):**
+- 백테스트는 **체결 가정부터** 검증(갭 시가, 다음날 시가). 같은 종가 체결이면 SSO 200일선이 18.7% → 실제 16.6%.
+- 판정 기준선은 **같은 노출의 SPY**. 새 신호는 1.5배 SPY 를 노출맞춤으로 이겨야 채택.
+- 개별종목 백테스트는 **유니버스 시점**부터 의심(현재 구성종목 = 미래 정보). 모멘텀이 2배로 부풀었다.
+- 측정 안 된 레이어를 쌓지 말 것(LSTM·가중치 튜너·LLM 게이트·하네스 변이 모두 무효/유해로 측정됨).
 
 **재부팅/재시작 후 자동 점검 (복붙):**
 ```bash
 systemctl is-active quant-engine-v4 quant-dashboard           # active active 이어야
-curl -s http://localhost:8001/health | python3 -m json.tool   # status ok
-ss -ltnp | grep -E ':8000|:50051' || echo "V3.1 clear(OK)"     # 나오면 V3.1 부활(§13 조치)
-cat /home/quant/quant-v31/scripts/payoff_review_result.txt 2>/dev/null   # 주간 재평가 결과(있으면 사용자 보고)
+curl -s http://localhost:8001/health | python3 -m json.tool   # status ok, scheduler_jobs 33
+curl -s http://localhost:8001/scheduler | grep -o '"core_allocate[^}]*'   # 다음 실행 시각
 git -C /home/quant/quant-v31 log --oneline -3                  # 최신 커밋 확인
 ```
+⚠️ 엔진 재시작은 polkit 승인이 필요해 Claude 가 못 한다 → 사용자에게 `! sudo systemctl restart quant-engine-v4` 요청.
+⚠️ 스냅샷 복구로 **시스템 시계가 과거로** 가면 Yahoo SSL 실패로 전 종목 수집 마비 → `date -u` 확인, `sudo chronyc makestep`.
+git 원격이 앞설 수 있음 → `git fetch && git log origin/main` 후 `git rebase origin/main`.
 
-**현재 라이브 config (백테스트 검증 완료 스택, 2026-08-14):**
-| key | value | 근거 |
-|---|---|---|
-| take_profit_pct | 0.50 | ① 손익비(트레일링 지배) §22.AE |
-| abs_momentum_enabled / lookback | true / 126(6M) | ③ 절대모멘텀 §22.AF |
-| volume_ratio_min | 1.0 | 거래량 완화 §22.AF |
-| breakout_margin | 0.0 | 분산정합 복귀 §22.AI |
-| max_positions | 20 | 사용자 지정 §22.AH |
-| position_pct | 0.05 | 20개 분산(CAGR 18.9%/Sharpe 1.48) §22.AH |
-| max_position_pct_cap / total_exposure | 0.50 / 1.0 | 캡 §22.AG |
-| rsi2_exit_min_r / threshold | 2.0 / 95 | rsi2 승자보호 §22.AC |
-| **market_filter_enabled** | **true** (SMA200) | Tier1 하락장 진입중단 §22.AJ |
-| **macro_kill_switch_enabled** | **true** (VIX>30) | Tier2 VIX 킬스위치 §22.AJ |
-| **hedge_enabled** | **true** (SH **40%**, **SMA150**) | Tier3 헤지 강화 §22.AM |
-
-**✅ 하락장 방어(롱온리 구조결함) = Tier 1~3 배포 완료 (2026-08-18):** SPY<SMA200 진입중단 + VIX킬스위치 +
-SH 헤지. 사용자 핵심지적 "하락장 손실만 쌓이면 buy&hold와 무엇이 다른가" 해결. 상세 §25 / §22.AJ·AK.
-
-**⚠️ 재부팅/스냅샷복구 시 필수 점검 (2026-08-18 교훈):** 스냅샷 복구로 **시스템 시계가 과거로 되돌아가면**
-Yahoo SSL cert "not yet valid" → **전 종목 데이터 수집 실패**(전체 파이프라인 마비). 재개 시 `date -u` 로 시각
-확인, 틀리면 `sudo chronyc makestep` 또는 NTP 강제 재동기화. git 원격이 로컬보다 앞설 수 있음(다른 VM 세션
-push분) → `git fetch && git log origin/main` 확인 후 `git rebase origin/main`.
-
-**주간 자동 재평가:** ① 손익비 = user crontab `3 9 * * 1`(매월 → 매주 월 09:03 KST) → Telegram + `scripts/payoff_review_result.txt`.
-
-**핵심 진단 기록:** −4.13~4.26% 손실의 절반은 **수수료**(−$42, 20×5% 분산 매매빈도↑). hard_stop 급증은 시장부진이 주원인(§22.AI).
+(2026-08-14 스냅샷은 폐기 — 스윙 config 스택·Tier1~3 방어는 §22.AJ~AM, 이력은 git 참조.)
 
 ---
 
