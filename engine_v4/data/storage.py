@@ -489,6 +489,44 @@ class PostgresStore:
             conn.commit()
             return True
 
+    def split_close_position(self, position_id: int, exit_qty: float,
+                             exit_price: float, exit_reason: str) -> int | None:
+        """로트 분할 청산(§22.AO-68 코어 리밸런스): 원 로트 qty 를 exit_qty 만큼 줄이고, 같은 진입가·진입시각의
+        **청산된 새 행**(qty=exit_qty)을 만든다. 반환: 새 청산 행 position_id.
+
+        partial_close_position 을 쓰지 않는 이유: 그 함수는 실현손익을 *오픈* 행에 쌓는데, 현금 공식
+        (generate_snapshot · _compute_cash_usd)은 청산 행의 realized_pnl 만 더한다 → 매도 차익이 현금에서
+        사라지고, 이후 close_position 이 realized_pnl 을 덮어써 영구 유실된다. 분할 행은 두 공식과 그대로 맞는다.
+        exit_qty ≥ 보유 qty 면 close_position 과 같다(원 행을 닫는다).
+        """
+        with self.get_conn() as conn:
+            pos = conn.execute("""
+                SELECT * FROM swing_positions WHERE position_id = %s AND status = 'open' FOR UPDATE
+            """, (position_id,)).fetchone()
+            if not pos:
+                return None
+            entry, qty = float(pos["entry_price"]), float(pos["qty"])
+            exit_qty = round(min(exit_qty, qty), 4)
+            if exit_qty <= 0:
+                return None
+            if qty - exit_qty < 1e-4:
+                conn.commit()
+                return position_id if self.close_position(position_id, exit_price, exit_reason) else None
+            row = conn.execute("""
+                INSERT INTO swing_positions
+                    (symbol, side, qty, entry_price, entry_time, status, exit_price, exit_time,
+                     exit_reason, realized_pnl, realized_pct, hold_days, signal_id, is_paper)
+                VALUES (%s, %s, %s, %s, %s, 'closed', %s, now(), %s, %s, %s,
+                        EXTRACT(DAY FROM now() - %s)::int, %s, %s)
+                RETURNING position_id
+            """, (pos["symbol"], pos["side"], exit_qty, entry, pos["entry_time"], exit_price,
+                  exit_reason, (exit_price - entry) * exit_qty, (exit_price - entry) / entry,
+                  pos["entry_time"], pos["signal_id"], pos["is_paper"])).fetchone()
+            conn.execute("UPDATE swing_positions SET qty = %s WHERE position_id = %s",
+                         (round(qty - exit_qty, 4), position_id))
+            conn.commit()
+            return row["position_id"]
+
     def get_open_position_count(self) -> int:
         with self.get_conn() as conn:
             row = conn.execute("""

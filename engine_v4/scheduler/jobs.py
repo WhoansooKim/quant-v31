@@ -142,7 +142,7 @@ class SwingScheduler:
             self._job_core_allocate,
             CronTrigger(day_of_week="tue-sat", hour=0, minute=30, timezone=KST),
             id="core_allocate",
-            name="Index Core Allocate (SPY, 현금→지수)",
+            name="Index Core Allocate (SPY50+SSO50, §22.AO-68)",
             replace_existing=True,
         )
 
@@ -785,50 +785,131 @@ class SwingScheduler:
         adj = self.pg.get_total_capital_adjustments()
         return init + adj + realized - entry_cost - comm
 
-    def _job_core_allocate(self):
-        """지수 코어(§22.AO-67): 남는 현금을 core_symbol(SPY) 로 매수해 보유한다.
+    @staticmethod
+    def _plan_core(held: dict, cash: float, targets: dict, reserve: float, min_notional: float,
+                   rate: float, rebalance: bool) -> list[tuple[str, str, float]]:
+        """코어 주문 계획(순수 함수 — 테스트 가능). held={sym: 평가액}, 반환 [(sym, 'SELL'|'BUY', 달러)].
 
-        배경: 정직한 러너(§22.AO-66)에서 스윙 전략은 어떤 설정도 노출맞춤 SPY 를 못 이겼다.
-        사용자 결정(2026-11-02): SPY 100% · 기존 스윙 자연청산 · Tier3 헤지 off.
-        - 매도 없음. side=CORE 는 exit_check·scan_exits·슬롯·섹터·노출캡에서 제외된다.
-        - 매수 단위는 lot(포지션 행) — 청산되는 스윙 현금이 생길 때마다 한 행씩 쌓인다.
-        - 수수료는 insert_trade 가 commission_rate 로 차감하므로 그만큼 남기고 산다.
+        rebalance=True : 목표비중으로 되돌린다(초과분 매도 → 부족분 매수). 목표에 없는 심볼은 전량 매도.
+        rebalance=False: 매도 없이 남는 현금만 부족분(gap) 비례로 배분, gap 을 다 채우고 남으면 목표비중대로.
+        매수 달러에는 수수료가 포함된다(qty = 달러 / (가격 × (1+rate))).
         """
+        syms = set(held) | set(targets)
+        total = cash + sum(held.values()) - reserve
+        orders: list[tuple[str, str, float]] = []
+        avail = cash - reserve
+        if rebalance:
+            for s in sorted(syms):
+                diff = targets.get(s, 0.0) * total - held.get(s, 0.0)
+                if diff < 0 and (-diff >= min_notional or s not in targets):
+                    orders.append((s, "SELL", -diff))
+                    avail += -diff * (1 - rate)
+        sold = {s for s, _, _ in orders}
+        if avail < min_notional:
+            return orders
+        gaps = {s: max(0.0, targets[s] * total - held.get(s, 0.0)) for s in targets if s not in sold}
+        g = sum(gaps.values())
+        buys = {s: avail * gaps[s] / g for s in gaps} if g > avail else dict(gaps)
+        left = avail - sum(buys.values())
+        if left > 1e-6:
+            for s in targets:
+                buys[s] = buys.get(s, 0.0) + left * targets[s]
+        orders += [(s, "BUY", v) for s, v in sorted(buys.items()) if v >= 1.0]
+        return orders
+
+    def _job_core_allocate(self):
+        """지수 코어(§22.AO-67 → §22.AO-68): 목표비중 포트폴리오를 보유한다(기본 SPY 50% + SSO 50% = 1.5배).
+
+        배경: §22.AO-66 스윙은 노출맞춤 SPY 미달 → SPY 코어(AO-67). §22.AO-68 재설계 측정(다음날 시가·0.30%/편)
+        에서 두 반기 모두 18% 를 넘은 구조는 SPY 상시 1.5배 노출뿐(SPY50+SSO50, 연 1회 리밸런스: 전반 18.9 ·
+        후반 18.2%, MDD −47% · 최악연도 −29%). 200일선 필터는 오히려 수익을 깎아 채택하지 않았다.
+        사용자 결정(2026-11-07): MDD −47% 수용.
+        - 평소: 매도 없이 남는 현금만 부족분 쪽으로 매수.
+        - 리밸런스: core_last_rebalance 의 연도가 올해보다 이전(또는 빈 값)이면 1회 — 즉 매년 첫 실행.
+          core_rebalance_band(>0) 를 주면 비중 이탈이 그보다 클 때도 리밸런스(기본 0 = 끔, 측정 설계 그대로).
+        - 매도는 오래된 로트부터 split_close_position(현금 공식과 정합). side=CORE 는 출구 로직에서 제외된다.
+        """
+        import json as _json
+        import pandas as pd
         import yfinance as yf
         start = time.time()
         if self.pg.get_config_value("core_enabled", "false") != "true":
             return
-        sym = self.pg.get_config_value("core_symbol", "SPY")
         try:
-            cash = self._compute_cash_usd()
+            targets = {k.upper(): float(v) for k, v in
+                       _json.loads(self.pg.get_config_value("core_targets", '{"SPY": 1.0}')).items() if float(v) > 0}
+            if not targets or abs(sum(targets.values()) - 1) > 1e-6:
+                raise ValueError(f"core_targets 합이 1 이 아님: {targets}")
             reserve = float(self.pg.get_config_value("core_cash_reserve_usd", "5"))
             min_notional = float(self.pg.get_config_value("core_min_notional_usd", "20"))
             rate = float(self.pg.get_config_value("commission_rate", "0.0025"))
-            spend = cash - reserve
-            if spend < min_notional:
-                self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
-                                            {"skipped": "below_min", "cash": round(cash, 2)})
-                return
-            data = yf.download(sym, period="2d", progress=False)
-            price = float(data["Close"].dropna().iloc[-1])
-            if not math.isfinite(price) or price <= 0:
-                raise ValueError(f"{sym} price invalid: {price}")
-            qty = round(spend / (price * (1 + rate)), 4)
+            band = float(self.pg.get_config_value("core_rebalance_band", "0"))
+            last = self.pg.get_config_value("core_last_rebalance", "")
+            today = datetime.now(KST).date()
             is_paper = self.pg.get_config_value("trading_mode", "paper") == "paper"
-            pid = self.pg.open_position({
-                "symbol": sym, "side": "CORE", "qty": qty, "entry_price": price,
-                "stop_loss": None, "take_profit": None, "signal_id": None, "is_paper": is_paper,
-            })
-            self.pg.insert_trade({"position_id": pid, "signal_id": None, "symbol": sym,
-                                  "side": "BUY", "qty": qty, "price": price, "is_paper": is_paper})
-            logger.info(f"Core allocate: {sym} x{qty} @ ${price:.2f} = ${qty*price:.2f} "
-                        f"(cash ${cash:.2f}) #{pid}")
+
+            lots = sorted((p for p in self.pg.get_open_positions() if p.get("side") == "CORE"),
+                          key=lambda p: p["entry_time"])
+            syms = sorted(set(targets) | {p["symbol"] for p in lots})
+            data = yf.download(syms, period="5d", progress=False)
+            px = {}
+            for s in syms:
+                col = data["Close"][s] if isinstance(data.columns, pd.MultiIndex) else data["Close"]
+                v = float(col.dropna().iloc[-1])
+                if not math.isfinite(v) or v <= 0:
+                    raise ValueError(f"{s} price invalid: {v}")
+                px[s] = v
+            held: dict[str, float] = {}
+            for p in lots:
+                held[p["symbol"]] = held.get(p["symbol"], 0.0) + float(p["qty"]) * px[p["symbol"]]
+            cash = self._compute_cash_usd()
+            tot = cash + sum(held.values())
+            drift = max(abs(held.get(s, 0.0) / tot - targets.get(s, 0.0)) for s in syms) if tot > 0 else 0
+            rebalance = (not last or int(last[:4]) < today.year or (band > 0 and drift > band)) and bool(held)
+            orders = self._plan_core(held, cash, targets, reserve, min_notional, rate, rebalance)
+            if not orders:
+                if rebalance:
+                    self.pg.update_config("core_last_rebalance", today.isoformat())
+                self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
+                                            {"skipped": "no_orders", "cash": round(cash, 2),
+                                             "rebalance": rebalance})
+                return
+
+            done = []
+            for s, side, usd in orders:
+                if side == "SELL":
+                    need = round(usd / px[s], 4)
+                    for p in (q for q in lots if q["symbol"] == s):
+                        if need <= 0: break
+                        q = min(need, float(p["qty"]))
+                        cid = self.pg.split_close_position(p["position_id"], q, px[s], "core_rebalance")
+                        if cid is None: continue
+                        self.pg.insert_trade({"position_id": cid, "signal_id": None, "symbol": s, "side": "SELL",
+                                              "qty": q, "price": px[s], "is_paper": is_paper})
+                        need = round(need - q, 4)
+                    done.append(f"매도 {s} ${usd:.2f}")
+            for s, side, usd in orders:
+                if side == "BUY":
+                    qty = round(usd / (px[s] * (1 + rate)), 4)
+                    if qty <= 0: continue
+                    pid = self.pg.open_position({"symbol": s, "side": "CORE", "qty": qty, "entry_price": px[s],
+                                                 "stop_loss": None, "take_profit": None, "signal_id": None,
+                                                 "is_paper": is_paper})
+                    self.pg.insert_trade({"position_id": pid, "signal_id": None, "symbol": s, "side": "BUY",
+                                          "qty": qty, "price": px[s], "is_paper": is_paper})
+                    done.append(f"매수 {s} x{qty} @ ${px[s]:.2f} = ${qty*px[s]:.2f}")
+            if rebalance:
+                self.pg.update_config("core_last_rebalance", today.isoformat())
+            cash_after = self._compute_cash_usd()
+            logger.info(f"Core allocate ({'rebalance' if rebalance else 'cash'}): {done} "
+                        f"cash ${cash:.2f}→${cash_after:.2f}")
             self.notifier.send_sync(
-                f"🏛️ <b>지수 코어 매수</b>\n{sym} x{qty} @ ${price:.2f} = ${qty*price:.2f}\n"
-                f"현금 ${cash:.2f} → ${cash - qty*price*(1+rate):.2f} (§22.AO-67)")
+                f"🏛️ <b>지수 코어 {'리밸런스' if rebalance else '매수'}</b>\n" + "\n".join(done) +
+                f"\n현금 ${cash:.2f} → ${cash_after:.2f} · 목표 "
+                + " / ".join(f"{k} {v:.0%}" for k, v in targets.items()) + " (§22.AO-68)")
             self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
-                                        {"symbol": sym, "qty": qty, "price": price,
-                                         "amount": round(qty * price, 2), "cash_before": round(cash, 2)})
+                                        {"rebalance": rebalance, "orders": done, "prices": px,
+                                         "cash_before": round(cash, 2), "cash_after": round(cash_after, 2)})
         except Exception as e:
             self.pg.insert_pipeline_log("core_allocate", "failed", time.time() - start, error_msg=str(e))
             logger.error(f"Core allocate failed: {e}", exc_info=True)
