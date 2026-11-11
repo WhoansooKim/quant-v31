@@ -135,6 +135,14 @@ class SwingStrategy:
 
     def scan_entries(self) -> list[dict]:
         """진입 시그널 스캔 → swing_signals 생성."""
+        # §22.AO-67 스윙 은퇴: 진입 승인이 전면 거부되므로 승인 불가능한 pending 시그널을 만들지 않는다.
+        if self.pg.get_config_value("swing_entries_enabled", "true") != "true":
+            self._last_entry_funnel = {
+                "total": 0, "price_ok": 0, "trend": 0, "breakout": 0,
+                "volume": 0, "three_cond": 0, "passed_basic": 0, "final": 0,
+                "message": "진입 시그널 0 — 스윙 은퇴(swing_entries_enabled=false, §22.AO-67). 코어 운용 중.",
+            }
+            return []
         indicators = self.pg.get_latest_indicators()
         if not indicators:
             logger.warning("No indicators available for entry scan")
