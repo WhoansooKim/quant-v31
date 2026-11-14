@@ -142,7 +142,7 @@ class SwingScheduler:
             self._job_core_allocate,
             CronTrigger(day_of_week="tue-sat", hour=0, minute=30, timezone=KST),
             id="core_allocate",
-            name="Index Core Allocate (SPY50+SSO50, §22.AO-68)",
+            name="Index Core Allocate (trend SMA200 × UPRO/BIL, §22.AO-69)",
             replace_existing=True,
         )
 
@@ -850,6 +850,45 @@ class SwingScheduler:
         orders += [(s, "BUY", v) for s, v in sorted(buys.items()) if v >= 1.0]
         return orders
 
+    def _core_trend_targets(self) -> tuple[dict, dict]:
+        """§22.AO-69 추세×레버리지(Gayed-Bilello 2016): SPY 확정 종가 > SMA(N)·(1±buf) → on 목표, 아니면 off 목표.
+
+        측정(scripts/research/run_round3.py): 1962~93 에서 고른 SMA200·buf0·3배 → 1994~2026 표본외
+        15.7%/년, MDD −64% (상시 1.5배 12.9%, −74%). 사용자 결정 2026-11-14.
+        판정은 **직전 확정 종가**(오늘 장중 봉 제외) — 백테스트의 't 종가 판정 → t+1 체결'과 같게.
+        """
+        import json as _json
+        import pandas as pd
+        import yfinance as yf
+        from zoneinfo import ZoneInfo
+        n = int(self.pg.get_config_value("core_trend_sma", "200"))
+        buf = float(self.pg.get_config_value("core_trend_buf", "0"))
+        on_t = {k.upper(): float(v) for k, v in _json.loads(
+            self.pg.get_config_value("core_trend_on_targets", '{"UPRO": 1.0}')).items() if float(v) > 0}
+        off_t = {k.upper(): float(v) for k, v in _json.loads(
+            self.pg.get_config_value("core_trend_off_targets", '{"BIL": 1.0}')).items() if float(v) > 0}
+        for nm, t in (("on", on_t), ("off", off_t)):
+            if not t or abs(sum(t.values()) - 1) > 1e-6:
+                raise ValueError(f"core_trend_{nm}_targets 합이 1 이 아님: {t}")
+        h = yf.download("SPY", period="2y", auto_adjust=True, progress=False)
+        close = (h["Close"]["SPY"] if isinstance(h.columns, pd.MultiIndex) else h["Close"]).dropna()
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        if (et_now.hour, et_now.minute) < (16, 15):         # 장 마감 전이면 오늘 장중 봉 제외 → 확정 종가만
+            close = close[close.index.date < et_now.date()]
+        if len(close) < n:
+            raise ValueError(f"SPY 종가 {len(close)}개 < SMA{n}")
+        c, sma = float(close.iloc[-1]), float(close.iloc[-n:].mean())
+        prev = self.pg.get_config_value("core_trend_state", "")
+        if prev == "on":
+            state = "off" if c < sma * (1 - buf) else "on"
+        elif prev == "off":
+            state = "on" if c > sma * (1 + buf) else "off"
+        else:
+            state = "on" if c > sma else "off"
+        info = {"asof": str(close.index[-1].date()), "close": round(c, 2), "sma": round(sma, 2), "n": n,
+                "buf": buf, "prev": prev or None, "state": state, "changed": state != prev}
+        return (on_t if state == "on" else off_t), info
+
     def _job_core_allocate(self):
         """지수 코어(§22.AO-67 → §22.AO-68): 목표비중 포트폴리오를 보유한다(기본 SPY 50% + SSO 50% = 1.5배).
 
@@ -883,6 +922,12 @@ class SwingScheduler:
 
             lots = sorted((p for p in self.pg.get_open_positions() if p.get("side") == "CORE"),
                           key=lambda p: p["entry_time"])
+            # §22.AO-69 추세 모드: SPY 직전 확정 종가 vs SMA(N) → on/off 목표. 판정은 어제 종가, 체결은 지금(장중).
+            trend_info = None
+            force_rebal = False
+            if self.pg.get_config_value("core_mode", "static") == "trend":
+                targets, trend_info = self._core_trend_targets()
+                force_rebal = trend_info["changed"] or any(p["symbol"] not in targets for p in lots)
             syms = sorted(set(targets) | {p["symbol"] for p in lots})
             data = yf.download(syms, period="5d", progress=False)
             px = {}
@@ -898,14 +943,17 @@ class SwingScheduler:
             cash = self._compute_cash_usd()
             tot = cash + sum(held.values())
             drift = max(abs(held.get(s, 0.0) / tot - targets.get(s, 0.0)) for s in syms) if tot > 0 else 0
-            rebalance = (not last or int(last[:4]) < today.year or (band > 0 and drift > band)) and bool(held)
+            rebalance = (force_rebal or not last or int(last[:4]) < today.year or (band > 0 and drift > band)) and bool(held)
             orders = self._plan_core(held, cash, targets, reserve, min_notional, rate, rebalance)
+            # 추세 상태는 주문 처리 뒤에만 기록 — 예외로 빠지면 갱신되지 않아 다음 실행이 전환을 재시도한다.
             if not orders:
                 if rebalance:
                     self.pg.update_config("core_last_rebalance", today.isoformat())
+                if trend_info is not None:
+                    self.pg.update_config("core_trend_state", trend_info["state"])
                 self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
                                             {"skipped": "no_orders", "cash": round(cash, 2),
-                                             "rebalance": rebalance})
+                                             "rebalance": rebalance, "trend": trend_info})
                 return
 
             done = []
@@ -933,16 +981,25 @@ class SwingScheduler:
                     done.append(f"매수 {s} x{qty} @ ${px[s]:.2f} = ${qty*px[s]:.2f}")
             if rebalance:
                 self.pg.update_config("core_last_rebalance", today.isoformat())
+            if trend_info is not None:
+                self.pg.update_config("core_trend_state", trend_info["state"])
             cash_after = self._compute_cash_usd()
             logger.info(f"Core allocate ({'rebalance' if rebalance else 'cash'}): {done} "
                         f"cash ${cash:.2f}→${cash_after:.2f}")
+            tline = ""
+            if trend_info is not None:
+                tline = (f"\n추세: SPY ${trend_info['close']:.2f} vs SMA{trend_info['n']} ${trend_info['sma']:.2f}"
+                         f" ({trend_info['asof']}) → {trend_info['state'].upper()}"
+                         + (" ⚡전환" if trend_info["changed"] else ""))
             self.notifier.send_sync(
                 f"🏛️ <b>지수 코어 {'리밸런스' if rebalance else '매수'}</b>\n" + "\n".join(done) +
                 f"\n현금 ${cash:.2f} → ${cash_after:.2f} · 목표 "
-                + " / ".join(f"{k} {v:.0%}" for k, v in targets.items()) + " (§22.AO-68)")
+                + " / ".join(f"{k} {v:.0%}" for k, v in targets.items()) + tline
+                + (" (§22.AO-69)" if trend_info is not None else " (§22.AO-68)"))
             self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
                                         {"rebalance": rebalance, "orders": done, "prices": px,
-                                         "cash_before": round(cash, 2), "cash_after": round(cash_after, 2)})
+                                         "cash_before": round(cash, 2), "cash_after": round(cash_after, 2),
+                                         "trend": trend_info})
         except Exception as e:
             self.pg.insert_pipeline_log("core_allocate", "failed", time.time() - start, error_msg=str(e))
             logger.error(f"Core allocate failed: {e}", exc_info=True)

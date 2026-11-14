@@ -1,13 +1,19 @@
 # Quant V4 Swing Trading System — Project Status
 
-> Last updated: **2026-11-07** (Opus 5.5)
+> Last updated: **2026-11-14** (Opus 5.5)
 > Purpose: Session continuity — 이 파일 + 메모리(MEMORY.md)만 보면 Claude 재시작 후 즉시 이어서 작업 가능.
 
-## ⭐ 2026-11-07 현재 상태 스냅샷 (재개 시 여기부터)
+## ⭐ 2026-11-14 현재 상태 스냅샷 (재개 시 여기부터)
 
-**한 줄 요약:** paper 모드. **스윙 전략 은퇴(§22.AO-67)** → **지수 코어 1.5배 = SPY 50% + SSO 50%(§22.AO-68, 사용자 결정,
-MDD −47% 수용)**. 총자산 $1,749.02(11/6 종가), 현재 보유 SPY 2.3719주 + 현금 $4.99 — **SSO 전환은 2026-11-10(화) 00:30 KST
-첫 실행에서** 일어난다(SPY ≈1.19주 매도 → SSO ≈13.6주 매수 예상). 엔진은 11/7 17:50 KST 새 코드로 재시작, 잡 33개.
+**한 줄 요약:** paper 모드. 스윙 은퇴(§22.AO-67) → 1.5배 코어(§22.AO-68, 11/10 전환 완료) → **추세×3배 코어(§22.AO-69,
+사용자 결정 2026-11-14)**: SPY 직전 확정 종가 > SMA200 이면 UPRO 100%, 아니면 BIL 100%. 첫 실행 2026-11-17(화) 00:30 KST
+(현재 SPY $757 > SMA200 $729 → SPY/SSO 전량 매도 → UPRO 매수 예상). 총자산 $1,794.73(11/13 종가). 잡 33→11(스윙 잡 해제).
+
+**§22.AO-69 근거 (scripts/research/, 1962~2026 장기 측정):** §22.AO-68 의 2012~ 창엔 장기 약세장이 없었다.
+1962~ 로 넓히면 상시 1.5배는 **MDD −74%, 2000~2011 연 −2.9%** (−47% 는 강세장 창 숫자). 비용 후 변동성 타깃·RSI2/IBS·월말효과·
+조건부 변동성·12m&1m 혼합 전부 탈락. 추세×3배는 1962~93 에서 파라미터 선택(SMA200·buf0) → 1994~2026 표본외 **15.7%/년,
+MDD −64%** (상시 1.5배 12.9%, −74%). 108 조합 중 67% 가 상시 1.5배 초과, 표본외 18% 이상은 11%. **약점: 1987 형 단일일 급락
+(그달 −34~−74%), 버퍼에 민감(13~19%)**. 장기적으로 18% 를 보장하는 구조는 찾지 못했다.
 
 **9개월 결과 (2026-03-09 ~ 11-01):** 라이브 −10.26% vs SPY +10.96%. 청산 BUY 142건, 거래당 중앙 −1.07%, 승률 43%,
 가격손익 −$140 + 수수료 −$84. 회전 T≈17×/년 → 수수료+슬리피지 드래그 ≈10%/년(필요 거래당 우위 +1.65% vs 실측 −0.2%).
@@ -26,20 +32,23 @@ MDD −47% 수용)**. 총자산 $1,749.02(11/6 종가), 현재 보유 SPY 2.3719
 | swing_entries_enabled | false | 스윙 신규 진입 전면 차단(validate_entry 0단계) |
 | auto_approve_enabled / hedge_enabled | false / false | 이중 차단 · Tier3 헤지 끔 |
 | core_enabled | true | `_job_core_allocate` 화~토 00:30 KST |
-| core_targets | {"SPY":0.5,"SSO":0.5} | 목표비중. 평소엔 남는 현금만 부족분에 매수(매도 없음) |
+| core_mode | trend | §22.AO-69. static 이면 core_targets 상시 보유(1.5배)로 복귀 |
+| core_trend_sma / core_trend_buf | 200 / 0 | 워크포워드 선택값(사후 최적 buf2% 를 고르지 않았다) |
+| core_trend_on_targets / off_targets | {"UPRO":1.0} / {"BIL":1.0} | on=3배, off=T-bill |
+| core_trend_state | 잡이 기록(on/off) | 빈 값이면 첫 판정을 전환으로 처리 → 전량 교체 |
+| core_targets | {"SPY":0.5,"SSO":0.5} | core_mode=static 일 때만 사용 |
 | core_last_rebalance | '' → 첫 실행 후 2026-11-10 | 연도가 올해 이전/빈값이면 리밸런스 → **매년 첫 실행 1회** |
 | core_rebalance_band | 0 | >0 이면 비중 이탈 리밸런스(측정 설계는 연 1회라 끔) |
 | core_cash_reserve_usd / core_min_notional_usd | 5 / 20 | 남길 현금 · 최소 주문 |
 | core_symbol | SPY | **폐기**(core_targets 가 대체, 참조 코드 없음) |
 | commission_rate | 0.0025 | KIS 표준(사용자 결정: 유지. 메리츠 0.07% 대안은 미채택) |
 
-**기대치(측정, 2012-03~2026-11, 연 1회 리밸런스):** 전반 18.9% · 후반 18.2% · MDD −47% · 최악연도 −28.6% ·
-**15년 중 6년은 그 해 18% 미달**. 1년 단위 18% 는 이 구조로도 보장되지 않는다. 이것은 알파가 아니라 노출 선택이다.
+**기대치(추세×3배, 측정):** 1994~2026 표본외 15.7%/년 · MDD −64% · 2012~2026 약 21~22% · 거래 연 1~3회.
+1년 단위 18% 는 보장되지 않는다(시장 방향 의존). 하루 −20% 급락엔 3배 그대로 노출된다.
 
 **다음 할 일:**
-1. **2026-11-10 01:07 KST 전환 결과 확인** — core_allocate 로그, SPY #149 분할 청산 행(exit_reason=core_rebalance),
-   SSO 로트, 현금 ≈$5, 비중 ≈50:50, core_last_rebalance=2026-11-10, 분할 행 realized_pnl 정합.
-2. 스윙 기준으로 도는 잔여 잡 정리(하네스 변이·자동배포·레짐전환, exit_watch, 주간 리뷰) — 진입 차단으로 실해는 없고 알림만 무의미.
+1. **2026-11-17 00:30 KST 추세 코어 첫 실행 확인** — trend.state=on, SPY 3로트·SSO 1로트 분할청산, UPRO 매수, 현금 ≈$5, core_trend_state=on.
+2. 연구 계속(§22.AO-69 후속): 2x/3x 주식·채권 혼합, off 자산(IEF/TLT/추세 채권), 급락 대비. 같은 조건(1962~·워크포워드·0.30%/편).
 3. `partial_close_position` 실현손익 유실 결함(스윙 경로) — 미수정, 스윙 재개 시 반드시 먼저 수정.
 
 **절대 반복 금지 (11월 교훈):**
@@ -51,7 +60,7 @@ MDD −47% 수용)**. 총자산 $1,749.02(11/6 종가), 현재 보유 SPY 2.3719
 **재부팅/재시작 후 자동 점검 (복붙):**
 ```bash
 systemctl is-active quant-engine-v4 quant-dashboard           # active active 이어야
-curl -s http://localhost:8001/health | python3 -m json.tool   # status ok, scheduler_jobs 33
+curl -s http://localhost:8001/health | python3 -m json.tool   # status ok, scheduler_jobs 11 (스윙 은퇴 상태)
 curl -s http://localhost:8001/scheduler | grep -o '"core_allocate[^}]*'   # 다음 실행 시각
 git -C /home/quant/quant-v31 log --oneline -3                  # 최신 커밋 확인
 ```
