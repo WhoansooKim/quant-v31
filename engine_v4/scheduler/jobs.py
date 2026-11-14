@@ -142,7 +142,7 @@ class SwingScheduler:
             self._job_core_allocate,
             CronTrigger(day_of_week="tue-sat", hour=0, minute=30, timezone=KST),
             id="core_allocate",
-            name="Index Core Allocate (trend SMA200 × UPRO/BIL, §22.AO-69)",
+            name="Index Core Allocate (trend SMA200 buffer-ensemble × UPRO/BIL, §22.AO-70)",
             replace_existing=True,
         )
 
@@ -851,18 +851,24 @@ class SwingScheduler:
         return orders
 
     def _core_trend_targets(self) -> tuple[dict, dict]:
-        """§22.AO-69 추세×레버리지(Gayed-Bilello 2016): SPY 확정 종가 > SMA(N)·(1±buf) → on 목표, 아니면 off 목표.
+        """§22.AO-69/70 추세×레버리지 — **버퍼 앙상블**: SPY 확정 종가 vs SMA(N) 를 버퍼 b∈core_trend_bufs 마다
+        히스테리시스로 판정(on: c>sma·(1+b) 에서 켜짐, c<sma·(1−b) 에서 꺼짐)하고, on 비율 f 만큼 on 목표·(1−f) 만큼 off 목표.
 
-        측정(scripts/research/run_round3.py): 1962~93 에서 고른 SMA200·buf0·3배 → 1994~2026 표본외
-        15.7%/년, MDD −64% (상시 1.5배 12.9%, −74%). 사용자 결정 2026-11-14.
-        판정은 **직전 확정 종가**(오늘 장중 봉 제외) — 백테스트의 't 종가 판정 → t+1 체결'과 같게.
+        왜 앙상블인가(scripts/research/run_round5.py, t+1 시가 체결): 단일 버퍼는 결과가 버퍼에 민감하다 —
+        buf0 13.1%/MDD −72.6%(휩쏘 연 6.5회), buf2 18.9%, buf3 19.1%. buf0 은 종가 체결 워크포워드로 골랐으나
+        시가 체결에선 최악이었다(§22.AO-69 의 내 측정 결함). 0~5% 6개 균등 앙상블 = 18.5%/MDD −53.1%,
+        1962~2026 지수 장기 15.4% — 사후에 버퍼 하나를 고르지 않는다. 사용자 결정 2026-11-14.
+        판정은 **직전 확정 종가**(장 마감 전이면 오늘 장중 봉 제외) — 백테스트의 't 종가 판정 → t+1 체결'과 같게.
+        상태는 core_trend_state 에 JSON {버퍼: on|off} 로 저장(빈 값이면 c>sma 로 초기화).
         """
         import json as _json
         import pandas as pd
         import yfinance as yf
         from zoneinfo import ZoneInfo
         n = int(self.pg.get_config_value("core_trend_sma", "200"))
-        buf = float(self.pg.get_config_value("core_trend_buf", "0"))
+        bufs = [float(b) for b in _json.loads(self.pg.get_config_value("core_trend_bufs", "[0,0.01,0.02,0.03,0.04,0.05]"))]
+        if not bufs:
+            raise ValueError("core_trend_bufs 비어 있음")
         on_t = {k.upper(): float(v) for k, v in _json.loads(
             self.pg.get_config_value("core_trend_on_targets", '{"UPRO": 1.0}')).items() if float(v) > 0}
         off_t = {k.upper(): float(v) for k, v in _json.loads(
@@ -873,21 +879,39 @@ class SwingScheduler:
         h = yf.download("SPY", period="2y", auto_adjust=True, progress=False)
         close = (h["Close"]["SPY"] if isinstance(h.columns, pd.MultiIndex) else h["Close"]).dropna()
         et_now = datetime.now(ZoneInfo("America/New_York"))
-        if (et_now.hour, et_now.minute) < (16, 15):         # 장 마감 전이면 오늘 장중 봉 제외 → 확정 종가만
+        if (et_now.hour, et_now.minute) < (16, 15):
             close = close[close.index.date < et_now.date()]
         if len(close) < n:
             raise ValueError(f"SPY 종가 {len(close)}개 < SMA{n}")
         c, sma = float(close.iloc[-1]), float(close.iloc[-n:].mean())
-        prev = self.pg.get_config_value("core_trend_state", "")
-        if prev == "on":
-            state = "off" if c < sma * (1 - buf) else "on"
-        elif prev == "off":
-            state = "on" if c > sma * (1 + buf) else "off"
-        else:
-            state = "on" if c > sma else "off"
+        raw = self.pg.get_config_value("core_trend_state", "")
+        try:
+            prev = _json.loads(raw) if raw and raw.startswith("{") else {}
+        except ValueError:
+            prev = {}
+        states = {}
+        for b in bufs:
+            k = f"{b:g}"
+            p = prev.get(k)
+            if p == "on":
+                states[k] = "off" if c < sma * (1 - b) else "on"
+            elif p == "off":
+                states[k] = "on" if c > sma * (1 + b) else "off"
+            else:
+                states[k] = "on" if c > sma else "off"
+        frac = sum(v == "on" for v in states.values()) / len(states)
+        prev_frac = (sum(prev.get(f"{b:g}") == "on" for b in bufs) / len(bufs)) if prev else None
+        targets: dict[str, float] = {}
+        for t, w in ((on_t, frac), (off_t, 1 - frac)):
+            for k, v in t.items():
+                if w * v > 0:
+                    targets[k] = targets.get(k, 0.0) + w * v
         info = {"asof": str(close.index[-1].date()), "close": round(c, 2), "sma": round(sma, 2), "n": n,
-                "buf": buf, "prev": prev or None, "state": state, "changed": state != prev}
-        return (on_t if state == "on" else off_t), info
+                "frac": round(frac, 4), "prev_frac": prev_frac, "buffers": states,
+                "state": _json.dumps(states, separators=(",", ":")),
+                "label": f"{sum(v == 'on' for v in states.values())}/{len(states)} on",
+                "changed": prev_frac is None or abs(frac - prev_frac) > 1e-9}
+        return targets, info
 
     def _job_core_allocate(self):
         """지수 코어(§22.AO-67 → §22.AO-68): 목표비중 포트폴리오를 보유한다(기본 SPY 50% + SSO 50% = 1.5배).
@@ -989,13 +1013,13 @@ class SwingScheduler:
             tline = ""
             if trend_info is not None:
                 tline = (f"\n추세: SPY ${trend_info['close']:.2f} vs SMA{trend_info['n']} ${trend_info['sma']:.2f}"
-                         f" ({trend_info['asof']}) → {trend_info['state'].upper()}"
+                         f" ({trend_info['asof']}) → {trend_info['label']}"
                          + (" ⚡전환" if trend_info["changed"] else ""))
             self.notifier.send_sync(
                 f"🏛️ <b>지수 코어 {'리밸런스' if rebalance else '매수'}</b>\n" + "\n".join(done) +
                 f"\n현금 ${cash:.2f} → ${cash_after:.2f} · 목표 "
                 + " / ".join(f"{k} {v:.0%}" for k, v in targets.items()) + tline
-                + (" (§22.AO-69)" if trend_info is not None else " (§22.AO-68)"))
+                + (" (§22.AO-70)" if trend_info is not None else " (§22.AO-68)"))
             self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
                                         {"rebalance": rebalance, "orders": done, "prices": px,
                                          "cash_before": round(cash, 2), "cash_after": round(cash_after, 2),

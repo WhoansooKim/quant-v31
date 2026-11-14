@@ -38,3 +38,4 @@ Miniconda3-latest-Linux-x86_64.sh
 scripts/*.log
 scripts/.gap_watch.beat
 scripts/gap_watch.cron.log
+data/pit/

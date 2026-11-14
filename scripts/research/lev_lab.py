@@ -113,7 +113,9 @@ def run(mkt: Market, decide, start="1994-01-03", end=None, band=0.0):
             risky = np.abs(diff).copy(); risky[k["CASH"]] = 0
             if np.abs(diff).sum() / 2 >= band:
                 c = COST * risky.sum() * V
-                V -= c; traded += risky.sum() / 2; ntr += 1
+                V -= c; traded += risky.sum() / 2
+                if np.abs(diff).sum() / 2 >= 0.05:      # 비중 드리프트 미세조정은 '거래 횟수'에서 제외
+                    ntr += 1
                 with np.errstate(divide="ignore", invalid="ignore"):
                     hold = np.where(po > 0, tgt * V / po, 0.0)
             pending = None

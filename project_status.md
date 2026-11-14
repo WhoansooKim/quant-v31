@@ -1,12 +1,12 @@
 # Quant V4 Swing Trading System — Project Status
 
-> Last updated: **2026-11-14** (Opus 5.5)
+> Last updated: **2026-11-14 (2)** (Opus 5.5)
 > Purpose: Session continuity — 이 파일 + 메모리(MEMORY.md)만 보면 Claude 재시작 후 즉시 이어서 작업 가능.
 
 ## ⭐ 2026-11-14 현재 상태 스냅샷 (재개 시 여기부터)
 
 **한 줄 요약:** paper 모드. 스윙 은퇴(§22.AO-67) → 1.5배 코어(§22.AO-68, 11/10 전환 완료) → **추세×3배 코어(§22.AO-69,
-사용자 결정 2026-11-14)**: SPY 직전 확정 종가 > SMA200 이면 UPRO 100%, 아니면 BIL 100%. 첫 실행 2026-11-17(화) 00:30 KST
+사용자 결정 2026-11-14) → 버퍼 앙상블(§22.AO-70)**: SPY 확정 종가 vs SMA200 을 버퍼 0~5% 6개로 판정, on 비율만큼 UPRO·나머지 BIL. 첫 실행 2026-11-17(화) 00:30 KST
 (현재 SPY $757 > SMA200 $729 → SPY/SSO 전량 매도 → UPRO 매수 예상). 총자산 $1,794.73(11/13 종가). 잡 33→11(스윙 잡 해제).
 
 **§22.AO-69 근거 (scripts/research/, 1962~2026 장기 측정):** §22.AO-68 의 2012~ 창엔 장기 약세장이 없었다.
@@ -33,9 +33,9 @@ MDD −64%** (상시 1.5배 12.9%, −74%). 108 조합 중 67% 가 상시 1.5배
 | auto_approve_enabled / hedge_enabled | false / false | 이중 차단 · Tier3 헤지 끔 |
 | core_enabled | true | `_job_core_allocate` 화~토 00:30 KST |
 | core_mode | trend | §22.AO-69. static 이면 core_targets 상시 보유(1.5배)로 복귀 |
-| core_trend_sma / core_trend_buf | 200 / 0 | 워크포워드 선택값(사후 최적 buf2% 를 고르지 않았다) |
+| core_trend_sma / core_trend_bufs | 200 / [0,0.01,…,0.05] | §22.AO-70 앙상블. buf0 단일은 t+1 시가 체결에서 13.1%/MDD −72.6%(휩쏘) — 내 §22.AO-69 측정 결함 |
 | core_trend_on_targets / off_targets | {"UPRO":1.0} / {"BIL":1.0} | on=3배, off=T-bill |
-| core_trend_state | 잡이 기록(on/off) | 빈 값이면 첫 판정을 전환으로 처리 → 전량 교체 |
+| core_trend_state | 잡이 기록 JSON {버퍼:on/off} | 빈 값이면 c>sma 로 초기화, 첫 판정은 전환 → 전량 교체 |
 | core_targets | {"SPY":0.5,"SSO":0.5} | core_mode=static 일 때만 사용 |
 | core_last_rebalance | '' → 첫 실행 후 2026-11-10 | 연도가 올해 이전/빈값이면 리밸런스 → **매년 첫 실행 1회** |
 | core_rebalance_band | 0 | >0 이면 비중 이탈 리밸런스(측정 설계는 연 1회라 끔) |
@@ -43,7 +43,8 @@ MDD −64%** (상시 1.5배 12.9%, −74%). 108 조합 중 67% 가 상시 1.5배
 | core_symbol | SPY | **폐기**(core_targets 가 대체, 참조 코드 없음) |
 | commission_rate | 0.0025 | KIS 표준(사용자 결정: 유지. 메리츠 0.07% 대안은 미채택) |
 
-**기대치(추세×3배, 측정):** 1994~2026 표본외 15.7%/년 · MDD −64% · 2012~2026 약 21~22% · 거래 연 1~3회.
+**기대치(추세×3배 앙상블, t+1 시가 체결):** 1994~2026 18.5%/년 · MDD −53% · 1962~2026 지수 장기 15.4%(MDD −76%, 1987 포함).
+**§22.AO-70 스윙 재조사(시점 S&P500, 2012~2026):** 문헌·실전가 9규칙 모두 SPY(14.6%) 미달 — 0.07% 수수료에서도 최고 Clenow 9.9%.
 1년 단위 18% 는 보장되지 않는다(시장 방향 의존). 하루 −20% 급락엔 3배 그대로 노출된다.
 
 **다음 할 일:**
