@@ -78,6 +78,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# httpx INFO 는 요청 URL 전체를 찍는다 — 텔레그램 봇 토큰(/bot<TOKEN>/...)이 journal 에 평문으로 남았다.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ── Global instances ──
@@ -500,6 +503,8 @@ async def signals_gate_status(status: str = "pending"):
                 "reasons": reasons,
             })
         return {
+            # §22.AO-67: false 면 승인은 전부 400 — 대시보드가 승인 버튼을 숨기고 은퇴 배너를 띄운다
+            "swing_entries_enabled": pg.get_config_value("swing_entries_enabled", "true") == "true",
             "macro_score": round(macro_score, 1),
             "macro_regime": macro_regime,
             "thresholds": {

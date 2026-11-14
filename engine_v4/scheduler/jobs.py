@@ -368,6 +368,39 @@ class SwingScheduler:
             replace_existing=True,
         )
 
+        self._prune_swing_jobs()
+
+    # 스윙 은퇴(§22.AO-67) 후 할 일이 없는 의사결정 잡 — 승인·청산·변이·보유종목 이벤트·스윙 팩터 연구.
+    # 데이터 수집(매크로·소셜·PEAD·07:00 가격), 코어, 자가진단, 마감 스냅샷(exit_check_close)은 남긴다.
+    SWING_ONLY_JOBS = (
+        "daily_pipeline_preopen", "daily_pipeline_midsession", "validation_recheck",
+        "premarket_check", "exit_check_1", "exit_check_2", "exit_check_3", "hedge_check",
+        "afterhours_check", "auto_approve", "auto_approve_mid", "auto_approve_close",
+        "formula_lab", "factor_ic", "weekly_research", "monthly_variant_gen",
+        "rollback_check", "regime_switch_check", "lstm_retrain",
+        "events_scan_open", "events_scan_close", "edgar_scan",
+    )
+
+    def _prune_swing_jobs(self):
+        """swing_entries_enabled=false 이고 스윙 포지션이 0 이면 SWING_ONLY_JOBS 를 등록 해제한다.
+        재개하려면 플래그를 true 로 바꾸고 재시작 — 잡 정의는 위에 그대로 있다.
+        🔴 잡 수가 바뀌므로 swing_config.expected_scheduler_jobs 를 같이 갱신할 것(은퇴 상태 11)."""
+        try:
+            if self.pg.get_config_value("swing_entries_enabled", "true") == "true":
+                return
+            if any(p.get("side") != "CORE" for p in self.pg.get_open_positions()):
+                logger.info("Swing jobs kept: non-CORE positions still open")
+                return
+        except Exception as e:
+            logger.warning(f"Swing job prune skipped (config read failed): {e}")
+            return
+        removed = []
+        for jid in self.SWING_ONLY_JOBS:
+            if self.scheduler.get_job(jid):
+                self.scheduler.remove_job(jid)
+                removed.append(jid)
+        logger.info(f"Swing retired (§22.AO-67): {len(removed)} swing-only jobs unregistered")
+
     def start(self):
         """스케줄러 시작."""
         self.scheduler.start()

@@ -367,8 +367,13 @@ def check_data_freshness(pg) -> dict:
               AND (column_name LIKE '%%score%%' OR column_name LIKE '%%\\_rank')
             ORDER BY ordinal_position
         """).fetchall()]
-        if score_cols:
-            sel = ", ".join(f'count("{c}") AS "{c}"' for c in score_cols)
+        # 스윙 은퇴(§22.AO-67) 후에는 새 ENTRY 가 없어 '최근 N건' 창이 은퇴 직전 신호에 얼어붙는다 —
+        # 같은 결과로 매주 critical 이 반복됐다(11/7·11/14, 11/4 신호를 분석 전 일괄 거부한 결손). 측정 대상이 없으므로 건너뛴다.
+        entries_on = pg.get_config_value("swing_entries_enabled", "true") == "true"
+        if not entries_on:
+            detail["signal_inputs"] = "skipped — 스윙 은퇴(swing_entries_enabled=false), 측정 대상 신호 없음"
+        if score_cols and entries_on:
+            sel =", ".join(f'count("{c}") AS "{c}"' for c in score_cols)
             cur = conn.execute(
                 f"SELECT count(*) AS rows, {sel} FROM (SELECT * FROM swing_signals "
                 f"WHERE signal_type='ENTRY' ORDER BY signal_id DESC LIMIT %s) t",

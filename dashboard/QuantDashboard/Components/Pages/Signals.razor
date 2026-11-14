@@ -25,6 +25,14 @@
     </div>
 </div>
 
+@if (swingRetired)
+{
+    <div style="margin:0 0 1rem; padding:0.75rem 1rem; border:1px solid #f59e0b; border-radius:8px; color:#f59e0b">
+        ⏸ 스윙 은퇴 (§22.AO-67, 2026-11-02) — 신규 진입 신호가 생성되지 않고 승인도 비활성입니다.
+        현재 운용은 지수 코어 SPY 50% + SSO 50% (§22.AO-68). 아래 목록은 과거 기록입니다.
+    </div>
+}
+
 <!-- Status Tabs -->
 <div class="tab-bar">
     <button class="tab-btn @(activeTab == "active" ? "active" : "")" style="@(activeTab == "active" ? "" : "border-color:#22c55e; color:#22c55e")"
@@ -266,11 +274,14 @@
                                                   style="margin-right:0.35rem">게이트 탈락</span>
                                         }
                                     }
+                                    @if (!swingRetired)
+                                    {
                                     <button class="btn-sm btn-approve"
                                             @onclick="() => ApproveSignal(s.SignalId)"
                                             disabled="@processing">
                                         Approve
                                     </button>
+                                    }
                                     <button class="btn-sm btn-reject"
                                             @onclick="() => RejectSignal(s.SignalId)"
                                             disabled="@processing">
@@ -818,6 +829,7 @@
     // §22.AO-37 후속: 진입 게이트 판정. 임계값을 여기서 계산하지 않고 엔진
     // (/signals/gate-status)에 물어본다 — C# 에 복제하면 설정과 갈라진다(§22.AO-35).
     private Dictionary<long, GateVerdict> gateStatus = new();
+    private bool swingRetired;   // 엔진 gate-status 의 swing_entries_enabled=false (§22.AO-67)
     private long forceCandidate;           // 게이트 탈락인데 강제 승인 대기 중인 시그널
     private string? forceReasons;
 
@@ -1026,6 +1038,8 @@
             var client = HttpFactory.CreateClient("Engine");
             using var doc = System.Text.Json.JsonDocument.Parse(
                 await client.GetStringAsync("/signals/gate-status"));
+            swingRetired = doc.RootElement.TryGetProperty("swing_entries_enabled", out var se)
+                           && se.ValueKind == System.Text.Json.JsonValueKind.False;
             var map = new Dictionary<long, GateVerdict>();
             foreach (var it in doc.RootElement.GetProperty("items").EnumerateArray())
             {
