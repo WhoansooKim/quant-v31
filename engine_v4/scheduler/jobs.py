@@ -26,6 +26,7 @@ import pytz
 
 from engine_v4.config.settings import SwingSettings
 from engine_v4.data.collector import DataCollector, UniverseManager, fetch_sp500_symbols
+from engine_v4.data.prices import install_download_lock, last_closes
 from engine_v4.data.extended_hours import fetch_extended_hours
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
@@ -1090,14 +1091,11 @@ class SwingScheduler:
                 except Exception as e:
                     logger.warning(f"core_shadow read failed: {e}")
             syms = sorted(set(targets) | {p["symbol"] for p in lots} | set(j_new) | shadow_syms)
-            data = yf.download(syms, period="5d", progress=False)
-            px = {}
-            for s in syms:
-                col = data["Close"][s] if isinstance(data.columns, pd.MultiIndex) else data["Close"]
-                v = float(col.dropna().iloc[-1])
-                if not math.isfinite(v) or v <= 0:
-                    raise ValueError(f"{s} price invalid: {v}")
-                px[s] = v
+            # 체결가 — 심볼 이름으로 열 확인 + 보유 로트의 마지막 관측가 대비 급변 재확인(prices.last_closes)
+            ref = {p["symbol"]: p.get("current_price") for p in lots}
+            px, bad = last_closes(syms, ref=ref, period="5d")
+            if bad:
+                raise ValueError(f"price invalid/unverified: {bad}")
             held: dict[str, float] = {}
             for p in lots:
                 held[p["symbol"]] = held.get(p["symbol"], 0.0) + float(p["qty"]) * px[p["symbol"]]
@@ -1724,23 +1722,9 @@ class SwingScheduler:
             # 현재가 조회 (period=2d로 장외 시간에도 이전 종가 확보)
             current_prices: dict[str, float] = {}
             if positions:
-                symbols = list(set(p["symbol"] for p in positions))
-                try:
-                    data = yf.download(symbols, period="2d", progress=False)
-                    if len(symbols) == 1:
-                        px = _finite_price(data["Close"].dropna().iloc[-1])
-                        if px is not None:
-                            current_prices[symbols[0]] = px
-                    else:
-                        for sym in symbols:
-                            try:
-                                px = _finite_price(data["Close"][sym].dropna().iloc[-1])
-                                if px is not None:
-                                    current_prices[sym] = px
-                            except (KeyError, IndexError):
-                                pass
-                except Exception as e:
-                    logger.warning(f"yfinance fetch for snapshot: {e}")
+                # 심볼 검증·급변 재확인 — 2026-11-17 UPRO $433 오염(engine_v4/data/prices.py)
+                current_prices, _rej = last_closes([p["symbol"] for p in positions],
+                                                   ref={p["symbol"]: p.get("current_price") for p in positions})
 
             # 포지션 현재가 업데이트 + 투자액/원가 계산 (api/main.py 와 공용)
             valuation = self.pg.value_open_positions(positions, current_prices)

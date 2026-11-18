@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from engine_v4.data.prices import install_download_lock, last_closes
+install_download_lock()   # yf.download 스레드 간 결과 섞임 방지 — 다른 import 보다 먼저
 from engine_v4.ai.data_feeds import FinnhubClient
 from engine_v4.ai.factor_crowding import FactorCrowdingMonitor
 from engine_v4.analysis.counterfactual import (
@@ -1557,22 +1559,9 @@ def _generate_snapshot() -> dict:
 
     current_prices = {}
     if positions:
-        symbols = list(set(p["symbol"] for p in positions))
-        try:
-            # period=2d — scheduler/jobs.py 와 동일. 1d 는 장외/주말에 빈 값이라 폴백이 상시 발동했다.
-            data = yf.download(symbols, period="2d", progress=False)
-            if len(symbols) == 1:
-                price = float(data["Close"].dropna().iloc[-1])
-                current_prices[symbols[0]] = price
-            else:
-                for sym in symbols:
-                    try:
-                        price = float(data["Close"][sym].dropna().iloc[-1])
-                        current_prices[sym] = price
-                    except (KeyError, IndexError):
-                        pass
-        except Exception as e:
-            logger.warning(f"yfinance fetch failed: {e}")
+        # period=2d — 1d 는 장외/주말에 빈 값. 심볼 검증·급변 재확인은 last_closes (2026-11-17 $5,695 글리치)
+        current_prices, _rej = last_closes([p["symbol"] for p in positions],
+                                           ref={p["symbol"]: p.get("current_price") for p in positions})
 
     # 2) 포지션별 현재가 업데이트 + 투자액/원가 (scheduler/jobs.py 와 공용)
     valuation = pg.value_open_positions(positions, current_prices)
