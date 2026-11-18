@@ -59,6 +59,30 @@ _SEED_SYMBOLS = [
 ]
 
 
+def fetch_sp500_symbols() -> list[str]:
+    """§22.AO-71 J 슬리브용 **전체** S&P500 구성종목(위키). swing_universe 는 거래대금 상위 300 만 담아 쓸 수 없다.
+    파싱이 _MIN_SP500 미만이면 data/pit/sp500_components.csv 마지막 행으로 폴백, 둘 다 실패하면 예외."""
+    try:
+        resp = _requests.get(_SP500_URL, headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+        df = pd.read_html(io.StringIO(resp.text), header=0)[0]
+        col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+        syms = sorted(set(df[col].astype(str).str.replace(".", "-", regex=False)))
+        if len(syms) >= _MIN_SP500:
+            return syms
+        logger.warning(f"S&P500 위키 파싱 {len(syms)}개 < {_MIN_SP500} — PIT CSV 폴백")
+    except Exception as e:
+        logger.warning(f"S&P500 위키 조회 실패({e}) — PIT CSV 폴백")
+    import os
+    path = os.path.join(os.path.dirname(__file__), "../../data/pit/sp500_components.csv")
+    last = pd.read_csv(path).iloc[-1]
+    syms = sorted({t.replace(".", "-") for t in str(last["tickers"]).split(",") if t})
+    if len(syms) < _MIN_SP500:
+        raise ValueError(f"S&P500 구성종목 확보 실패: 위키·PIT CSV({last['date']}) 모두 부족")
+    logger.warning(f"S&P500 구성종목: PIT CSV {last['date']} 기준 {len(syms)}개 사용(위키 실패)")
+    return syms
+
+
 class UniverseManager:
     """S&P500 + NASDAQ100 상위 200개 종목 관리."""
 

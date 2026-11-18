@@ -25,7 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 
 from engine_v4.config.settings import SwingSettings
-from engine_v4.data.collector import DataCollector, UniverseManager
+from engine_v4.data.collector import DataCollector, UniverseManager, fetch_sp500_symbols
 from engine_v4.data.extended_hours import fetch_extended_hours
 from engine_v4.data.storage import PostgresStore, RedisCache
 from engine_v4.notify.telegram import TelegramNotifier
@@ -142,7 +142,7 @@ class SwingScheduler:
             self._job_core_allocate,
             CronTrigger(day_of_week="tue-sat", hour=0, minute=30, timezone=KST),
             id="core_allocate",
-            name="Index Core Allocate (trend SMA200 buffer-ensemble × UPRO/BIL, §22.AO-70)",
+            name="Index Core Allocate (trend ensemble × UPRO/BIL 70% + J MA21/MA200 top10 30%, §22.AO-71)",
             replace_existing=True,
         )
 
@@ -910,8 +910,107 @@ class SwingScheduler:
                 "frac": round(frac, 4), "prev_frac": prev_frac, "buffers": states,
                 "state": _json.dumps(states, separators=(",", ":")),
                 "label": f"{sum(v == 'on' for v in states.values())}/{len(states)} on",
-                "changed": prev_frac is None or abs(frac - prev_frac) > 1e-9}
+                "changed": prev_frac is None or abs(frac - prev_frac) > 1e-9,
+                "on_targets": on_t, "off_targets": off_t}
         return targets, info
+
+    def _j_ranking(self) -> dict:
+        """§22.AO-71 J 슬리브 순위 — Avramov-Kaplanski-Subrahmanyam(2021) MA(21)/MA(200) 비율, 전체 S&P500.
+        백테스트(scripts/research/run_swing2.py · run_combo.py)와 같은 정의: 수정종가, 50일 평균 거래대금 ≥ core_j_min_dv,
+        종가 ≥ core_j_min_px. **직전 확정 종가**까지만(장 마감 전이면 오늘 봉 제외).
+        반환 {asof, top: 상위 hold_rank 심볼(순위순), n_universe, n_scored}. 채점 종목이 300 미만이면 예외(데이터 결손 ≠ 순위)."""
+        import pandas as pd
+        import yfinance as yf
+        from zoneinfo import ZoneInfo
+        hold_rank = int(self.pg.get_config_value("core_j_hold_rank", "30"))
+        min_dv = float(self.pg.get_config_value("core_j_min_dv", "20000000"))
+        min_px = float(self.pg.get_config_value("core_j_min_px", "10"))
+        syms = fetch_sp500_symbols()
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        cut = et_now.date() if (et_now.hour, et_now.minute) < (16, 15) else None
+        rows, asof = [], None
+        for i in range(0, len(syms), 100):
+            batch = syms[i:i + 100]
+            try:
+                data = yf.download(batch, period="14mo", auto_adjust=True, progress=False,
+                                   group_by="ticker", threads=True)
+            except Exception as e:
+                logger.warning(f"J ranking batch {i} failed: {e}")
+                continue
+            for sym in batch:
+                try:
+                    df = (data[sym] if isinstance(data.columns, pd.MultiIndex) else data).dropna(subset=["Close"])
+                    if cut is not None:
+                        df = df[df.index.date < cut]
+                    if len(df) < 200:
+                        continue
+                    c = df["Close"]
+                    dv50 = float((c * df["Volume"]).iloc[-50:].mean())
+                    last = float(c.iloc[-1])
+                    if dv50 < min_dv or last < min_px:
+                        continue
+                    rows.append((sym, float(c.iloc[-21:].mean() / c.iloc[-200:].mean())))
+                    d = df.index[-1].date()
+                    asof = d if asof is None or d > asof else asof
+                except Exception:
+                    continue
+            time.sleep(0.3)
+        if len(rows) < 300:
+            raise ValueError(f"J 순위 채점 {len(rows)}종목 < 300 (유니버스 {len(syms)}) — 가격 결손")
+        rows.sort(key=lambda r: -r[1])
+        return {"asof": str(asof), "top": [r[0] for r in rows[:hold_rank]],
+                "scores": {r[0]: round(r[1], 4) for r in rows[:hold_rank]},
+                "n_universe": len(syms), "n_scored": len(rows)}
+
+    @staticmethod
+    def _j_select(held: list[str], top: list[str], k: int) -> tuple[list[str], list[str]]:
+        """백테스트 simulate(mode='rebal', hold_rank) 규칙: 보유 종목은 상위 hold_rank(=len(top)) 안이면 유지,
+        빈 슬롯은 아직 없는 최상위부터. 반환 (keep, add)."""
+        keep = [s for s in held if s in top]
+        add = [s for s in top if s not in held][:max(0, k - len(keep))]
+        return keep, add
+
+    def _shadow_update(self, frac: float, px: dict, live_equity: float, j_weights: dict, rebal_j: bool):
+        """§22.AO-71 섀도 기록(주문 없음) — core_shadow 에 변형별 가상 계좌를 매 실행 적는다.
+          core_only : UPRO frac / BIL 1−frac (결합 전 코어 단독 — 실계좌(a)의 비교 기준)
+          b_offJ    : UPRO frac / (1−frac) 를 BIL 대신 J — 실계좌 J 슬리브의 구성 비율을 그대로 따른다
+        체결가 = 실계좌와 같은 px, 비용 = commission_rate(편도). 거래는 frac 이 바뀌거나 J 구성이 바뀐 날만."""
+        import json as _json
+        rate = float(self.pg.get_config_value("commission_rate", "0.0025"))
+        jtot = sum(j_weights.values())
+        jmix = {s: w / jtot for s, w in j_weights.items()} if jtot > 0 else {}
+        for variant in ("core_only", "b_offJ"):
+            with self.pg.get_conn() as conn:
+                row = conn.execute("SELECT holdings, frac FROM core_shadow WHERE variant=%s ORDER BY time DESC LIMIT 1",
+                                   (variant,)).fetchone()
+            hold = dict(row["holdings"]) if row else {}
+            cash = float(hold.pop("_cash", 0.0)) if row else live_equity
+            missing = [s for s in hold if s not in px]
+            if missing:
+                raise ValueError(f"shadow {variant}: 가격 없음 {missing}")
+            V = cash + sum(q * px[s] for s, q in hold.items())
+            if variant == "core_only":
+                tgt = {"UPRO": frac, "BIL": 1 - frac}
+                trade = row is None or abs(float(row["frac"]) - frac) > 1e-9
+            else:
+                tgt = {"UPRO": frac}
+                for s, w in jmix.items():
+                    tgt[s] = tgt.get(s, 0.0) + (1 - frac) * w
+                trade = row is None or abs(float(row["frac"]) - frac) > 1e-9 or (rebal_j and frac < 1)
+            traded = cost = 0.0
+            if trade:
+                cur = {s: hold.get(s, 0.0) * px[s] for s in set(hold) | set(tgt)}
+                traded = sum(abs(tgt.get(s, 0.0) * V - cur.get(s, 0.0)) for s in cur)
+                cost = traded * rate if row is not None else 0.0     # 첫 행은 시작 장부(실계좌 평가액) — 매수 비용 없음
+                V -= cost
+                hold = {s: w * V / px[s] for s, w in tgt.items() if w > 1e-9}
+                cash = 0.0
+            with self.pg.get_conn() as conn:
+                conn.execute("""INSERT INTO core_shadow (variant, equity, frac, holdings, details)
+                                VALUES (%s, %s, %s, %s, %s)""",
+                             (variant, round(V, 4), frac, _json.dumps({**{s: round(q, 6) for s, q in hold.items()}, "_cash": cash}),
+                              _json.dumps({"traded": round(traded, 2), "cost": round(cost, 4), "live_equity": round(live_equity, 2)})))
+                conn.commit()
 
     def _job_core_allocate(self):
         """지수 코어(§22.AO-67 → §22.AO-68): 목표비중 포트폴리오를 보유한다(기본 SPY 50% + SSO 50% = 1.5배).
@@ -924,6 +1023,11 @@ class SwingScheduler:
         - 리밸런스: core_last_rebalance 의 연도가 올해보다 이전(또는 빈 값)이면 1회 — 즉 매년 첫 실행.
           core_rebalance_band(>0) 를 주면 비중 이탈이 그보다 클 때도 리밸런스(기본 0 = 끔, 측정 설계 그대로).
         - 매도는 오래된 로트부터 split_close_position(현금 공식과 정합). side=CORE 는 출구 로직에서 제외된다.
+        §22.AO-71 (사용자 결정 2026-11-18): 추세 모드에서 core_j_weight(0.3) 만큼 J 슬리브(MA21/MA200 상위 10, 월간).
+        - J 보유 = 추세 on/off 목표 심볼 밖의 CORE 로트(⚠️ on/off 목표를 바꾸면 옛 심볼이 J 로 취급되어 월말에 정리된다).
+        - 미국 동부 기준 새 달 첫 실행에 교체(유지: 상위 hold_rank 안, 편입: 빈 슬롯마다 S/K), 슬리브를 70/30 으로 복원.
+        - 월중에는 J 동결 — 추세 전환은 코어 슬리브만 움직인다. 측정: scripts/research/run_combo.py (a).
+        - 섀도(_shadow_update): core_only · b_offJ 를 core_shadow 에 매 실행 기록(주문 없음).
         """
         import json as _json
         import pandas as pd
@@ -949,10 +1053,43 @@ class SwingScheduler:
             # §22.AO-69 추세 모드: SPY 직전 확정 종가 vs SMA(N) → on/off 목표. 판정은 어제 종가, 체결은 지금(장중).
             trend_info = None
             force_rebal = False
+            # §22.AO-71 J 슬리브: 추세 모드에서만. 코어 슬리브 심볼(on/off 목표) 밖의 CORE 로트 = J 보유.
+            jw = 0.0
+            j_info, j_due, j_held, j_new = None, False, [], []
             if self.pg.get_config_value("core_mode", "static") == "trend":
                 targets, trend_info = self._core_trend_targets()
-                force_rebal = trend_info["changed"] or any(p["symbol"] not in targets for p in lots)
-            syms = sorted(set(targets) | {p["symbol"] for p in lots})
+                core_syms = set(trend_info["on_targets"]) | set(trend_info["off_targets"])
+                jw = float(self.pg.get_config_value("core_j_weight", "0"))
+                j_held = sorted({p["symbol"] for p in lots if p["symbol"] not in core_syms})
+                from zoneinfo import ZoneInfo
+                month = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m")
+                j_due = jw > 0 and self.pg.get_config_value("core_j_last_rebal", "") != month
+                if j_due:
+                    try:
+                        j_info = self._j_ranking()
+                        k = int(self.pg.get_config_value("core_j_k", "10"))
+                        keep, j_new = self._j_select(j_held, j_info["top"], k)
+                        j_info.update({"month": month, "keep": keep, "add": j_new,
+                                       "drop": [s for s in j_held if s not in keep], "k": k})
+                    except Exception as e:
+                        # 순위 실패 → 이번엔 J 를 동결(코어 슬리브는 정상 처리), 다음 실행이 재시도
+                        logger.error(f"J ranking failed — J sleeve frozen this run: {e}", exc_info=True)
+                        j_info, j_due = {"error": str(e)}, False
+                force_rebal = (trend_info["changed"] or j_due
+                               or any(p["symbol"] not in targets and p["symbol"] not in j_held for p in lots))
+                if jw <= 0 and j_held:
+                    force_rebal = True          # J 를 끈 경우 남은 J 로트는 목표 밖 → 전량 매도
+            shadow_syms = set()
+            if trend_info is not None:
+                shadow_syms = {"UPRO", "BIL"}
+                try:      # 섀도가 들고 있는 종목(실계좌가 이미 편출한 J 포함)도 평가가가 필요하다
+                    with self.pg.get_conn() as conn:
+                        for r in conn.execute("""SELECT DISTINCT ON (variant) holdings FROM core_shadow
+                                                 ORDER BY variant, time DESC""").fetchall():
+                            shadow_syms |= {k_ for k_ in r["holdings"] if not k_.startswith("_")}
+                except Exception as e:
+                    logger.warning(f"core_shadow read failed: {e}")
+            syms = sorted(set(targets) | {p["symbol"] for p in lots} | set(j_new) | shadow_syms)
             data = yf.download(syms, period="5d", progress=False)
             px = {}
             for s in syms:
@@ -965,19 +1102,58 @@ class SwingScheduler:
             for p in lots:
                 held[p["symbol"]] = held.get(p["symbol"], 0.0) + float(p["qty"]) * px[p["symbol"]]
             cash = self._compute_cash_usd()
+            if trend_info is not None and (jw > 0 or j_held):
+                # 목표비중은 _plan_core 와 같은 분모(cash+보유−reserve)에 대한 비율
+                T = cash + sum(held.values()) - reserve
+                if T <= 0:
+                    raise ValueError(f"투자 가능액 {T:.2f} ≤ 0")
+                if jw <= 0:
+                    jt = {}
+                elif j_due:
+                    k = j_info["k"]; S = jw * T
+                    vals = {s: held.get(s, 0.0) for s in j_info["keep"]}
+                    vals.update({s: S / k for s in j_new})
+                    sc = S / sum(vals.values()) if vals else 0.0
+                    jt = {s: v * sc / T for s, v in vals.items()}
+                else:
+                    jt = {s: held.get(s, 0.0) / T for s in j_held}      # 월중: J 동결
+                cw = 1 - sum(jt.values())
+                targets = {s: w * cw for s, w in targets.items()}
+                targets.update(jt)
             tot = cash + sum(held.values())
             drift = max(abs(held.get(s, 0.0) / tot - targets.get(s, 0.0)) for s in syms) if tot > 0 else 0
             rebalance = (force_rebal or not last or int(last[:4]) < today.year or (band > 0 and drift > band)) and bool(held)
             orders = self._plan_core(held, cash, targets, reserve, min_notional, rate, rebalance)
-            # 추세 상태는 주문 처리 뒤에만 기록 — 예외로 빠지면 갱신되지 않아 다음 실행이 전환을 재시도한다.
-            if not orders:
+            core_set = (set(trend_info["on_targets"]) | set(trend_info["off_targets"])) if trend_info else set(targets)
+
+            def _after_orders():
+                """주문 뒤 상태 기록 + 섀도. 섀도 실패는 실계좌 처리를 막지 않는다."""
                 if rebalance:
                     self.pg.update_config("core_last_rebalance", today.isoformat())
                 if trend_info is not None:
                     self.pg.update_config("core_trend_state", trend_info["state"])
+                if j_due and j_info and "error" not in j_info:
+                    self.pg.update_config("core_j_last_rebal", j_info["month"])
+                    self.pg.update_config("core_j_ranking", _json.dumps(
+                        {k_: j_info[k_] for k_ in ("asof", "month", "top", "scores", "n_universe", "n_scored")}))
+                if trend_info is not None:
+                    try:
+                        lots2 = [p for p in self.pg.get_open_positions() if p.get("side") == "CORE"]
+                        jv = {}
+                        for p in lots2:
+                            if p["symbol"] not in core_set and p["symbol"] in px:
+                                jv[p["symbol"]] = jv.get(p["symbol"], 0.0) + float(p["qty"]) * px[p["symbol"]]
+                        live_eq = self._compute_cash_usd() + sum(float(p["qty"]) * px.get(p["symbol"], float(p["entry_price"])) for p in lots2)
+                        self._shadow_update(float(trend_info["frac"]), px, live_eq, jv, rebal_j=j_due)
+                    except Exception as e:
+                        logger.warning(f"Core shadow update failed (live unaffected): {e}", exc_info=True)
+
+            # 추세 상태는 주문 처리 뒤에만 기록 — 예외로 빠지면 갱신되지 않아 다음 실행이 전환을 재시도한다.
+            if not orders:
+                _after_orders()
                 self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
                                             {"skipped": "no_orders", "cash": round(cash, 2),
-                                             "rebalance": rebalance, "trend": trend_info})
+                                             "rebalance": rebalance, "trend": trend_info, "j": j_info})
                 return
 
             done = []
@@ -987,7 +1163,8 @@ class SwingScheduler:
                     for p in (q for q in lots if q["symbol"] == s):
                         if need <= 0: break
                         q = min(need, float(p["qty"]))
-                        cid = self.pg.split_close_position(p["position_id"], q, px[s], "core_rebalance")
+                        cid = self.pg.split_close_position(p["position_id"], q, px[s],
+                                                           "core_rebalance" if s in core_set else "j_rotation")
                         if cid is None: continue
                         self.pg.insert_trade({"position_id": cid, "signal_id": None, "symbol": s, "side": "SELL",
                                               "qty": q, "price": px[s], "is_paper": is_paper})
@@ -1003,10 +1180,7 @@ class SwingScheduler:
                     self.pg.insert_trade({"position_id": pid, "signal_id": None, "symbol": s, "side": "BUY",
                                           "qty": qty, "price": px[s], "is_paper": is_paper})
                     done.append(f"매수 {s} x{qty} @ ${px[s]:.2f} = ${qty*px[s]:.2f}")
-            if rebalance:
-                self.pg.update_config("core_last_rebalance", today.isoformat())
-            if trend_info is not None:
-                self.pg.update_config("core_trend_state", trend_info["state"])
+            _after_orders()
             cash_after = self._compute_cash_usd()
             logger.info(f"Core allocate ({'rebalance' if rebalance else 'cash'}): {done} "
                         f"cash ${cash:.2f}→${cash_after:.2f}")
@@ -1015,15 +1189,20 @@ class SwingScheduler:
                 tline = (f"\n추세: SPY ${trend_info['close']:.2f} vs SMA{trend_info['n']} ${trend_info['sma']:.2f}"
                          f" ({trend_info['asof']}) → {trend_info['label']}"
                          + (" ⚡전환" if trend_info["changed"] else ""))
+            if j_info and "error" not in j_info:
+                tline += (f"\nJ 슬리브({jw:.0%}) {j_info['month']} 교체: 유지 {len(j_info['keep'])} · "
+                          f"편입 {', '.join(j_info['add']) or '-'} · 편출 {', '.join(j_info['drop']) or '-'}")
+            elif j_info:
+                tline += f"\n⚠️ J 순위 실패 — 이번엔 동결: {j_info['error'][:120]}"
             self.notifier.send_sync(
                 f"🏛️ <b>지수 코어 {'리밸런스' if rebalance else '매수'}</b>\n" + "\n".join(done) +
                 f"\n현금 ${cash:.2f} → ${cash_after:.2f} · 목표 "
                 + " / ".join(f"{k} {v:.0%}" for k, v in targets.items()) + tline
-                + (" (§22.AO-70)" if trend_info is not None else " (§22.AO-68)"))
+                + (" (§22.AO-71)" if trend_info is not None else " (§22.AO-68)"))
             self.pg.insert_pipeline_log("core_allocate", "completed", time.time() - start,
                                         {"rebalance": rebalance, "orders": done, "prices": px,
                                          "cash_before": round(cash, 2), "cash_after": round(cash_after, 2),
-                                         "trend": trend_info})
+                                         "trend": trend_info, "j": j_info})
         except Exception as e:
             self.pg.insert_pipeline_log("core_allocate", "failed", time.time() - start, error_msg=str(e))
             logger.error(f"Core allocate failed: {e}", exc_info=True)
