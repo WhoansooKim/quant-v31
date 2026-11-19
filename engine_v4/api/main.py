@@ -1587,7 +1587,10 @@ def _generate_snapshot() -> dict:
     trading_pnl = realized_pnl + unrealized_pnl - total_commission
 
     total_invested = INITIAL_CAPITAL + capital_adj
-    cumulative_return = trading_pnl / total_invested if total_invested > 0 else 0
+    # 기준점(account epoch) 이후만 — 2026-11-19 원금 $2,000 재시작. 미설정이면 전체 기간.
+    basis = pg.get_account_basis(total_invested)
+    ret_cap = basis["capital"]
+    cumulative_return = (trading_pnl - basis["base_pnl"]) / ret_cap if ret_cap > 0 else 0
 
     # Daily P&L: 순수 트레이딩 손익 변동분 (입출금 제외)
     prev = pg.get_latest_snapshot()
@@ -1598,10 +1601,12 @@ def _generate_snapshot() -> dict:
     else:
         prev_trading_pnl = 0
     daily_pnl = trading_pnl - prev_trading_pnl
-    daily_return = daily_pnl / total_invested if total_invested > 0 else 0
+    daily_return = daily_pnl / ret_cap if ret_cap > 0 else 0
 
     # Max drawdown (TWR 기반 — 입출금 무관)
     all_snaps = pg.get_snapshots(days=9999)
+    if basis["since"] is not None:
+        all_snaps = [s_ for s_ in all_snaps if s_["time"] >= basis["since"]]
     peak_return = 0.0
     worst_dd = 0.0
     for s in all_snaps:

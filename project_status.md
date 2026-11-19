@@ -1,9 +1,20 @@
 # Quant V4 Swing Trading System — Project Status
 
-> Last updated: **2026-11-18** (Opus 5.5)
+> Last updated: **2026-11-19** (Opus 5.5)
 > Purpose: Session continuity — 이 파일 + 메모리(MEMORY.md)만 보면 Claude 재시작 후 즉시 이어서 작업 가능.
 
-## ⭐ 2026-11-18 현재 상태 스냅샷 (재개 시 여기부터)
+## ⭐ 2026-11-19 원금 $2,000 재시작 (사용자 결정)
+
+- 11/19 00:30 첫 J 편입: 주문 11건 정상 체결(UPRO 3.939주 매도, J 10종목 각 $49.5). 이어서 core_j_ranking 저장이
+  swing_config.value VARCHAR(200) 에 걸려 실패 → TEXT 로 변경(88643f1), 순위 재계산·저장. 섀도 첫 기록은 다음 실행부터.
+- 대시보드 /core 화면 커밋(0620417).
+- **재시작**: 직전 총자산 $1,647.65 → 입금 $352.35(capital event 4) 로 $2,000. 장부는 보존, 수익률·낙폭만 재시작 시점 기준
+  (swing_config account_epoch_* , storage.get_account_basis, 두 스냅샷 생성기 공통). scripts/migrate_account_epoch.sql.
+- **재시작 전 누적 손실(잊지 말 것)**: trading_pnl −$352.35 = 실현 −$179.30(스윙 142건 −$139.89 · 코어 5건 −$39.41)
+  + 수수료 −$99.93 + 미실현 −$73.11. 총 실투입은 $2,352.35.
+- 입금분을 70/30 으로 넣기 위해 core_j_last_rebal 을 비움 → 다음 00:30 실행이 J 를 30% 로 재조정(보유 10종목 상위 30 안이면 유지·증액).
+
+## ⭐ 2026-11-18 현재 상태 스냅샷 (이전)
 
 **한 줄 요약:** paper 모드. **실계좌 = 추세×3배 코어 70% + J 슬리브 30% (§22.AO-71, 사용자 결정 2026-11-18 "둘 다")**,
 섀도 기록 `core_shadow` (core_only · b_offJ). 기존 종목 스윙(scan→signal→approve)은 §22.AO-67 이후 정지 상태 그대로.

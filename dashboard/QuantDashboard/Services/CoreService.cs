@@ -80,7 +80,7 @@ public class CoreService
         var cfg = new Dictionary<string, string>();
         await using (var cmd = new NpgsqlCommand(@"
             SELECT key, value FROM swing_config
-            WHERE key IN ('core_j_weight','core_j_last_rebal','core_j_ranking','initial_capital')", conn))
+            WHERE key IN ('core_j_weight','core_j_last_rebal','core_j_ranking','initial_capital','account_epoch_capital')", conn))
         await using (var r = await cmd.ExecuteReaderAsync())
             while (await r.ReadAsync()) cfg[r.GetString(0)] = r.IsDBNull(1) ? "" : r.GetString(1);
 
@@ -163,6 +163,8 @@ public class CoreService
             catch (PostgresException) { invested = 0; }
         }
         invested += decimal.TryParse(cfg.GetValueOrDefault("initial_capital", "0"), out var ic) ? ic : 0;
+        // 2026-11-19 원금 $2,000 재시작(account epoch) — 설정돼 있으면 그 금액이 투입 기준
+        if (decimal.TryParse(cfg.GetValueOrDefault("account_epoch_capital", ""), out var ec) && ec > 0) invested = ec;
 
         return new CoreView(lastRun, status, err, asof, close, sma, label, frac,
             double.TryParse(cfg.GetValueOrDefault("core_j_weight", "0"), out var jw) ? jw : 0,

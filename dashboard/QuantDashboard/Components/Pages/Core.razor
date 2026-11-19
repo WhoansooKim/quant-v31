@@ -92,7 +92,7 @@ else
                         {
                             var pct = l.CurrentPrice != null ? (double)(l.CurrentPrice.Value / l.EntryPrice - 1) * 100 : (double?)null;
                             <tr>
-                                <td><b>@l.Symbol</b></td>
+                                <td>@Ticker(l.Symbol)</td>
                                 <td>@(l.IsJ ? "J" : "코어")</td>
                                 <td>@l.Qty.ToString("0.####")</td>
                                 <td>$@l.EntryPrice.ToString("F2")</td>
@@ -120,7 +120,7 @@ else
                             @foreach (var r in v.Ranking)
                             {
                                 <tr>
-                                    <td>@r.Rank</td><td><b>@r.Symbol</b></td>
+                                    <td>@r.Rank</td><td>@Ticker(r.Symbol)</td>
                                     <td>@(double.IsNaN(r.Score) ? "--" : r.Score.ToString("F3"))</td>
                                     <td>@(r.Held ? "●" : "")</td>
                                 </tr>
@@ -135,6 +135,14 @@ else
 
 @code {
     private CoreService.CoreView? v;
+
+    // 티커 클릭 → CNN 종목 페이지를 팝업 창으로(CNN 은 iframe 삽입을 막으므로 별도 창). 팝업 차단 시 새 탭.
+    private static RenderFragment Ticker(string sym) => __builder =>
+    {
+        var url = "https://edition.cnn.com/markets/stocks/" + Uri.EscapeDataString(sym);
+        <a href="@url" target="_blank" rel="noopener" title="CNN에서 @sym 보기" style="font-weight:600; cursor:pointer"
+           onclick="var w=window.open(this.href,'cnn_quote','width=1100,height=850,scrollbars=yes,resizable=yes'); if(w){w.focus(); return false;}">@sym</a>
+    };
     private bool loading;
     private string? error;
 

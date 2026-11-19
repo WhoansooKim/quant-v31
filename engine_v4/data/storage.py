@@ -769,6 +769,19 @@ class PostgresStore:
             row = cur.fetchone()
             return row["event_id"]
 
+    def get_account_basis(self, total_invested: float) -> dict:
+        """수익률·낙폭의 기준점(2026-11-19 사용자 결정 — 원금 $2,000 으로 재시작).
+        config account_epoch_time 가 있으면 그 시점의 누적 trading_pnl(account_epoch_pnl)을 0 으로,
+        account_epoch_capital 을 분모로 쓴다. 장부(현금·실현손익·수수료)는 건드리지 않는다.
+        없으면 기존 정의(전체 기간, 분모 = 초기자본 + 입출금)."""
+        since = self.get_config_value("account_epoch_time", "")
+        if not since:
+            return {"since": None, "base_pnl": 0.0, "capital": total_invested}
+        from datetime import datetime
+        return {"since": datetime.fromisoformat(since),
+                "base_pnl": float(self.get_config_value("account_epoch_pnl", "0")),
+                "capital": float(self.get_config_value("account_epoch_capital", str(total_invested)))}
+
     def get_capital_events(self) -> list[dict]:
         """전체 자금 이벤트 조회."""
         with self.get_conn() as conn:
