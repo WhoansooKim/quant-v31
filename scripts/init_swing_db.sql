@@ -161,7 +161,7 @@ SELECT create_hypertable('swing_snapshots', by_range('time'),
 -- ─── 7. swing_config: 런타임 설정 ───
 CREATE TABLE IF NOT EXISTS swing_config (
     key           VARCHAR(50) PRIMARY KEY,
-    value         VARCHAR(200) NOT NULL,
+    value         TEXT NOT NULL,                  -- 2026-11-19 VARCHAR(200)→TEXT (core_j_ranking JSON)
     category      VARCHAR(30) NOT NULL,          -- strategy/risk/execution/notify
     description   VARCHAR(300),
     updated_at    TIMESTAMPTZ DEFAULT now()
