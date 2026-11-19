@@ -37,6 +37,16 @@
             </div>
         }
 
+        @if (CanAccess("/core"))
+        {
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="core">
+                    <span class="material-symbols-outlined nav-icon">account_balance</span>
+                    <span class="nav-text">Core</span>
+                </NavLink>
+            </div>
+        }
+
         @if (CanAccess("/pipeline"))
         {
             <div class="nav-item px-3">

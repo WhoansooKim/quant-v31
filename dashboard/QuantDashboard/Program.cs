@@ -27,6 +27,8 @@ var connStr = builder.Configuration.GetConnectionString("Default")!;
 builder.Services.AddSingleton<PostgresService>(sp =>
     new PostgresService(connStr, sp.GetRequiredService<ILogger<PostgresService>>()));
 
+builder.Services.AddSingleton<CoreService>(sp =>
+    new CoreService(connStr, sp.GetRequiredService<ILogger<CoreService>>()));
 builder.Services.AddSingleton<SwingService>(sp =>
     new SwingService(connStr, sp.GetRequiredService<ILogger<SwingService>>()));
 

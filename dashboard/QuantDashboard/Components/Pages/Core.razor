@@ -1,0 +1,150 @@
+@page "/core"
+@attribute [Authorize]
+@inject CoreService CoreSvc
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Swing V4 - Core</PageTitle>
+
+<div class="page-header">
+    <h3>Core 운용 — 추세×3배 코어 70% + J 30% (§22.AO-71)</h3>
+    <button class="btn-sm" @onclick="Load" disabled="@loading">@(loading ? "..." : "Refresh")</button>
+</div>
+
+@if (v == null)
+{
+    <p class="text-muted" style="padding:1rem">@(error ?? "Loading...")</p>
+}
+else
+{
+    var ret = v.Invested > 0 && v.LatestTotal != null ? (double)(v.LatestTotal.Value / v.Invested - 1) : 0;
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:0.6rem; margin-bottom:0.75rem">
+        <div class="section-card" style="padding:0.75rem">
+            <div class="text-muted" style="font-size:0.72rem">실계좌 총자산</div>
+            <div style="font-size:1.4rem; font-weight:600">$@(v.LatestTotal?.ToString("N2") ?? "--")</div>
+            <div class="@(ret >= 0 ? "text-green" : "text-red")" style="font-size:0.8rem">투입 $@v.Invested.ToString("N0") 대비 @(ret >= 0 ? "+" : "")@((ret * 100).ToString("F1"))%</div>
+        </div>
+        <div class="section-card" style="padding:0.75rem">
+            <div class="text-muted" style="font-size:0.72rem">추세 판정 (SPY vs SMA200)</div>
+            <div style="font-size:1.4rem; font-weight:600">@(v.Label ?? "--")</div>
+            <div style="font-size:0.8rem">
+                @if (v.SpyClose != null && v.Sma != null)
+                {
+                    <span>$@v.SpyClose.Value.ToString("F2") vs $@v.Sma.Value.ToString("F2") (@((v.SpyClose.Value / v.Sma.Value - 1) * 100 >= 0 ? "+" : "")@(((v.SpyClose.Value / v.Sma.Value - 1) * 100).ToString("F1"))%) · @v.TrendAsOf</span>
+                }
+            </div>
+        </div>
+        <div class="section-card" style="padding:0.75rem">
+            <div class="text-muted" style="font-size:0.72rem">J 슬리브</div>
+            <div style="font-size:1.4rem; font-weight:600">@((v.JWeight * 100).ToString("F0"))% · @v.Lots.Count(l => l.IsJ)종목</div>
+            <div style="font-size:0.8rem">마지막 교체 @(string.IsNullOrEmpty(v.JLastRebal) ? "미실행" : v.JLastRebal) · 순위 기준 @(v.JAsOf ?? "--")</div>
+        </div>
+        <div class="section-card" style="padding:0.75rem">
+            <div class="text-muted" style="font-size:0.72rem">마지막 배분 실행</div>
+            <div style="font-size:1.1rem; font-weight:600" class="@(v.Status == "completed" ? "text-green" : "text-red")">@(v.Status ?? "--")</div>
+            <div style="font-size:0.8rem">@(v.LastRun?.ToLocalTime().ToString("MM-dd HH:mm") ?? "--") @(v.Error != null ? " · " + v.Error : "")</div>
+        </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom:0.75rem">
+        <h4 style="font-size:0.9rem; margin:0 0 0.4rem">실계좌 vs 섀도 (섀도 시작일 = 100)</h4>
+        <p class="text-muted" style="font-size:0.72rem; margin:0 0 0.5rem">
+            core_only = J 없이 코어 단독 · b_offJ = 코어가 꺼진 비율만큼 BIL 대신 J (주문 없는 기록, 같은 체결가·수수료).
+            새 스윙 규칙도 실계좌 전에 여기서 먼저 기록한다.
+        </p>
+        @if (v.Curve.Count == 0)
+        {
+            <p class="text-muted">섀도 기록 없음 — 첫 기록은 다음 00:30 KST 코어 배분 실행.</p>
+        }
+        else
+        {
+            var b0 = v.Curve[0];
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead><tr><th>날짜</th><th>실계좌 (70/30)</th><th>core_only</th><th>b_offJ</th><th>실계좌 − core_only</th></tr></thead>
+                    <tbody>
+                        @foreach (var p in Enumerable.Reverse(v.Curve).Take(60))
+                        {
+                            double L = (double)(p.Live / b0.Live) * 100;
+                            double? C = p.CoreOnly != null && b0.CoreOnly != null ? (double)(p.CoreOnly.Value / b0.CoreOnly.Value) * 100 : null;
+                            double? B = p.OffJ != null && b0.OffJ != null ? (double)(p.OffJ.Value / b0.OffJ.Value) * 100 : null;
+                            <tr>
+                                <td>@p.Day.ToString("yyyy-MM-dd")</td>
+                                <td>@L.ToString("F2") <span class="text-muted">($@p.Live.ToString("N0"))</span></td>
+                                <td>@(C?.ToString("F2") ?? "--")</td>
+                                <td>@(B?.ToString("F2") ?? "--")</td>
+                                <td class="@(C != null && L - C >= 0 ? "text-green" : "text-red")">@(C != null ? ((L - C.Value) >= 0 ? "+" : "") + (L - C.Value).ToString("F2") + "p" : "--")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:0.75rem">
+        <div class="section-card">
+            <h4 style="font-size:0.9rem; margin:0 0 0.4rem">보유 (CORE)</h4>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead><tr><th>종목</th><th>슬리브</th><th>수량</th><th>진입</th><th>현재</th><th>손익%</th><th>보유일</th></tr></thead>
+                    <tbody>
+                        @foreach (var l in v.Lots.OrderBy(l => l.IsJ).ThenBy(l => l.Symbol))
+                        {
+                            var pct = l.CurrentPrice != null ? (double)(l.CurrentPrice.Value / l.EntryPrice - 1) * 100 : (double?)null;
+                            <tr>
+                                <td><b>@l.Symbol</b></td>
+                                <td>@(l.IsJ ? "J" : "코어")</td>
+                                <td>@l.Qty.ToString("0.####")</td>
+                                <td>$@l.EntryPrice.ToString("F2")</td>
+                                <td>@(l.CurrentPrice != null ? "$" + l.CurrentPrice.Value.ToString("F2") : "--")</td>
+                                <td class="@(pct >= 0 ? "text-green" : "text-red")">@(pct != null ? (pct >= 0 ? "+" : "") + pct.Value.ToString("F1") + "%" : "--")</td>
+                                <td>@((DateTime.UtcNow - l.EntryTime.ToUniversalTime()).Days)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="section-card">
+            <h4 style="font-size:0.9rem; margin:0 0 0.4rem">J 순위 (MA21/MA200, 상위 30 안이면 유지)</h4>
+            @if (v.Ranking.Count == 0)
+            {
+                <p class="text-muted">아직 순위 없음 — 첫 교체 후 표시.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="data-table">
+                        <thead><tr><th>#</th><th>종목</th><th>점수</th><th>보유</th></tr></thead>
+                        <tbody>
+                            @foreach (var r in v.Ranking)
+                            {
+                                <tr>
+                                    <td>@r.Rank</td><td><b>@r.Symbol</b></td>
+                                    <td>@(double.IsNaN(r.Score) ? "--" : r.Score.ToString("F3"))</td>
+                                    <td>@(r.Held ? "●" : "")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private CoreService.CoreView? v;
+    private bool loading;
+    private string? error;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        loading = true;
+        try { v = await CoreSvc.GetAsync(); error = null; }
+        catch (Exception e) { error = "불러오기 실패: " + e.Message; }
+        finally { loading = false; }
+    }
+}
