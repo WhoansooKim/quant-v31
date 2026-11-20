@@ -35,7 +35,7 @@ else
         </div>
         <div class="section-card" style="padding:0.75rem">
             <div class="text-muted" style="font-size:0.72rem">J 슬리브</div>
-            <div style="font-size:1.4rem; font-weight:600">@((v.JWeight * 100).ToString("F0"))% · @v.Lots.Count(l => l.IsJ)종목</div>
+            <div style="font-size:1.4rem; font-weight:600">@((v.JWeight * 100).ToString("F0"))% · @v.Lots.Where(l => l.IsJ).Select(l => l.Symbol).Distinct().Count()종목</div>
             <div style="font-size:0.8rem">마지막 교체 @(string.IsNullOrEmpty(v.JLastRebal) ? "미실행" : v.JLastRebal) · 순위 기준 @(v.JAsOf ?? "--")</div>
         </div>
         <div class="section-card" style="padding:0.75rem">
@@ -81,29 +81,53 @@ else
         }
     </div>
 
-    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:0.75rem">
+    <style>
+        /* 보유 70 : J 순위 30 (J 순위를 기존 절반 폭의 3/5 로) — 좁은 화면에선 위아래로 */
+        .core-split { display:grid; grid-template-columns:minmax(0,7fr) minmax(0,3fr); gap:0.75rem; }
+        @@media (max-width: 1000px) { .core-split { grid-template-columns:1fr; } }
+    </style>
+    <div class="core-split">
         <div class="section-card">
-            <h4 style="font-size:0.9rem; margin:0 0 0.4rem">보유 (CORE)</h4>
+            <h4 style="font-size:0.9rem; margin:0 0 0.4rem">보유 (CORE) — 종목별 합산</h4>
+            @{
+                var hold = Holdings();
+                var mvAll = hold.Sum(h => h.Value ?? h.Cost);
+            }
             <div class="table-responsive">
                 <table class="data-table">
-                    <thead><tr><th>종목</th><th>슬리브</th><th>수량</th><th>진입</th><th>현재</th><th>손익%</th><th>보유일</th></tr></thead>
+                    <thead><tr><th>종목</th><th>슬리브</th><th>수량</th><th>평균단가</th><th>현재</th><th>평가액</th><th>비중</th><th>손익</th><th>보유일</th></tr></thead>
                     <tbody>
-                        @foreach (var l in v.Lots.OrderBy(l => l.IsJ).ThenBy(l => l.Symbol))
+                        @foreach (var h in hold)
                         {
-                            var pct = l.CurrentPrice != null ? (double)(l.CurrentPrice.Value / l.EntryPrice - 1) * 100 : (double?)null;
+                            var pnl = h.Value != null ? h.Value.Value - h.Cost : (decimal?)null;
+                            var pct = pnl != null && h.Cost > 0 ? (double)(pnl.Value / h.Cost) * 100 : (double?)null;
                             <tr>
-                                <td>@Ticker(l.Symbol)</td>
-                                <td>@(l.IsJ ? "J" : "코어")</td>
-                                <td>@l.Qty.ToString("0.####")</td>
-                                <td>$@l.EntryPrice.ToString("F2")</td>
-                                <td>@(l.CurrentPrice != null ? "$" + l.CurrentPrice.Value.ToString("F2") : "--")</td>
-                                <td class="@(pct >= 0 ? "text-green" : "text-red")">@(pct != null ? (pct >= 0 ? "+" : "") + pct.Value.ToString("F1") + "%" : "--")</td>
-                                <td>@((DateTime.UtcNow - l.EntryTime.ToUniversalTime()).Days)</td>
+                                <td>@Ticker(h.Symbol)@if (h.Lots > 1) {<span class="text-muted" style="font-size:0.7rem" title="매수 @(h.Lots)회 합산"> ×@h.Lots</span>}</td>
+                                <td>@(h.IsJ ? "J" : "코어")</td>
+                                <td>@h.Qty.ToString("0.####")</td>
+                                <td>$@h.AvgPrice.ToString("F2")</td>
+                                <td>@(h.Price != null ? "$" + h.Price.Value.ToString("F2") : "--")</td>
+                                <td>$@((h.Value ?? h.Cost).ToString("N2"))</td>
+                                <td>@(mvAll > 0 ? ((double)((h.Value ?? h.Cost) / mvAll) * 100).ToString("F1") + "%" : "--")</td>
+                                <td class="@(pnl >= 0 ? "text-green" : "text-red")">@(pnl != null ? (pnl >= 0 ? "+$" : "−$") + Math.Abs(pnl.Value).ToString("F2") + " (" + (pct >= 0 ? "+" : "") + pct!.Value.ToString("F1") + "%)" : "--")</td>
+                                <td>@h.Days</td>
+                            </tr>
+                        }
+                        @foreach (var g in hold.GroupBy(h => h.IsJ).OrderBy(g => g.Key))
+                        {
+                            var gv = g.Sum(h => h.Value ?? h.Cost); var gc = g.Sum(h => h.Cost);
+                            <tr style="font-weight:600; border-top:1px solid var(--border, #444)">
+                                <td colspan="5">@(g.Key ? "J 합계" : "코어 합계")</td>
+                                <td>$@gv.ToString("N2")</td>
+                                <td>@(mvAll > 0 ? ((double)(gv / mvAll) * 100).ToString("F1") + "%" : "--")</td>
+                                <td class="@(gv - gc >= 0 ? "text-green" : "text-red")">@((gv - gc >= 0 ? "+$" : "−$") + Math.Abs(gv - gc).ToString("F2"))</td>
+                                <td></td>
                             </tr>
                         }
                     </tbody>
                 </table>
             </div>
+            <p class="text-muted" style="font-size:0.7rem; margin:0.3rem 0 0">같은 종목의 여러 매수는 한 줄로 합산(×n = 매수 횟수). 평균단가 = 수량 가중, 보유일 = 첫 매수부터. 비중은 보유 평가액 기준(현금 제외).</p>
         </div>
         <div class="section-card">
             <h4 style="font-size:0.9rem; margin:0 0 0.4rem">J 순위 (MA21/MA200, 상위 30 안이면 유지)</h4>
@@ -135,6 +159,22 @@ else
 
 @code {
     private CoreService.CoreView? v;
+
+    private record Holding(string Symbol, bool IsJ, int Lots, decimal Qty, decimal Cost, decimal AvgPrice, decimal? Price, decimal? Value, int Days);
+
+    // 같은 종목 로트 합산 — 코어 먼저, 그다음 J(평가액 큰 순)
+    private List<Holding> Holdings() => v == null ? new() : v.Lots
+        .GroupBy(l => l.Symbol)
+        .Select(g =>
+        {
+            var qty = g.Sum(l => l.Qty);
+            var cost = g.Sum(l => l.Qty * l.EntryPrice);
+            var price = g.Select(l => l.CurrentPrice).FirstOrDefault(p => p != null);
+            return new Holding(g.Key, g.First().IsJ, g.Count(), qty, cost, qty > 0 ? cost / qty : 0,
+                price, price != null ? qty * price.Value : null,
+                (DateTime.UtcNow - g.Min(l => l.EntryTime).ToUniversalTime()).Days);
+        })
+        .OrderBy(h => h.IsJ).ThenByDescending(h => h.Value ?? h.Cost).ToList();
 
     // 티커 클릭 → CNN 종목 페이지를 팝업 창으로(CNN 은 iframe 삽입을 막으므로 별도 창). 팝업 차단 시 새 탭.
     private static RenderFragment Ticker(string sym) => __builder =>

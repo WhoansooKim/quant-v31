@@ -101,7 +101,7 @@ a:hover { color: var(--primary-h); }
 
 /* ─── Sidebar ─── */
 .sidebar {
-    width: 260px;
+    width: 154px;  /* 실효값은 MainLayout.razor.css(스코프 우선) — 같이 맞춤 */
     background: var(--bg);
     border-right: 1px solid var(--bd);
     flex-shrink: 0;
