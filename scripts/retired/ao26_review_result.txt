@@ -1,6 +1,6 @@
 PENDING_CLAUDE_REPORT
-# §22.AO-26 주간 검증 — 2026-10-15 09:05 KST
-🔬 §22.AO-26 7주차 판정 (10/15 09:05 KST)
+# §22.AO-26 주간 검증 — 2026-11-19 09:05 KST
+🔬 §22.AO-26 12주차 판정 (11/19 09:05 KST)
 적용 8/27: rsi2 보유일게이트 8d · 시간청산 21d · 소수주식
 
 설정: allow_min_one_share=false,atr_hard_stop_multiplier=1.5,fractional_shares_enabled=true,momentum_factor_active=true,rsi2_exit_min_hold_days=999,time_stop_days=60
@@ -9,17 +9,18 @@ A-1 rsi2 청산 (기준 n=37, 보유 3.7d, +4.21%)
   5건 · 보유 14.4d · 평균 +11.75%
   → 🟡 5건뿐 — 2주차에도 표본 부족. 3주차까지 연장 권고
 
-B 진입금액 산포 (등가중이면 CV→0)
+B 진입금액 산포 (등가중이면 같은 사이징 빈티지 안에서 CV→0)
   적용 전 30건: CV 0.564 ($46.47~$248.79)
-  적용 후 37건: CV 0.037 ($78.32~$92.28)
-  → ✅ 등가중 복원
+  빈티지 08/27~ 37건: CV 0.037 ($78.32~$92.28)
+  빈티지 10/12~ 23건: CV 1.279 ($45.87~$1744.45) · 캡축소 11건 $49.46,49.47,49.46,49.47,49.47,49.47,49.47,49.46,49.46,45.87,49.47 제외, 포함 CV 1.773
+  → 🔴 같은 빈티지 안에서 진입액이 갈린다 — 사이징 경로 점검
 
 등가중 vs 달러가중 (적용 전 +0.294% vs -0.332%)
-  청산 43건: 등가중 -0.668% vs 달러가중 -1.029% (실현 $-36.24)
+  청산 59건: 등가중 -1.411% vs 달러가중 -1.770% (실현 $-144.37)
   → 🟡 아직 괴리 — 표본 누적 필요
 
-평균 보유일 8.7d (적용 전 4.9d, 신호지평 20d)
-청산 사유: hard_stop:16, atr_trailing_stop:13, trend_break:6, rsi2_overbought:5, stop_loss:2, time_stop:1
+평균 보유일 7.9d (적용 전 4.9d, 신호지평 20d)
+청산 사유: hard_stop:22, atr_trailing_stop:17, trend_break:6, core_rebalance:5, rsi2_overbought:5, stop_loss:2, delisted_acquisition:1, time_stop:1
 
 판정 기준: rsi2 보유일 5.5d↑ & 수익 +4.21%↑ (표본 10건↑)
   + 진입 CV&lt;0.10 + 등가중/달러가중 부호 일치 → A-1·B 유효

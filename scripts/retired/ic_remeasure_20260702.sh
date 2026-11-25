@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 일회성: 2026-07-02 오전 IC 추세 재측정 (6/18 커밋 fea7a34 IC 음수 교정 4종 후속 검증).
 # 6/17 기준치 대비 rolling_signal_ic / factor_ic_detail / rolling_30 거래 IC 변화 + 4종 패치 효과를
 # 평가해 텔레그램으로 발송. 로컬 DB(5432)/.env 토큰 필요. systemd-run --user 로 예약 실행.

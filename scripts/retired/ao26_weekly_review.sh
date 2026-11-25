@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 주간: §22.AO-26 (A-1 rsi2 보유일 게이트 + A-3 시간청산 21일 + B 소수주식 사이징) 전진검증.
 #
 # 적용 2026-08-27:

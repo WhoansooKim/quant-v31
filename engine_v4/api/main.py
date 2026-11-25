@@ -1884,6 +1884,9 @@ def _analyze_watchlist():
                     f"vs QQQ: 5d {rel_str_5d:+.1f}% / 20d {rel_str_20d:+.1f}%\n"
                     f"Target: ${target_price:.2f} / Stop: ${stop_price:.2f}\n"
                     f"\u23f0 {datetime.now().strftime('%H:%M KST')}"
+                    # 2026-11-22 텔레그램 정리: 스윙 은퇴 후 이 점수는 매매로 이어지지 않는다(§22.AO-66: 체결 현실화 후 SPY 미달)
+                    + ("\n<i>ℹ️ 참고용 — 스윙 점수 기반, 자동매매 경로 아님 (검증상 SPY 초과 우위 없음)</i>"
+                       if pg.get_config_value("swing_entries_enabled", "true") != "true" else "")
                 ))
 
         except Exception as e:

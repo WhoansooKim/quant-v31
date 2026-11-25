@@ -516,7 +516,7 @@ def format_telegram_digest(report: dict) -> str:
 
 def run_and_notify(
     pg: PostgresStore,
-    notifier: TelegramNotifier,
+    notifier: TelegramNotifier | None,
     report_date: date | None = None,
     anthropic_key: str | None = None,
 ) -> dict:
@@ -554,6 +554,8 @@ def run_and_notify(
         except Exception as e:
             logger.warning(f"Per-trade narrative failed: {e}")
 
+    if notifier is None:  # 스윙 은퇴 중 — 보고서만 DB 에 남기고 발송하지 않는다
+        return rep
     try:
         msg = format_telegram_digest(rep)
         # Append LLM narrative if available

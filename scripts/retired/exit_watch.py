@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# 🔴 RETIRED 2026-11-22 — scripts/retired/README.md
+import sys; sys.exit("retired 2026-11-22 — scripts/retired/README.md")
 """6시간 정밀 감시 — §22.AO-43 출구 교정 전진검증 + 벤치마크 대조.
 
 왜 '변화가 있을 때만' 보고하는가: 0.92 게이트에서 체결은 월 ~5건이다. 6시간마다

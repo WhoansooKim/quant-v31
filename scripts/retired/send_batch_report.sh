@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 변이 검증 배치 결과 → Telegram 요약 발송 (§22.AO 후속)
 set -uo pipefail
 cd /home/quant/quant-v31

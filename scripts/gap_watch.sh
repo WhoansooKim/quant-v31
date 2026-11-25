@@ -63,33 +63,41 @@ FROM=$(TZ=Asia/Seoul date -d "@$PREV" '+%m/%d %H:%M')
 HRS=$(awk -v g="$GAP" 'BEGIN{printf "%.1f", g/60}')
 
 # 공백 동안 무엇을 놓쳤나
-OPEN=$(PSQL "SELECT count(*) FROM swing_positions WHERE status='open'")
+# 2026-11-22 텔레그램 정리: 스윙 은퇴 후 보유는 대부분 CORE(스톱 없음). 스톱이 걸린 스윙 보유와 코어를 나눠 본다.
+OPEN=$(PSQL "SELECT count(*) FROM swing_positions WHERE status='open' AND side NOT IN ('CORE','HEDGE')")
+OPEN_CORE=$(PSQL "SELECT count(DISTINCT symbol) FROM swing_positions WHERE status='open' AND side='CORE'")
+LASTCORE=$(PSQL "SELECT status || ' ' || to_char(created_at AT TIME ZONE 'Asia/Seoul','MM/DD HH24:MI')
+                   FROM swing_pipeline_log WHERE step_name='core_allocate' ORDER BY created_at DESC LIMIT 1")
 LASTJOB=$(PSQL "SELECT to_char(max(created_at) AT TIME ZONE 'Asia/Seoul','MM/DD HH24:MI') FROM swing_pipeline_log")
 LASTBAR=$(PSQL "SELECT max(time)::date FROM daily_prices")
-LASTEXIT=$(PSQL "SELECT to_char(max(created_at) AT TIME ZONE 'Asia/Seoul','MM/DD HH24:MI')
-                   FROM swing_pipeline_log WHERE step_name='exit_check' AND status='completed'")
 
-# 오픈 포지션이 있으면 exit_check 를 즉시 돌린다 — 다음 스케줄까지 기다리면 스톱이 늦는다
-ACTION="(오픈 0건 — 조치 불필요)"
+# 스윙 보유가 있으면 exit_check 를 즉시 돌린다 — 다음 스케줄까지 기다리면 스톱이 늦는다
+ACTION="(스윙 보유 0건 — 청산 점검 불필요)"
 AUTO=$(PSQL "SELECT value FROM swing_config WHERE key='gap_watch_auto_exit_check'")
 if [ "${OPEN:-0}" -gt 0 ] 2>/dev/null && [ "${AUTO:-true}" != "false" ]; then
   RC=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST http://localhost:8001/exit-check/run)
   ACTION="exit_check 즉시 실행 요청 → HTTP $RC"
 fi
 
+if [ "${OPEN:-0}" -gt 0 ] 2>/dev/null; then
+  RISK="⚠️ 공백 동안 스윙 스톱이 집행되지 않았다. 가격 백필과 포지션 확인 필요."
+else
+  RISK="코어 배분(화~토 00:30)은 다음 실행이 직전 확정 종가로 다시 판정한다 — 공백 중 놓친 실행이 있으면 그만큼 추세 전환 반영이 늦었다."
+fi
+
 MSG="<b>⏸️ 실행 공백 감지</b> ($KST)
 <b>${HRS}시간</b> 멈춰 있었다 ($FROM → $KST)
 재부팅이 아니라 정지/일시정지다 — @reboot 검증은 돌지 않는다.
 
-마지막 잡      : $LASTJOB
-마지막 exit_check: $LASTEXIT
-마지막 가격 봉  : $LASTBAR
-오픈 포지션    : ${OPEN}건
+마지막 잡       : $LASTJOB
+마지막 코어 배분: $LASTCORE
+마지막 가격 봉   : $LASTBAR
+보유            : 코어+J ${OPEN_CORE}종목 · 스윙 ${OPEN}건
 
 조치: $ACTION
-⚠️ 공백 동안 스톱이 집행되지 않았다. 가격 백필과 포지션 확인 필요."
+$RISK"
 
-echo "[$(TZ=Asia/Seoul date '+%F %T')] 공백 ${HRS}h ($FROM → $KST) open=${OPEN} action=${ACTION}" >> "$LOG"
+echo "[$(TZ=Asia/Seoul date '+%F %T')] 공백 ${HRS}h ($FROM → $KST) open_swing=${OPEN} core=${OPEN_CORE} action=${ACTION}" >> "$LOG"
 
 TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')
 CHAT=$(grep -E '^TELEGRAM_CHAT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"' \r')

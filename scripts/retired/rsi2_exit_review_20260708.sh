@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 일회성: 2026-07-08 rsi2 출구 정책 변경(7/1 적용) 1주 전진검증.
 # 변경: rsi2_exit_min_r 1.0→2.0, rsi2_exit_threshold 90→95 (승자 과조기절단 교정).
 # 변경 후 청산 데이터로 rsi2 빈도↓ / 보유기간·수익↑ / 거래IC 개선 여부를 baseline 대비 평가해 Telegram 발송.

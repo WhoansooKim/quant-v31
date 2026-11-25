@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 23:00 events_scan_open 첫 자동 실행 결과를 기다렸다가 텔레그램으로 보고한다 (§22.AO-29).
 # 사용자 요청(2026-09-14): "23시 스캔 끝나면 결과 텔레그램으로 알려달라".
 # 일회성 — 첫 실행 검증용이다. 상시 리포트가 필요하면 cron 에 걸 것.

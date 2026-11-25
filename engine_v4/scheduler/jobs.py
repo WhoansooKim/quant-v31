@@ -382,6 +382,17 @@ class SwingScheduler:
         "events_scan_open", "events_scan_close", "edgar_scan",
     )
 
+    def _swing_retired(self) -> bool:
+        """스윙 은퇴 상태(§22.AO-67): 신규 진입 꺼짐 + 스윙(비 CORE·HEDGE) 포지션 0.
+        이때 스윙용 텔레그램(📡 Pipeline 요약 · 시그널 알림 · 사후분석 다이제스트)은 보내지 않는다 —
+        코어 보고는 scripts/core_daily.py(engine_v4/notify/core_report.py)가 맡는다(2026-11-22 텔레그램 정리)."""
+        try:
+            if self.pg.get_config_value("swing_entries_enabled", "true") == "true":
+                return False
+            return not any(p.get("side") not in ("CORE", "HEDGE") for p in self.pg.get_open_positions())
+        except Exception:
+            return False  # 판단 못 하면 기존처럼 보낸다
+
     def _prune_swing_jobs(self):
         """swing_entries_enabled=false 이고 스윙 포지션이 0 이면 SWING_ONLY_JOBS 를 등록 해제한다.
         재개하려면 플래그를 true 로 바꾸고 재시작 — 잡 정의는 위에 그대로 있다.
@@ -478,8 +489,9 @@ class SwingScheduler:
                 except Exception as e:
                     logger.warning(f"AI analysis failed (non-fatal): {e}")
 
-            # Step 3: 텔레그램 알림
-            if entries or exits:
+            # Step 3: 텔레그램 알림 — 스윙 은퇴 중엔 승인할 사람도 경로도 없으므로 보내지 않는다
+            swing_retired = self._swing_retired()
+            if (entries or exits) and not swing_retired:
                 asyncio.run(self.notifier.notify_signals(entries, exits))
 
             # Step 4: 스냅샷 생성
@@ -503,9 +515,11 @@ class SwingScheduler:
             logger.info(f"Daily pipeline done: {len(entries)} entries, "
                         f"{len(exits)} exits in {elapsed:.1f}s")
 
-            # Step 5: Telegram 요약 보고 (시그널 0 일 때도 발송 — 사용자 확인용)
-            self._send_pipeline_summary(elapsed, len(symbols),
-                                        len(entries), len(exits))
+            # Step 5: Telegram 요약 보고 (시그널 0 일 때도 발송 — 사용자 확인용). 스윙 은퇴 중엔 생략:
+            #   'Pending ENTRY · Regime' 은 코어 운용과 무관하고 매일 소음이 된다. 실패는 아래 notify_error 로 계속 알린다.
+            if not swing_retired:
+                self._send_pipeline_summary(elapsed, len(symbols),
+                                            len(entries), len(exits))
 
         except Exception as e:
             elapsed = time.time() - start
@@ -2148,8 +2162,9 @@ class SwingScheduler:
 
         try:
             today = date.today()
+            # 스윙 은퇴 중엔 다이제스트(30거래 승률·SQN·IC·Brinson)를 보내지 않는다 — 보고서는 DB 에 계속 쌓는다
             rep = run_and_notify(
-                self.pg, self.notifier, report_date=today,
+                self.pg, None if self._swing_retired() else self.notifier, report_date=today,
                 anthropic_key=getattr(self.cfg, "anthropic_key", None),
             )
             self.pg.insert_pipeline_log(

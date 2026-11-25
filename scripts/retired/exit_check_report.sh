@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 다음 exit_check 실행 결과를 기다렸다가 텔레그램으로 보고한다 (§22.AO-29 후속).
 # 사용자 요청(2026-09-14 23:0x): "23:30 exit_check 결과도 텔레그램으로 보내달라".
 # 계기: 23:01 이벤트 스캔이 INTC critical price_drop 을 잡았고, 실시간가 96.66 이

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 🔴 RETIRED 2026-11-22 (텔레그램 정리) — 스윙 은퇴 후 의미 없는 지표를 재서 오탐을 보냈다. scripts/retired/README.md 참고.
+echo "retired 2026-11-22 — scripts/retired/README.md" >&2; exit 0
 # 주간(매주): 손익비 개선(①번, 2026-07-27 적용) 전진검증.
 # 변경: take_profit_pct 0.20→0.50 (고정 TP 비활성화, ATR 트레일링+부분익절 지배).
 # 적용 전(~07-26) vs 적용 후(07-27~) 청산 데이터로 손익비/평균승%/청산사유 분포 변화를 Telegram 발송.

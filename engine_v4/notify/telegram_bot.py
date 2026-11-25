@@ -1,11 +1,11 @@
 """Telegram 양방향 봇 — 정형 명령 (옵션 A) + 자유 텍스트 큐 적재 (옵션 B).
 
 정형 명령:
-  /status              — 시스템 + 포지션 + IC 요약
-  /positions           — 오픈 포지션 상세
-  /signals             — 최근 시그널 10건
-  /last                — 마지막 파이프라인 결과
-  /perf [7d|30d]       — 성과 메트릭
+  /status              — 코어 일일 보고(총자산·추세·비중·섀도·경보) — cron 일일 보고와 같은 함수
+  /positions           — 보유 종목별 합산(슬리브·비중·손익)
+  /last                — 최근 코어 배분 3회
+  /perf [7d|30d]       — 재시작 후 일별 총자산
+  (2026-11-22 스윙 은퇴 정리: /signals 폐지, /status·/last·/perf 를 코어 기준으로 교체)
   /regime              — 매크로 regime + macro score
   /analyze SYM         — 종목 분석 (가격/지표/팩터/Ollama 해설)
   /queue               — Claude 분석 큐 상태
@@ -157,7 +157,7 @@ class TelegramBot:
             "/help": self._cmd_help,
             "/status": self._cmd_status,
             "/positions": self._cmd_positions,
-            "/signals": self._cmd_signals,
+            "/signals": self._cmd_retired,
             "/last": self._cmd_last,
             "/perf": self._cmd_perf,
             "/regime": self._cmd_regime,
@@ -179,133 +179,91 @@ class TelegramBot:
         return (
             "<b>📡 Quant V4 Bot 명령</b>\n\n"
             "<b>정형 명령</b>\n"
-            "/status — 시스템 + 포지션 + IC 요약\n"
-            "/positions — 오픈 포지션 상세\n"
-            "/signals — 최근 시그널 10건\n"
-            "/last — 마지막 파이프라인 결과\n"
-            "/perf [7d|30d] — 성과 메트릭\n"
+            "/status — 코어 일일 보고 (총자산·추세·비중·섀도)\n"
+            "/positions — 보유 종목별 합산\n"
+            "/last — 최근 코어 배분 3회\n"
+            "/perf [7d|30d] — 재시작 후 일별 총자산\n"
             "/regime — 매크로 regime\n"
             "/analyze SYM — 종목 분석\n"
             "/queue — Claude 분석 큐 상태\n\n"
             "<b>자유 텍스트</b>\n"
             "정형 명령이 아닌 메시지는 Claude 분석 큐에 적재됩니다.\n"
             "다음 Claude Code 세션에서 자동 처리 후 회신됩니다.\n\n"
-            "<i>예: \"오늘 21:30 파이프라인 결과 확인해줘\"</i>"
+            "<i>예: \"오늘 00:30 코어 배분 결과 확인해줘\"</i>"
         )
 
     async def _cmd_status(self, args) -> str:
-        with self.pg.get_conn() as conn:
-            open_count = conn.execute(
-                "SELECT COUNT(*) AS n FROM swing_positions WHERE status='open'"
-            ).fetchone()["n"]
-            pending_count = conn.execute(
-                "SELECT COUNT(*) AS n FROM swing_signals WHERE status='pending' AND signal_type='ENTRY'"
-            ).fetchone()["n"]
-            snap = conn.execute(
-                "SELECT total_value_usd, cumulative_return, daily_pnl_usd FROM swing_snapshots ORDER BY time DESC LIMIT 1"
-            ).fetchone()
-            last_ic = conn.execute(
-                "SELECT rolling_30_information_coefficient AS ic, rolling_30_win_rate AS wr, "
-                "rolling_30_sqn AS sqn FROM swing_daily_report ORDER BY report_date DESC LIMIT 1"
-            ).fetchone()
-            macro = conn.execute(
-                "SELECT macro_score, regime FROM swing_macro_snapshots ORDER BY time DESC LIMIT 1"
-            ).fetchone()
-
-        regime = self.pg.get_config_value("current_regime", "NEUTRAL")
+        """코어 일일 보고와 같은 메시지(engine_v4/notify/core_report.py). 시세 조회가 있어 스레드에서."""
+        def _build() -> str:
+            from engine_v4.notify.core_report import summary_message
+            with self.pg.get_conn() as conn:
+                return summary_message(conn)
         mode = self.pg.get_config_value("trading_mode", "paper")
-        snap_dict = dict(snap) if snap else {}
-        ic_dict = dict(last_ic) if last_ic else {}
-        macro_dict = dict(macro) if macro else {}
+        return f"<i>mode={mode}</i>\n" + await asyncio.to_thread(_build)
 
-        return (
-            f"<b>📊 시스템 상태</b> (mode={mode})\n"
-            f"\n<b>포트폴리오</b>\n"
-            f"Total: ${float(snap_dict.get('total_value_usd') or 0):.2f}\n"
-            f"Cum: {float(snap_dict.get('cumulative_return') or 0)*100:+.2f}%\n"
-            f"Daily P&L: ${float(snap_dict.get('daily_pnl_usd') or 0):+.2f}\n"
-            f"\n<b>거래</b>\n"
-            f"Open: {open_count} · Pending ENTRY: {pending_count}\n"
-            f"\n<b>Rolling 30 메트릭</b>\n"
-            f"Win Rate: {float(ic_dict.get('wr') or 0)*100:.1f}%\n"
-            f"SQN: {float(ic_dict.get('sqn') or 0):.2f}\n"
-            f"IC: {float(ic_dict.get('ic') or 0):+.3f}\n"
-            f"\n<b>Regime</b>: {regime} (macro {float(macro_dict.get('macro_score') or 0):.1f})"
-        )
+    async def _cmd_retired(self, args) -> str:
+        return ("스윙 매매는 은퇴했다(§22.AO-67) — 시그널은 매매로 이어지지 않는다.\n"
+                "/status 코어 보고 · /positions 보유 · /last 코어 배분")
 
     async def _cmd_positions(self, args) -> str:
         with self.pg.get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT symbol, qty, entry_price, current_price, entry_time
+                SELECT symbol, side, SUM(qty) qty, SUM(qty*entry_price) cost,
+                       MAX(current_price) cp, MIN(entry_time) first_t, COUNT(*) lots
                 FROM swing_positions WHERE status='open'
-                ORDER BY entry_time DESC
+                GROUP BY symbol, side
                 """
             ).fetchall()
         if not rows:
             return "오픈 포지션 없음."
-        lines = ["<b>📈 오픈 포지션</b>", ""]
-        total_pl_pct = 0.0
+        core = {"UPRO", "BIL"}
+        items = []
         for r in rows:
-            ep = float(r["entry_price"] or 0)
-            cp = float(r["current_price"] or 0)
-            pct = ((cp - ep) / ep * 100) if ep > 0 else 0
-            total_pl_pct += pct
-            arrow = "🟢" if pct >= 0 else "🔴"
-            lines.append(
-                f"{arrow} <b>{r['symbol']}</b> · {r['entry_time'].strftime('%m/%d')}\n"
-                f"   Entry ${ep:.2f} → ${cp:.2f} ({pct:+.2f}%)"
-            )
-        lines.append(f"\n평균: {total_pl_pct/len(rows):+.2f}%")
-        return "\n".join(lines)
-
-    async def _cmd_signals(self, args) -> str:
-        with self.pg.get_conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT symbol, signal_type, status, composite_score, time
-                FROM swing_signals
-                ORDER BY time DESC LIMIT 10
-                """
-            ).fetchall()
-        if not rows:
-            return "최근 시그널 없음."
-        lines = ["<b>🎯 최근 시그널 10건</b>", ""]
-        for r in rows:
-            t = r["time"].astimezone(KST).strftime("%m/%d %H:%M")
-            comp = float(r["composite_score"] or 0)
-            status_emoji = {"executed": "✅", "approved": "🟢", "rejected": "❌", "pending": "⏳"}.get(
-                r["status"], "·")
-            lines.append(
-                f"{status_emoji} <b>{r['symbol']}</b> {r['signal_type']} · "
-                f"comp={comp:.0f} · {r['status']} · {t}"
-            )
+            qty, cost = float(r["qty"]), float(r["cost"])
+            val = qty * float(r["cp"]) if r["cp"] is not None else cost
+            sleeve = ("코어" if r["symbol"] in core else "J") if r["side"] == "CORE" else r["side"]
+            items.append((sleeve, r["symbol"], val, cost, int(r["lots"])))
+        tot = sum(i[2] for i in items) or 1.0
+        items.sort(key=lambda i: (i[0] != "코어", -i[2]))
+        lines = ["<b>📈 보유 (종목별 합산)</b>", ""]
+        for sleeve, sym, val, cost, lots in items:
+            pnl = val - cost
+            lines.append(f"{'🟢' if pnl >= 0 else '🔴'} <b>{sym}</b> {sleeve} · ${val:,.2f} ({val / tot:.1%})"
+                         f" · {'+' if pnl >= 0 else '−'}${abs(pnl):,.2f} ({pnl / cost * 100:+.1f}%)"
+                         + (f" · ×{lots}" if lots > 1 else ""))
+        for label, keyf in (("코어", lambda i: i[0] == "코어"), ("J", lambda i: i[0] == "J")):
+            v = sum(i[2] for i in items if keyf(i)); c = sum(i[3] for i in items if keyf(i))
+            if c:
+                lines.append(f"\n{label} 합계 ${v:,.2f} ({v / tot:.1%}) · {'+' if v >= c else '−'}${abs(v - c):,.2f}")
         return "\n".join(lines)
 
     async def _cmd_last(self, args) -> str:
         with self.pg.get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT step_name, status, elapsed_sec, details, created_at
-                FROM swing_pipeline_log
-                WHERE step_name IN ('scheduled_pipeline','full_pipeline')
-                ORDER BY created_at DESC LIMIT 3
+                SELECT status, details, error_msg, created_at FROM swing_pipeline_log
+                WHERE step_name='core_allocate' ORDER BY created_at DESC LIMIT 3
                 """
             ).fetchall()
         if not rows:
-            return "최근 파이프라인 기록 없음."
-        lines = ["<b>📡 최근 파이프라인 3회</b>", ""]
+            return "코어 배분 기록 없음."
+        lines = ["<b>🏛️ 최근 코어 배분 3회</b>", ""]
         for r in rows:
             t = r["created_at"].astimezone(KST).strftime("%m/%d %H:%M")
             d = r["details"] or {}
-            elapsed = float(r["elapsed_sec"] or 0)
-            ent = d.get("entries", "-")
-            ext = d.get("exits", "-")
-            syms = d.get("symbols", "-")
-            lines.append(
-                f"<b>{r['step_name']}</b> {r['status']}\n"
-                f"  {t} KST · {elapsed:.1f}s · 종목 {syms} · ENTRY {ent} · EXIT {ext}"
-            )
+            tr = d.get("trend") or {}
+            orders = d.get("orders") or []
+            head = f"<b>{t}</b> {'✅' if r['status'] == 'completed' else '🔴'} {r['status']}"
+            if tr:
+                head += f" · 추세 {tr.get('label')}" + (" ⚡전환" if tr.get("changed") else "")
+            lines.append(head)
+            if r["status"] != "completed":
+                lines.append(f"  {(r['error_msg'] or '')[:150]}")
+            elif orders:
+                lines += [f"  {o}" for o in orders[:6]] + ([f"  … 외 {len(orders) - 6}건"] if len(orders) > 6 else [])
+            else:
+                lines.append("  주문 없음")
         return "\n".join(lines)
 
     async def _cmd_perf(self, args) -> str:
@@ -315,27 +273,30 @@ class TelegramBot:
                 days = int(args[0][:-1])
             except ValueError:
                 pass
+        since = self.pg.get_config_value("account_epoch_time", "") or None
+        cap = float(self.pg.get_config_value("account_epoch_capital", "0") or 0)
         with self.pg.get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT report_date, rolling_30_win_rate AS wr, rolling_30_expectancy_pct AS exp,
-                       rolling_30_sqn AS sqn, rolling_30_information_coefficient AS ic
-                FROM swing_daily_report
-                WHERE report_date >= CURRENT_DATE - %s::interval
-                ORDER BY report_date DESC LIMIT 10
+                SELECT DISTINCT ON ((time AT TIME ZONE 'Asia/Seoul')::date)
+                       (time AT TIME ZONE 'Asia/Seoul')::date d, total_value_usd tv,
+                       cumulative_return cr, max_drawdown dd
+                FROM swing_snapshots
+                WHERE time >= GREATEST(now() - %s::interval, COALESCE(%s::timestamptz, '-infinity'))
+                ORDER BY (time AT TIME ZONE 'Asia/Seoul')::date, time DESC
                 """,
-                (f"{days} days",),
+                (f"{days} days", since),
             ).fetchall()
         if not rows:
-            return f"{days}일 성과 데이터 없음."
-        lines = [f"<b>📈 최근 {days}일 Rolling 30 메트릭</b>", ""]
+            return f"{days}일 스냅샷 없음."
+        lines = [f"<b>📈 최근 {days}일 총자산</b>" + (f" (재시작 ${cap:,.0f} 기준)" if cap else ""), ""]
+        prev = None
         for r in rows:
-            lines.append(
-                f"{r['report_date']} · WR {float(r['wr'] or 0)*100:.1f}% · "
-                f"Exp {float(r['exp'] or 0):+.2f}% · "
-                f"SQN {float(r['sqn'] or 0):+.2f} · "
-                f"IC {float(r['ic'] or 0):+.3f}"
-            )
+            tv = float(r["tv"])
+            chg = f" · 하루 {tv - prev:+,.2f}" if prev is not None else ""
+            lines.append(f"{r['d']:%m/%d} ${tv:,.2f} · 누적 {float(r['cr'] or 0) * 100:+.2f}%{chg}")
+            prev = tv
+        lines.append(f"\n재시작 후 최대낙폭 {float(rows[-1]['dd'] or 0) * 100:.1f}%")
         return "\n".join(lines)
 
     async def _cmd_regime(self, args) -> str:
